@@ -1,4 +1,5 @@
-// v113.33-II3: corrige Inicio Inamovible: tres impulsos del mismo lado con G central y laterales menores.
+// v113.33-II4: limpia la variante Inicio Inamovible: elimina GIRO++ y paneles de confirmación heredados.
+// Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
 // La base estable v113.33 original no se modifica.
 // v113.31: elimina la pausa visual automática y agrega efectividad diaria en los encabezados de Trades.
@@ -118,11 +119,11 @@
 // ✅ V66: pre-proposal 56-58s: arma proposal antes y en post-58 solo compra; disciplina 3 ITM/2 OTM desactivada para pruebas.
 "use strict";
 
-// V113.33-II3: persistencia estándar, igual que la PWA v113.33 original.
+// V113.33-II4: persistencia estándar, igual que la PWA v113.33 original.
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II3";
+const APP_BUILD_VERSION = "v113.33-II4";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -14647,6 +14648,45 @@ function updateModalCandleStatusUI() {
 
   bar.style.display = "block";
 
+  // II4: Inicio Inamovible es una PWA de estudio. Oculta por completo
+  // confirmaciones, GIRO++, gestión y botones de operación heredados.
+  if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
+    const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
+    if (tradeRow) tradeRow.style.display = "none";
+    setSignalConfirmationControlsVisible(false);
+    setGiroAprendizajeControlsVisible(false);
+    setProcessMiniPanelVisible(false);
+
+    const result60 = isFloatingSignalItem(modalCurrentItem) ? ensureSignalResult60(modalCurrentItem) : null;
+    if (result60 && isSignalResult60Resolved(modalCurrentItem)) {
+      const correctness = getSignalResult60Correctness(modalCurrentItem);
+      const correctnessTxt = correctness === "correct" ? " · ✅ giro correcto" : correctness === "incorrect" ? " · ❌ continuó" : "";
+      bar.textContent = `${getSignalResult60DirectionText(modalCurrentItem)}${correctnessTxt}`;
+      bar.style.color = correctness === "incorrect" ? "#fecaca" : correctness === "correct" ? "#dcfce7" : "rgba(229,231,235,.92)";
+      bar.style.background = correctness === "incorrect" ? "rgba(127,29,29,.22)" : correctness === "correct" ? "rgba(22,163,74,.16)" : "rgba(107,114,128,.16)";
+      bar.style.borderColor = correctness === "incorrect" ? "rgba(248,113,113,.34)" : correctness === "correct" ? "rgba(34,197,94,.30)" : "rgba(156,163,175,.22)";
+    } else if (result60) {
+      bar.textContent = `🧪 INICIO INAMOVIBLE · GIRO ${String(modalCurrentItem.direction || "")} · resultado en ${getSignalResult60RemainingSec(modalCurrentItem)}s`;
+      bar.style.color = "#ede9fe";
+      bar.style.background = "rgba(139,92,246,.14)";
+      bar.style.borderColor = "rgba(167,139,250,.34)";
+      if (getSignalResult60RemainingSec(modalCurrentItem) === 0) scheduleSignalResult60Hydration(modalCurrentItem);
+    } else {
+      bar.textContent = `🧪 INICIO INAMOVIBLE · señal de GIRO ${String(modalCurrentItem.direction || "")} · solo estudio`;
+      bar.style.color = "#ede9fe";
+      bar.style.background = "rgba(139,92,246,.14)";
+      bar.style.borderColor = "rgba(167,139,250,.34)";
+    }
+    bar.style.boxShadow = "0 0 0 1px rgba(167,139,250,.05) inset";
+    updateModalNavVoteUI();
+    updateModalFooterReadingUI();
+    updateVisualReadPanelUI();
+    return;
+  }
+
+  const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
+  if (tradeRow) tradeRow.style.display = "";
+
   const callPlan = modalCurrentItem ? getCachedExecutionPlan(modalCurrentItem, "CALL") : null;
   const putPlan = modalCurrentItem ? getCachedExecutionPlan(modalCurrentItem, "PUT") : null;
   setTradeButtonBaseLabel(modalBuyCallBtn, buildTradeButtonLabel("CALL", callPlan));
@@ -16986,16 +17026,19 @@ function openChartModal(item, opts = {}) {
   chartModal.setAttribute("aria-hidden", "false");
 
   modalCurrentItem.signalConfirmations ||= [];
+  const inicioStudyOnly = isInicioInamovibleStudyOnlySignal(modalCurrentItem);
   applyModalTradeButtonsLayout();
 ensureModalFooterControlsLayout();
 updateModalFooterReadingUI();
-  setSignalConfirmationControlsVisible(true);
+  setSignalConfirmationControlsVisible(!inicioStudyOnly);
   ensureGiroAprendizajeControls();
-  setGiroAprendizajeControlsVisible(true);
-  updateSignalConfirmationUI();
-  updateGiroAprendizajeControlsUI();
-  setProcessMiniPanelVisible(true);
-  updateProcessMiniPanelUI();
+  setGiroAprendizajeControlsVisible(!inicioStudyOnly);
+  if (!inicioStudyOnly) {
+    updateSignalConfirmationUI();
+    updateGiroAprendizajeControlsUI();
+  }
+  setProcessMiniPanelVisible(!inicioStudyOnly);
+  if (!inicioStudyOnly) updateProcessMiniPanelUI();
   if (shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(modalCurrentItem);
   updateDisciplineLockUI(false);
   updateModalCandleStatusUI();
@@ -26357,6 +26400,14 @@ function updateGiroPlusOutcome(item) {
 }
 function updateGiroPlusClassification(item, opts = {}) {
   if (!item || !isFloatingSignalItem(item)) return false;
+  // II4: esta variante estudia exclusivamente Inicio Inamovible.
+  // No debe ejecutar, mostrar ni exportar clasificaciones GIRO++ heredadas.
+  if (isInicioInamovibleStudyOnlySignal(item)) {
+    const hadLegacyGiroPlus = !!item.giroPlus;
+    if (hadLegacyGiroPlus) delete item.giroPlus;
+    try { updateRowGiroPlusBadge(item); } catch {}
+    return hadLegacyGiroPlus;
+  }
   const previous = item.giroPlus && typeof item.giroPlus === "object" ? item.giroPlus : {};
   if (previous.version === GIRO_PLUS_VERSION && previous.evaluated && Number(previous.evaluatedAtMs) >= GIRO_PLUS_FINAL_MS) {
     return updateGiroPlusOutcome(item);
@@ -26425,6 +26476,8 @@ function updateGiroPlusClassification(item, opts = {}) {
   return true;
 }
 function getGiroPlusLabelInfo(item) {
+  // II4: nunca mostrar la insignia amarilla GIRO++ en Inicio Inamovible.
+  if (isInicioInamovibleStudyOnlySignal(item)) return { key: "", label: "", title: "" };
   const gp = item?.giroPlus || {};
   if (gp.confirmed) {
     return {
@@ -26451,6 +26504,7 @@ function getGiroPlusLabelInfo(item) {
   return { key: "", label: "", title: "" };
 }
 function getGiroPlusModalSummary(item) {
+  if (isInicioInamovibleStudyOnlySignal(item)) return "";
   const gp = item?.giroPlus || {};
   if (gp.confirmed) return `⭐ GIRO++ CONFIRMADA · RUTA ${gp.route || "—"} · 58s`;
   if (gp.status === "candidate" || (!gp.evaluated && gp.candidate)) return `✨ GIRO++ CANDIDATA · esperando 58s`;
@@ -28078,7 +28132,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II3 — Inicio Inamovible experimental orientado a GIRO.
+// V113.33-II4 — Inicio Inamovible experimental orientado a GIRO.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28269,7 +28323,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Solo aviso y registro.`;
-  const logicText = `Motor experimental V113.33-II3: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G y los laterales P/M menores. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
+  const logicText = `Motor experimental V113.33-II4: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G y los laterales P/M menores. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
 
   return {
     direction,
