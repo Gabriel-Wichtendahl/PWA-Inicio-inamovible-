@@ -1,9 +1,8 @@
-/* sw.js — Deriv Inicio Inamovible v113.33-II1 */
+/* sw.js — Deriv Inicio Inamovible v113.33-II2 */
 "use strict";
 
-// Se comparte el nombre con v113.33 porque su activación elimina otros caches del mismo origen.
-// Los recursos no colisionan al publicarse esta variante en una carpeta/ruta distinta.
-const CACHE = "deriv-assets-v113-33-double-mgm-exact";
+// Caché exclusivo de II2 para que no colisione con la PWA estable ni con II1.
+const CACHE = "deriv-assets-v113-33-inicio-inamovible-ii2";
 
 const CORE_ASSETS = [
   "./",
