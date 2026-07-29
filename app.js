@@ -118,25 +118,9 @@
 // ✅ V66: pre-proposal 56-58s: arma proposal antes y en post-58 solo compra; disciplina 3 ITM/2 OTM desactivada para pruebas.
 "use strict";
 
-// V113.33-II3: aislamiento total de la variante experimental.
-// La PWA original y esta copia no mezclan token, historial, ajustes ni trades.
-const INICIO_INAMOVIBLE_STORAGE_PREFIX = "inicio_inamovible_v113_33_ii3::";
-(() => {
-  try {
-    const proto = Storage.prototype;
-    if (proto.__inicioInamovibleNamespaced) return;
-    const rawGet = proto.getItem;
-    const rawSet = proto.setItem;
-    const rawRemove = proto.removeItem;
-    const scopedKey = (store, key) => store === window.localStorage
-      ? INICIO_INAMOVIBLE_STORAGE_PREFIX + String(key)
-      : String(key);
-    proto.getItem = function (key) { return rawGet.call(this, scopedKey(this, key)); };
-    proto.setItem = function (key, value) { return rawSet.call(this, scopedKey(this, key), value); };
-    proto.removeItem = function (key) { return rawRemove.call(this, scopedKey(this, key)); };
-    Object.defineProperty(proto, "__inicioInamovibleNamespaced", { value: true, configurable: false });
-  } catch {}
-})();
+// V113.33-II3: persistencia estándar, igual que la PWA v113.33 original.
+// No se versionan las claves de localStorage: al actualizar esta variante
+// en su repositorio, el token y las preferencias permanecen guardados.
 
 const APP_BUILD_VERSION = "v113.33-II3";
 
@@ -189,7 +173,7 @@ const TRADES_JOURNAL_MAX = 500;
 /* =========================
    Capturas de estudio
 ========================= */
-const STUDY_CAPTURE_DB_NAME = "derivStudyCaptures_inicioInamovible_v11333_ii3";
+const STUDY_CAPTURE_DB_NAME = "derivStudyCaptures_v1";
 const STUDY_CAPTURE_STORE_NAME = "captures";
 const STUDY_CAPTURE_VERSION = 1;
 const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V112_2_ESTILO_DERIV_LINEA_BLANCA";
