@@ -2803,3 +2803,11 @@ body.light .tradesDayCount{
   .tradesDayHeader{align-items:flex-start;flex-direction:column;gap:6px}
   .tradesDaySummary{width:100%;justify-content:space-between}
 }
+
+
+/* II5 · Variante exclusiva Inicio Inamovible */
+.inicioOnlyHiddenControls,
+#signalConfirmPanel,
+.giroPlusBadge{
+  display:none!important;
+}

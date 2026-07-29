@@ -1,4 +1,5 @@
-// v113.33-II4: limpia la variante Inicio Inamovible: elimina GIRO++ y paneles de confirmación heredados.
+// v113.33-II5: ejecución exclusiva de Inicio Inamovible; desactiva rutas antiguas y limpia Lectura ON.
+// El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
 // La base estable v113.33 original no se modifica.
@@ -119,11 +120,11 @@
 // ✅ V66: pre-proposal 56-58s: arma proposal antes y en post-58 solo compra; disciplina 3 ITM/2 OTM desactivada para pruebas.
 "use strict";
 
-// V113.33-II4: persistencia estándar, igual que la PWA v113.33 original.
+// V113.33-II5: persistencia estándar, igual que la PWA v113.33 original.
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II4";
+const APP_BUILD_VERSION = "v113.33-II5";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1507,6 +1508,9 @@ const MODE_ALCISTA_IRREGULAR_25S = "ALCISTA IRREGULAR QUIEBRES 30S";
 const MODE_ALCISTA_REDUCCION_30S = "ALCISTA REDUCCIÓN 30S";
 const MODE_REDUCCION_VISUAL_25S = "REDUCCIÓN VISUAL 25S";
 const MODE_REDUCCION_CONSTRUCTIVA_CONTINUA = "INICIO INAMOVIBLE";
+// II5: interruptor maestro. La variante no ejecuta detectores, confirmaciones,
+// autoentradas, SNR, polaridad, GIRO++ ni rutas históricas en paralelo.
+const INICIO_INAMOVIBLE_ONLY_RUNTIME = true;
 const ANALYSIS_MODE_KEY = "analysisMode_v1";
 
 const GIRO_LOGIC_VERSION = "GIRO_RAMA_REEMPLAZO_20260421";
@@ -1523,7 +1527,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_3_MISMA_DIRECCION_CIERRE_TERMINAL_S15_30_V113_33_II3_20260729";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_3_MISMA_DIRECCION_CIERRE_TERMINAL_SOLO_MOTOR_V113_33_II5_20260729";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2986,8 +2990,9 @@ function setCompactModalHeader(item, ticksCount = null) {
       if (item?.minuteComplete && outcomeValue) signalOrResultTxt = formatNextCandleOutcomeLabel(item, true).replace("PROX VELA", "RESULTADO");
       else signalOrResultTxt = formatNextCandleDirectionLabel(item.direction);
     }
-    const gpSub = getGiroPlusModalSummary(item);
-    modalSub.textContent = `${item.time || "—"} · ${mode} · ticks ${n} · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s${signalOrResultTxt ? " · " + signalOrResultTxt : ""}${gpSub ? " · " + gpSub : ""}${live}`;
+    const gpSub = INICIO_INAMOVIBLE_ONLY_RUNTIME ? "" : getGiroPlusModalSummary(item);
+    const autoTxt = INICIO_INAMOVIBLE_ONLY_RUNTIME ? "" : ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`;
+    modalSub.textContent = `${item.time || "—"} · ${mode} · ticks ${n}${autoTxt}${signalOrResultTxt ? " · " + signalOrResultTxt : ""}${gpSub ? " · " + gpSub : ""}${live}`;
   }
 }
 
@@ -3815,6 +3820,7 @@ function saveExecutionMode() {
   } catch {}
 }
 function shouldUseAutoHighLowExecution() {
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
   return executionMode === EXECUTION_MODE_HIGHLOW_AUTO;
 }
 function getExecutionModeLabel() {
@@ -4420,6 +4426,7 @@ function cancelSignalAutoEntryNoPreProposal(item, side, readiness, reason = "AUT
   return true;
 }
 function scanSignalAutoPreProposals() {
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
   try {
     if (areSignalsPaused()) return false;
     if (!isNextCandleExpiryTiming() || shouldUseAutoHighLowExecution()) return false;
@@ -7301,10 +7308,12 @@ function startUiTimers() {
   uiTimer = setInterval(() => {
     updateTickHealthUI();
     updateCountdownUI();
-    updateMentalCooldownUI();
-    updateSignalFatigueUI();
-    updateDisciplineLockUI(false);
-    updateC100PanelUI();
+    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+      updateMentalCooldownUI();
+      updateSignalFatigueUI();
+      updateDisciplineLockUI(false);
+      updateC100PanelUI();
+    }
     // ✅ FIX AUTO 58 DEMO/REAL:
     // La autoentrada no debe depender de que el gráfico se redibuje justo en el segundo 58.
     // Este timer mantiene viva la barra del modal y además revisa señales habilitadas.
@@ -7315,8 +7324,10 @@ function startUiTimers() {
     updateModalCandleStatusUI();
     refreshOpenSignalStageBadges();
     finalizeExpiredFloatingSignalRows();
-    scanSignalAutoPreProposals();
-    scanSignalAutoEntriesAt57();
+    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+      scanSignalAutoPreProposals();
+      scanSignalAutoEntriesAt57();
+    }
   }, getUiIntervalMs());
 }
 function ensureLowPowerButton() {
@@ -9071,7 +9082,7 @@ function buildSignalsAnalysisExport() {
     notes_for_analysis: {
       target_window_ms: [0, 30000],
       also_review_window_ms: [0, 25000],
-      desired_output: "validar secuencias G/M/P y rutas GIRO++ A+/B estricta/C/E/F/G/H+/I/J/L+ que anticipan giro de la vela siguiente",
+      desired_output: "validar Inicio Inamovible: tres impulsos en la misma dirección, G central único, laterales menores, tercer tramo completo y giro posterior contrario",
     },
     signals_all: signals,
     trades_all: trades,
@@ -12773,6 +12784,7 @@ function buildVisualReadFromItem(item) {
   const dominant = String(meta.visualReductionGroup || "").toLowerCase().includes("vendedor") ? "vendedor" : "comprador";
   const contrary = String(meta.visualReductionContraryGroup || "").toLowerCase().includes("comprador") ? "comprador" : "vendedor";
   const isConstructiveRead = String(meta.levelMode || "") === "reduccion_constructiva_continua" || !!meta.constructiveReductionMode || normalizeSignalMode(item.mode) === MODE_REDUCCION_CONSTRUCTIVA_CONTINUA;
+  const isInicioInamovibleRead = !!meta.inicioInamovibleMode || String(meta.levelMode || "") === "inicio_inamovible_experimental" || isInicioInamovibleStudyOnlySignal(item);
   const qualificationRoute = String(meta.constructiveQualificationRoute || "");
   const isDoubleMgmRead = qualificationRoute === "double_mgm_plus_contrary";
   const irregularInitialBlock = (isDoubleMgmRead || qualificationRoute === "irregular_initial_response" || qualificationRoute.startsWith("anchored_mgm_")) && meta.irregularInitialBlock && typeof meta.irregularInitialBlock === "object"
@@ -12799,10 +12811,12 @@ function buildVisualReadFromItem(item) {
       primaryLabels = patLabels.length ? patLabels : primaryLabels;
     }
   }
-  const confirmationPack = isConstructiveRead && meta.constructiveConfirmationPack && typeof meta.constructiveConfirmationPack === "object"
+  // En Inicio Inamovible el retroceso terminal no es una confirmación adicional:
+  // únicamente marca que el tercer impulso terminó.
+  const confirmationPack = !isInicioInamovibleRead && isConstructiveRead && meta.constructiveConfirmationPack && typeof meta.constructiveConfirmationPack === "object"
     ? meta.constructiveConfirmationPack
     : null;
-  let contraryLabels = splitPatternText(meta.visualReductionContraryPattern);
+  let contraryLabels = isInicioInamovibleRead ? [] : splitPatternText(meta.visualReductionContraryPattern);
   if (isConstructiveRead && confirmationPack) {
     const packPattern = String(confirmationPack.pattern || confirmationPack.label || "").trim();
     if (/^(P|M|G)(→(P|M|G))+$/i.test(packPattern)) {
@@ -12826,19 +12840,29 @@ function buildVisualReadFromItem(item) {
           ]
         : irregularInitialBlock.runs)
     : (Array.isArray(meta.visualReductionPrimaryRuns) ? meta.visualReductionPrimaryRuns : []);
-  const contraryRunsRaw = isConstructiveRead
-    ? (Array.isArray(meta.acceptedConfirmationRuns) && meta.acceptedConfirmationRuns.length
-        ? meta.acceptedConfirmationRuns
-        : Array.isArray(confirmationPack?.runs) ? confirmationPack.runs : [])
-    : (Array.isArray(meta.visualReductionContraryRuns) ? meta.visualReductionContraryRuns : []);
-  const irregularCorrectionRunsRaw = isIrregularRead
-    ? [
-        ...(Array.isArray(irregularInitialBlock.correctionRuns) ? irregularInitialBlock.correctionRuns : []),
-        ...(isAnchoredMgmRead && Array.isArray(meta.acceptedReductionBlocks)
-          ? meta.acceptedReductionBlocks.flatMap((b) => Array.isArray(b?.correctionRuns) ? b.correctionRuns : [])
-          : []),
-      ]
+  const contraryRunsRaw = isInicioInamovibleRead
+    ? []
+    : (isConstructiveRead
+      ? (Array.isArray(meta.acceptedConfirmationRuns) && meta.acceptedConfirmationRuns.length
+          ? meta.acceptedConfirmationRuns
+          : Array.isArray(confirmationPack?.runs) ? confirmationPack.runs : [])
+      : (Array.isArray(meta.visualReductionContraryRuns) ? meta.visualReductionContraryRuns : []));
+  const inicioInternalCorrections = isInicioInamovibleRead
+    ? (Array.isArray(meta.visualReductionCorrectionRuns) ? meta.visualReductionCorrectionRuns : [])
     : [];
+  const inicioTerminalClose = isInicioInamovibleRead && meta.terminalCorrectionRun && typeof meta.terminalCorrectionRun === "object"
+    ? [meta.terminalCorrectionRun]
+    : [];
+  const irregularCorrectionRunsRaw = isInicioInamovibleRead
+    ? [...inicioInternalCorrections, ...inicioTerminalClose]
+    : (isIrregularRead
+      ? [
+          ...(Array.isArray(irregularInitialBlock.correctionRuns) ? irregularInitialBlock.correctionRuns : []),
+          ...(isAnchoredMgmRead && Array.isArray(meta.acceptedReductionBlocks)
+            ? meta.acceptedReductionBlocks.flatMap((b) => Array.isArray(b?.correctionRuns) ? b.correctionRuns : [])
+            : []),
+        ]
+      : []);
   let primaryRuns = primaryRunsRaw
     .map((r, i) => normalizeVisualReadRun(r, dominant, primaryLabels[i] || ""))
     .filter(Boolean);
@@ -12889,7 +12913,11 @@ function buildVisualReadFromItem(item) {
   const irregularCorrectionRuns = irregularCorrectionRunsRaw
     .map((r, i) => {
       const run = normalizeVisualReadRun(r, contrary, irregularCorrectionLabels[i] || String(r?.irregularLabel || ""));
-      if (run) run.irregularInitialCorrection = true;
+      if (run) {
+        run.irregularInitialCorrection = true;
+        run.inicioInamovibleCorrection = isInicioInamovibleRead;
+        run.inicioTerminalClose = isInicioInamovibleRead && i >= inicioInternalCorrections.length;
+      }
       return run;
     })
     .filter(Boolean);
@@ -12932,6 +12960,7 @@ function buildVisualReadFromItem(item) {
     confirmationPack,
     irregularInitialBlock,
     qualificationRoute,
+    inicioInamovibleRead: isInicioInamovibleRead,
     reasons: Array.isArray(meta.reasons) ? meta.reasons : [],
     rejectHints: Array.isArray(meta.rejectHints) ? meta.rejectHints : [],
     evalMs: Number(meta.analysisWindowMs || 25000),
@@ -13132,21 +13161,23 @@ function drawVisualReductionReadingOverlay(ctx, item, xOf, yOf, w, h) {
 
   const meta = item.giroPolaridad || item.snrLevel || {};
   const isConstructive = String(meta.levelMode || "") === "reduccion_constructiva_continua" || !!meta.constructiveReductionMode || normalizeSignalMode(item.mode) === MODE_REDUCCION_CONSTRUCTIVA_CONTINUA;
-  const isIrregularRead = read.qualificationRoute === "double_mgm_plus_contrary" || read.qualificationRoute === "irregular_initial_response" || String(read.qualificationRoute || "").startsWith("anchored_mgm_");
+  const isInicioInamovibleRead = !!read.inicioInamovibleRead;
+  const isIrregularRead = !isInicioInamovibleRead && (read.qualificationRoute === "double_mgm_plus_contrary" || read.qualificationRoute === "irregular_initial_response" || String(read.qualificationRoute || "").startsWith("anchored_mgm_"));
   const formedMs = Number(meta.constructiveFormedAtMs || meta.signalFromSec * 1000 || read.evalMs || 25000);
   const evalMs = Math.max(1000, Math.min(60000, isConstructive && Number.isFinite(formedMs) ? formedMs : Number(read.evalMs || 25000)));
   const x0 = xOf(0), xEval = xOf(evalMs);
 
   ctx.save();
-  ctx.fillStyle = "rgba(250,204,21,.032)";
+  // II5: en Inicio Inamovible la ventana de lectura es cian, no amarilla.
+  ctx.fillStyle = isInicioInamovibleRead ? "rgba(34,211,238,.024)" : "rgba(250,204,21,.032)";
   ctx.fillRect(x0, 8, Math.max(0, xEval - x0), h - 30);
   ctx.setLineDash([5, 4]);
-  ctx.strokeStyle = "rgba(250,204,21,.38)";
+  ctx.strokeStyle = isInicioInamovibleRead ? "rgba(34,211,238,.38)" : "rgba(250,204,21,.38)";
   ctx.lineWidth = 1.05;
   ctx.beginPath(); ctx.moveTo(xEval, 8); ctx.lineTo(xEval, h - 22); ctx.stroke();
   ctx.setLineDash([]);
   ctx.font = "900 11px system-ui, -apple-system, Segoe UI, sans-serif";
-  ctx.fillStyle = "rgba(254,240,138,.64)";
+  ctx.fillStyle = isInicioInamovibleRead ? "rgba(165,243,252,.72)" : "rgba(254,240,138,.64)";
   ctx.fillText(`${Math.round(evalMs / 1000)}s lectura`, Math.min(w - 82, xEval + 4), 19);
 
   const buyCol = "rgba(34,197,94,.55)";
@@ -13156,8 +13187,8 @@ function drawVisualReductionReadingOverlay(ctx, item, xOf, yOf, w, h) {
   // V111.1: además de las reducciones, Lectura ON muestra todo el inicio irregular
   // y la respuesta sana que lo confirmó.
   const primaryRuns = isConstructive ? (read.primaryRuns || []).slice(0, isIrregularRead ? 12 : 9) : (read.primaryRuns || []);
-  const irregularCorrectionRuns = isIrregularRead ? (read.irregularCorrectionRuns || []).slice(0, 10) : [];
-  const contraryRuns = isConstructive ? (read.contraryRuns || []).slice(0, 4) : (read.contraryRuns || []);
+  const irregularCorrectionRuns = (isIrregularRead || isInicioInamovibleRead) ? (read.irregularCorrectionRuns || []).slice(0, 10) : [];
+  const contraryRuns = isInicioInamovibleRead ? [] : (isConstructive ? (read.contraryRuns || []).slice(0, 4) : (read.contraryRuns || []));
 
   const drawRun = (r, prefix, idx, kind = "reduction") => {
     const isBuyer = String(r.side || "") === "comprador";
@@ -13200,13 +13231,15 @@ function drawVisualReductionReadingOverlay(ctx, item, xOf, yOf, w, h) {
     const midP = path[Math.floor(path.length / 2)] || { x: (path[0].x + lastP.x) / 2, y: Math.min(path[0].y, lastP.y) };
     const my = Math.min(...path.map((p) => p.y));
     const sideLetter = isBuyer ? "C" : "V";
-    const reductionPrefix = isConstructive && Number(r.reductionNo) > 0 ? `${Number(r.reductionNo)}·` : "";
+    const reductionPrefix = !isInicioInamovibleRead && isConstructive && Number(r.reductionNo) > 0 ? `${Number(r.reductionNo)}·` : "";
     const irregularPrefix = isIrregularRead && !isConfirmation
       ? (r.mgmFollowupReduction ? "EST·" : "IRR·")
       : reductionPrefix;
     const confirmationPrefix = isConfirmation
       ? (isIrregularRead ? "RESP·" : "CONF·")
-      : (isIrregularCorrection ? "IRR·CORR·" : irregularPrefix);
+      : (isIrregularCorrection
+          ? (isInicioInamovibleRead ? (r.inicioTerminalClose ? "CIERRE·" : "PAUSA·") : "IRR·CORR·")
+          : irregularPrefix);
     const shapeShort = isIrregularRead && !isConfirmation && r.shape
       ? ({ PARADO: "PAR", ACOSTADO: "ACO", ANGULO: "ANG", QUEBRADO: "QUE" }[String(r.shape).toUpperCase()] || String(r.shape).slice(0, 3).toUpperCase())
       : "";
@@ -13815,6 +13848,7 @@ function getSignalMissingConfirmations(side, item = modalCurrentItem) {
   return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalConfirmationCount(item));
 }
 function ensureSignalConfirmationControls() {
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return null;
   if (signalConfirmPanelEl && signalConfirmPanelEl.isConnected) return signalConfirmPanelEl;
 
   const footer =
@@ -14070,6 +14104,10 @@ function removeSignalConfirmation() {
   updateModalCandleStatusUI();
 }
 function updateSignalConfirmationUI() {
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+    if (signalConfirmPanelEl) signalConfirmPanelEl.style.display = "none";
+    return;
+  }
   ensureSignalConfirmationControls();
 
   const hasItem = !!modalCurrentItem;
@@ -14583,6 +14621,7 @@ function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
 }
 
 function scanSignalAutoEntriesAt57() {
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
   try {
     if (areSignalsPaused()) return false;
     if (tradeInFlight) return false;
@@ -14648,7 +14687,7 @@ function updateModalCandleStatusUI() {
 
   bar.style.display = "block";
 
-  // II4: Inicio Inamovible es una PWA de estudio. Oculta por completo
+  // II5: Inicio Inamovible es una PWA de estudio. Oculta por completo
   // confirmaciones, GIRO++, gestión y botones de operación heredados.
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
     const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
@@ -16771,7 +16810,7 @@ async function resubscribePendingContracts() {
       subscribeContractOutcome(cid, true);
       scheduleOutcomeFallbackPoll(cid, 45000);
     }
-    startPendingContractWatchdog({ immediate: true });
+    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) startPendingContractWatchdog({ immediate: true });
 
     toast(`🔁 Reenganche pendientes: ${list.length}`, 1400);
   } catch {}
@@ -17277,7 +17316,7 @@ function animateFailShake(item) {
 function setNextOutcome(item, outcome) {
   const prevOutcome = item.nextOutcome || "";
   item.nextOutcome = outcome;
-  try { updateGiroPlusOutcome(item); } catch {}
+  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) { try { updateGiroPlusOutcome(item); } catch {} }
   saveHistory(history);
 
   updateRowNextArrow(item);
@@ -17918,8 +17957,10 @@ function renderHistory() {
       it.mode = normalizedFamily !== MODE_NORMAL || /^normal$/i.test(rawMode) ? normalizedFamily : rawMode.toUpperCase();
     }
   }
-  for (const it of history || []) {
-    try { updateGiroPlusClassification(it, { persist: false, notify: false }); } catch {}
+  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+    for (const it of history || []) {
+      try { updateGiroPlusClassification(it, { persist: false, notify: false }); } catch {}
+    }
   }
   saveHistory(history);
 
@@ -19315,7 +19356,7 @@ async function rehydrateHistoryOnBoot() {
         }
       }
       if (changed || anyMark) saveHistory(history);
-      purgeClosedSignalsOutsideSNRCloseZone("rehydrate_minute_complete");
+      if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) purgeClosedSignalsOutsideSNRCloseZone("rehydrate_minute_complete");
     } catch {}
 
     await sleep(REHYDRATE_SLEEP_MS);
@@ -19447,7 +19488,7 @@ function finalizeMinute(minute) {
       }
     }
     if (changed) saveHistory(history);
-    purgeClosedSignalsOutsideSNRCloseZone("finalize_minute_complete");
+    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) purgeClosedSignalsOutsideSNRCloseZone("finalize_minute_complete");
 
     if (modalCurrentItem && modalCurrentItem.minute === minute && !isFloatingSignalItem(modalCurrentItem)) {
       modalLive = false;
@@ -19456,10 +19497,12 @@ function finalizeMinute(minute) {
     }
   })();
 
-  try {
-    for (const sym of SYMBOLS) syncCurrentCandleToPolarity(sym, minute);
-    saveGiroPolarityCandles();
-  } catch {}
+  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+    try {
+      for (const sym of SYMBOLS) syncCurrentCandleToPolarity(sym, minute);
+      saveGiroPolarityCandles();
+    } catch {}
+  }
 
   delete candleOC[minute - 3];
   delete minuteData[minute - 3];
@@ -19531,7 +19574,7 @@ function onTick(tick) {
     candleOC[minute][symbol].low = Math.min(Number(candleOC[minute][symbol].low ?? candleOC[minute][symbol].open ?? tick.quote), tick.quote);
     candleOC[minute][symbol].close = tick.quote;
   }
-  syncCurrentCandleToPolarity(symbol, minute);
+  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) syncCurrentCandleToPolarity(symbol, minute);
 
   if (
     modalCurrentItem &&
@@ -19559,120 +19602,12 @@ function onTick(tick) {
     for (const it of tail) updateRowChartBtn(it);
   }
 
-  // ✅ FIX AUTO 58: también revisar en cada tick, salvo cuando el análisis está pausado
-  // o la pestaña En vivo está activa (modo aparte).
-  if (!areSignalsPaused()) scanSignalAutoEntriesAt57();
+  // II5: esta variante es solo de estudio; no escanea ni prepara autoentradas.
+  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME && !areSignalsPaused()) scanSignalAutoEntriesAt57();
 
   if (!areSignalsPaused()) {
-    const activeModeForTick = normalizeSignalMode(signalMode);
-
-    if (isReduccionConstructivaContinuaMode(activeModeForTick)) {
-      // V108: modo flotante. No espera al segundo 30 del minuto Deriv.
-      // Escanea cada tick y crea la señal cuando se completan 2 reducciones claras
-      // antes de 30s desde el inicio real del primer movimiento.
-      scanConstructiveReductionContinuousOnTick(symbol, epochMs);
-    } else if (isReduccionExacta25sMode(activeModeForTick)) {
-      // V107.1 Dos reducciones claras:
-      // puede disparar apenas aparezcan 2 reducciones claras, pero nunca usa datos
-      // posteriores al segundo 30. Si a los 30 no apareció, la vela queda descartada.
-      const visualEvalStartSec = 15;
-      const visualEvalEndSec = 30;
-      const visualEvalLateSec = 33; // tolerancia por ticks tardíos; evalúa la FOTO de 30s.
-      if (sec >= visualEvalStartSec && sec <= visualEvalEndSec && lastEvaluatedMinute !== minute) {
-        const evalMsNow = Math.max(visualEvalStartSec * 1000, Math.min(msInMinute, visualEvalEndSec * 1000));
-        const ok = evaluateMinute(minute, {
-          evalMs: evalMsNow,
-          evalSec: Math.min(sec, visualEvalEndSec),
-          radar: true,
-          radarStartSec: 0,
-          radarEndSec: Math.min(sec, visualEvalEndSec),
-        });
-        if (ok || sec >= visualEvalEndSec) lastEvaluatedMinute = minute;
-      } else if (sec > visualEvalEndSec && sec <= visualEvalLateSec && lastEvaluatedMinute !== minute) {
-        evaluateMinute(minute, {
-          evalMs: visualEvalEndSec * 1000,
-          evalSec: visualEvalEndSec,
-          radar: true,
-          radarStartSec: 0,
-          radarEndSec: visualEvalEndSec,
-          forceFullWindow30s: true,
-        });
-        lastEvaluatedMinute = minute;
-      } else if (sec > visualEvalLateSec && lastEvaluatedMinute !== minute) {
-        lastEvaluatedMinute = minute;
-      }
-    } else if (isAlcistaIrregular25sMode(activeModeForTick)) {
-      // V98 Alcista irregular 30s:
-      // Analiza hasta 30s. La señal visible puede salir entre 20-30s
-      // si la vela está verde y muestra avance irregular / estructura insana.
-      const irregularStartSec = 20;
-      const irregularEndSec = 30;
-      if (sec >= irregularStartSec && sec <= irregularEndSec && lastEvaluatedMinute !== minute) {
-        const ok = evaluateMinute(minute, {
-          evalMs: Math.max(irregularStartSec * 1000, Math.min(msInMinute, irregularEndSec * 1000)),
-          evalSec: sec,
-          radar: true,
-          radarStartSec: irregularStartSec,
-          radarEndSec: irregularEndSec,
-        });
-        if (ok) lastEvaluatedMinute = minute;
-      } else if (sec > irregularEndSec && lastEvaluatedMinute !== minute) {
-        lastEvaluatedMinute = minute;
-      }
-    } else if (isRupturaDebilGiroMode(activeModeForTick)) {
-      // V78 Ruptura Débil Giro:
-      // 0-15s queda como observación interna, pero NO se muestra señal todavía.
-      // La señal visible recién puede salir entre 20-30s, si la vela sigue alcista
-      // y no perdió el open con fuerza antes de los 20s.
-      // La operación no sale sola por radar: requiere los puntos manuales completos como el resto.
-      const ruptureStartSec = 20;
-      const ruptureEndSec = 30;
-      if (sec >= ruptureStartSec && sec <= ruptureEndSec && lastEvaluatedMinute !== minute) {
-        const ok = evaluateMinute(minute, {
-          evalMs: Math.max(ruptureStartSec * 1000, Math.min(msInMinute, ruptureEndSec * 1000)),
-          evalSec: sec,
-          radar: true,
-          radarStartSec: ruptureStartSec,
-          radarEndSec: ruptureEndSec,
-        });
-        if (ok) lastEvaluatedMinute = minute;
-      } else if (sec > ruptureEndSec && lastEvaluatedMinute !== minute) {
-        lastEvaluatedMinute = minute;
-      }
-    } else if (isDynamicLineMode(activeModeForTick)) {
-      // Línea dinámica queda igual: evalúa una sola vez en el segundo elegido.
-      if (sec >= EVAL_SEC && lastEvaluatedMinute !== minute) {
-        lastEvaluatedMinute = minute;
-        const ok = evaluateMinute(minute, {
-          evalMs: Math.max(1000, Number(EVAL_SEC || 45) * 1000),
-          evalSec: Number(EVAL_SEC || 45),
-          radar: false,
-        });
-
-        if (!ok && signalMode === MODE_NORMAL) scheduleRetry(minute);
-      }
-    } else {
-      // V38 SNR RADAR:
-      // En SNR ya no evalúa solo en un segundo visual.
-      // Desde 35s hasta el segundo elegido escanea en cada tick.
-      // Si encuentra interacción válida con el SNR, crea la prealerta y deja de escanear esa vela.
-      const radarStartSec = SNR_RADAR_START_SEC;
-      const radarEndSec = Math.max(radarStartSec, Math.min(45, Number(EVAL_SEC || 40)));
-
-      if (sec >= radarStartSec && sec <= radarEndSec && lastEvaluatedMinute !== minute) {
-        const ok = evaluateMinute(minute, {
-          evalMs: Math.max(radarStartSec * 1000, Math.min(msInMinute, radarEndSec * 1000)),
-          evalSec: sec,
-          radar: true,
-          radarStartSec,
-          radarEndSec,
-        });
-        if (ok) lastEvaluatedMinute = minute;
-      } else if (sec > radarEndSec && lastEvaluatedMinute !== minute) {
-        // Se terminó la ventana de radar sin señal. No volver a evaluar esta vela.
-        lastEvaluatedMinute = minute;
-      }
-    }
+    // II5: única búsqueda de señales activa. No existe fallback a otros modos.
+    scanConstructiveReductionContinuousOnTick(symbol, epochMs);
   }
 }
 function scheduleRetry(minute) {
@@ -26399,8 +26334,12 @@ function updateGiroPlusOutcome(item) {
   return before !== JSON.stringify({ outcome: item.giroPlus.outcome || "", giroCorrecto: item.giroPlus.giroCorrecto });
 }
 function updateGiroPlusClassification(item, opts = {}) {
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+    if (item && item.giroPlus) delete item.giroPlus;
+    return false;
+  }
   if (!item || !isFloatingSignalItem(item)) return false;
-  // II4: esta variante estudia exclusivamente Inicio Inamovible.
+  // II5: esta variante estudia exclusivamente Inicio Inamovible.
   // No debe ejecutar, mostrar ni exportar clasificaciones GIRO++ heredadas.
   if (isInicioInamovibleStudyOnlySignal(item)) {
     const hadLegacyGiroPlus = !!item.giroPlus;
@@ -26476,7 +26415,7 @@ function updateGiroPlusClassification(item, opts = {}) {
   return true;
 }
 function getGiroPlusLabelInfo(item) {
-  // II4: nunca mostrar la insignia amarilla GIRO++ en Inicio Inamovible.
+  // II5: nunca mostrar la insignia amarilla GIRO++ en Inicio Inamovible.
   if (isInicioInamovibleStudyOnlySignal(item)) return { key: "", label: "", title: "" };
   const gp = item?.giroPlus || {};
   if (gp.confirmed) {
@@ -26571,9 +26510,11 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
         }
       }
 
-      try {
-        if (updateGiroPlusClassification(it, { persist: false, notify: true })) changed = true;
-      } catch {}
+      if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+        try {
+          if (updateGiroPlusClassification(it, { persist: false, notify: true })) changed = true;
+        } catch {}
+      }
 
       if (modalCurrentItem && modalCurrentItem.id === it.id) {
         modalCurrentItem.ticks = Array.isArray(it.ticks) ? it.ticks.slice() : [];
@@ -28132,7 +28073,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II4 — Inicio Inamovible experimental orientado a GIRO.
+// V113.33-II5 — Inicio Inamovible experimental orientado a GIRO.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28323,7 +28264,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Solo aviso y registro.`;
-  const logicText = `Motor experimental V113.33-II4: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G y los laterales P/M menores. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
+  const logicText = `Motor experimental V113.33-II5: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G y los laterales P/M menores. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
 
   return {
     direction,
@@ -28424,16 +28365,11 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       constructiveQualificationRoute: "inicio_inamovible_giro_three_same_direction_terminal_close",
       constructiveQualificationLabel: `Inicio Inamovible ${pattern} ${movementSideText} → giro ${direction}`,
       doubleMgmSignal: false,
-      anchoredMgmConfirmed: true,
-      anchoredMgmFollowupType: "three_same_direction_terminal_close",
-      constructiveConfirmationPack: {
-        type: "terminal_retracement",
-        label: `retroceso terminal ${turnSideText}`,
-        formedAtMs: best.confirmedAtMs,
-        runs: [best.terminalCorrection],
-        recovery: best.terminalCorrectionMove,
-        recoveryRatio: best.terminalCorrectionMove / Math.max(best.moves[2], 1e-9),
-      },
+      anchoredMgmConfirmed: false,
+      anchoredMgmFollowupType: "",
+      // El retroceso terminal es solo el cierre del tercer impulso.
+      // No es una cuarta señal ni una confirmación adicional del motor.
+      constructiveConfirmationPack: null,
       irregularInitialBlock: {
         pattern,
         direction: movementSideText,
@@ -28451,9 +28387,9 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         terminalCorrectionRun: best.terminalCorrection,
       },
       constructiveElapsedFromFirstMovementMs: best.confirmationElapsedFromAnchorMs,
-      visualReductionContraryRuns: [...best.correctionRuns, best.terminalCorrection],
+      visualReductionContraryRuns: [],
       visualReductionAllPrimaryRuns: [best.first, best.central, best.last],
-      visualReductionAllContraryRuns: [...best.correctionRuns, best.terminalCorrection],
+      visualReductionAllContraryRuns: [],
       constructiveReductionPairs: [],
       constructiveReductionConsecutive: true,
       constructiveReductionDistinct: true,
@@ -28461,15 +28397,15 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       constructiveFormedAtMs: best.confirmedAtMs,
       constructiveFloatingWindow: true,
       cutsBetween: best.correctionRuns.length,
-      contraryStrong: true,
+      contraryStrong: false,
       secondReductionConfirmed: false,
-      thirdReductionConfirmed: true,
+      thirdReductionConfirmed: false,
       secondReductionConfirmation: null,
-      secondReductionConfirmedAtMs: best.confirmedAtMs,
-      secondReductionRetraceRatio: best.terminalCorrectionMove / Math.max(best.moves[2], 1e-9),
-      secondReductionOppositeSteps: 1,
+      secondReductionConfirmedAtMs: null,
+      secondReductionRetraceRatio: null,
+      secondReductionOppositeSteps: 0,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: "v113_33_ii3_giro_three_same_direction_terminal_close",
+      movementFilter: "v113_33_ii5_inicio_inamovible_only_terminal_close",
       priority: "STUDY_ONLY",
       stage: "inicio_inamovible_giro_cierre_terminal_s15_30",
       logic: logicText,
@@ -29426,6 +29362,7 @@ function analyzeRupturaDebilGiroCandidate(candidate, minute, opts = {}) {
 }
 
 function evaluateMinute(minute, opts = {}) {
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
   if (areSignalsPaused()) return false;
 
   const evalOptions = opts && typeof opts === "object" ? opts : {};
@@ -29588,7 +29525,7 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
   };
 
   item.manualGiro = normalizeManualGiroState(item.manualGiro);
-  try { updateGiroPlusClassification(item, { persist: false, notify: false }); } catch {}
+  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) { try { updateGiroPlusClassification(item, { persist: false, notify: false }); } catch {} }
 
   if (history.some((x) => x.id === item.id)) return null;
 
@@ -29603,9 +29540,9 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
     trimSignalsDomToVisibleLimit();
   }
   updateRowChartBtn(item);
-  if (shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(item);
+  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME && shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(item);
 
-  const fatigueTriggered = registerSignalForFatigueGuard(item);
+  const fatigueTriggered = INICIO_INAMOVIBLE_ONLY_RUNTIME ? false : registerSignalForFatigueGuard(item);
   if (fatigueTriggered) return item;
 
   if (soundEnabled) playSignalAlertSound();
@@ -30133,8 +30070,10 @@ function recoverPublicConnection(reason = "resume") {
   startPendingContractWatchdog({ immediate: true });
   try {
     finalizeExpiredFloatingSignalRows();
-    scanSignalAutoPreProposals();
-    scanSignalAutoEntriesAt57();
+    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+      scanSignalAutoPreProposals();
+      scanSignalAutoEntriesAt57();
+    }
   } catch {}
 }
 

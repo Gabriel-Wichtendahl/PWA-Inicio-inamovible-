@@ -1,7 +1,7 @@
 {
-  "name": "Deriv · Inicio Inamovible II4",
-  "short_name": "Inicio II4",
-  "start_url": "./index.html?variant=inicio-inamovible-v11333-ii3",
+  "name": "Deriv · Inicio Inamovible",
+  "short_name": "Inicio Inamovible",
+  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#020617",
   "theme_color": "#020617",
@@ -17,7 +17,5 @@
       "type": "image/png"
     }
   ],
-  "id": "./inicio-inamovible-v11333-ii3",
-  "description": "Versión experimental II4 orientada a giro: tres impulsos en la misma dirección, G central único y cierre confirmado por retroceso terminal.",
-  "scope": "./"
+  "description": "Versión experimental exclusiva para detectar giros de Inicio Inamovible."
 }

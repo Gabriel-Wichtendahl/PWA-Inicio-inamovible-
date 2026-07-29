@@ -1,8 +1,8 @@
-/* sw.js — Deriv Inicio Inamovible v113.33-II4 */
+/* sw.js — Deriv Inicio Inamovible v113.33-II5 */
 "use strict";
 
-// Caché exclusivo de II4 para que no colisione con la PWA estable ni con II1.
-const CACHE = "deriv-assets-v113-33-inicio-inamovible-ii4";
+// Caché exclusivo de II5 para que no colisione con la PWA estable ni con II1.
+const CACHE = "deriv-assets-v113-33-inicio-inamovible";
 
 const CORE_ASSETS = [
   "./",
@@ -31,8 +31,14 @@ self.addEventListener("install", (e) => {
 });
 
 self.addEventListener("activate", (e) => {
-  // No se eliminan caches ajenos: esta variante debe convivir con la v113.33 estable.
-  e.waitUntil(self.clients.claim());
+  // Limpia solo cachés anteriores de esta variante. Nunca toca la caché de la PWA estable.
+  e.waitUntil((async () => {
+    const names = await caches.keys();
+    await Promise.all(names
+      .filter((name) => name !== CACHE && name.startsWith("deriv-assets-v113-33-inicio-inamovible"))
+      .map((name) => caches.delete(name)));
+    await self.clients.claim();
+  })());
 });
 
 self.addEventListener("fetch", (e) => {
