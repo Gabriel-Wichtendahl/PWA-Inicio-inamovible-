@@ -1,0 +1,32 @@
+PWA DERIV — INICIO INAMOVIBLE — PRUEBA 1
+Versión: v113.33-II1
+Base exacta: v113.33 estable
+
+IMPORTANTE
+- Esta es una variante experimental separada.
+- No reemplazar ni sobrescribir la v113.33 estable.
+- Publicarla como otro sitio, subdominio o carpeta independiente.
+- El token, historial y ajustes están aislados: la primera vez habrá que volver a ingresar el token/configuración en esta copia.
+
+DETECTOR ACTIVO
+- P→G→P
+- P→G→M
+- M→G→P
+- M→G→M
+
+REGLAS
+- El tramo central debe ser G y contrario a los dos laterales.
+- Los laterales pueden ser diferentes entre sí, pero ambos deben ser P o M y menores que el G central.
+- Debe existir desplazamiento real.
+- Se permiten pausas pequeñas y microretrocesos internos; se absorben sin fragmentar el movimiento principal.
+- El ancla se coloca al inicio del primer lateral.
+- La señal se habilita solamente entre s15 y s25 desde el ancla.
+- Después de s25 no genera señal.
+
+MODO DE PRUEBA
+- Solo aviso, gráfico, resultado y registro.
+- Las señales experimentales no preparan ni ejecutan operaciones manuales o automáticas.
+- La pestaña En vivo conserva su funcionamiento original independiente.
+
+AJUSTE POSTERIOR
+Usar las señales reales y el JSON exportado para decidir si el desplazamiento mínimo quedó corto, correcto o demasiado exigente.
