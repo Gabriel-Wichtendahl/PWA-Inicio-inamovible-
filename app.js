@@ -1,4 +1,4 @@
-// v113.33-II2: corrige Inicio Inamovible: tres impulsos del mismo lado con G central y laterales menores.
+// v113.33-II3: corrige Inicio Inamovible: tres impulsos del mismo lado con G central y laterales menores.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
 // La base estable v113.33 original no se modifica.
 // v113.31: elimina la pausa visual automática y agrega efectividad diaria en los encabezados de Trades.
@@ -118,9 +118,9 @@
 // ✅ V66: pre-proposal 56-58s: arma proposal antes y en post-58 solo compra; disciplina 3 ITM/2 OTM desactivada para pruebas.
 "use strict";
 
-// V113.33-II2: aislamiento total de la variante experimental.
+// V113.33-II3: aislamiento total de la variante experimental.
 // La PWA original y esta copia no mezclan token, historial, ajustes ni trades.
-const INICIO_INAMOVIBLE_STORAGE_PREFIX = "inicio_inamovible_v113_33_ii2::";
+const INICIO_INAMOVIBLE_STORAGE_PREFIX = "inicio_inamovible_v113_33_ii3::";
 (() => {
   try {
     const proto = Storage.prototype;
@@ -138,7 +138,7 @@ const INICIO_INAMOVIBLE_STORAGE_PREFIX = "inicio_inamovible_v113_33_ii2::";
   } catch {}
 })();
 
-const APP_BUILD_VERSION = "v113.33-II2";
+const APP_BUILD_VERSION = "v113.33-II3";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -189,7 +189,7 @@ const TRADES_JOURNAL_MAX = 500;
 /* =========================
    Capturas de estudio
 ========================= */
-const STUDY_CAPTURE_DB_NAME = "derivStudyCaptures_inicioInamovible_v11333_ii2";
+const STUDY_CAPTURE_DB_NAME = "derivStudyCaptures_inicioInamovible_v11333_ii3";
 const STUDY_CAPTURE_STORE_NAME = "captures";
 const STUDY_CAPTURE_VERSION = 1;
 const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V112_2_ESTILO_DERIV_LINEA_BLANCA";
@@ -1538,7 +1538,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_3_MISMA_DIRECCION_PMG_S15_25_V113_33_II2_20260729";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_3_MISMA_DIRECCION_CIERRE_TERMINAL_S15_30_V113_33_II3_20260729";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2860,7 +2860,7 @@ let liveAutoEntryState = { minuteKey: "", attempted: false, status: "idle", side
 const autoPreProposalInFlight = new Set();
 const liveAutoPreProposalCache = new Map();
 const LIVE_REPLAY_DRAW_MIN_INTERVAL_MS = 120;
-const CONSTRUCTIVE_FLOATING_WINDOW_MS = 25000;
+const CONSTRUCTIVE_FLOATING_WINDOW_MS = 30000;
 const CONSTRUCTIVE_ROLLING_KEEP_MS = 95000;
 const CONSTRUCTIVE_SCAN_MIN_WINDOW_MS = 15000;
 const CONSTRUCTIVE_SCAN_STEP_MS = 1400;
@@ -9063,7 +9063,7 @@ function buildSignalsAnalysisExport() {
     exported_at: new Date().toISOString(),
     export_scope: "inicio_inamovible_experimental_signals_all_ticks",
     app_version: APP_BUILD_VERSION,
-    description: "Export de Inicio Inamovible experimental: G central con desplazamiento y laterales P/M menores, ancla flotante, aviso s15–s25, ticks 0–60 y resultado posterior. No incluye tokens ni datos sensibles.",
+    description: "Export de Inicio Inamovible experimental orientado a GIRO: tres impulsos del mismo lado, G central único, tercer tramo completo confirmado por retroceso terminal y señal contraria al recorrido. Estructura inicial y cierre hasta s30, ticks 0–60 y resultado posterior. No incluye tokens ni datos sensibles.",
     counts: {
       signals_total: signals.length,
       signals_with_next_outcome: signals.filter((s) => !!s.nextOutcome).length,
@@ -12304,7 +12304,7 @@ function applyTheme(theme) {
   signalMode = loadAnalysisMode();
 
   const getModeTitle = () =>
-    "Versión experimental separada: Inicio Inamovible. Busca un G central con desplazamiento rodeado por dos laterales P/M menores; ancla flotante y aviso entre s15 y s25. Solo estudio.";
+    "Versión experimental separada: Inicio Inamovible GIRO. Busca tres impulsos del mismo lado con G central único, espera el retroceso que cierra el tercer tramo y avisa en dirección contraria. Confirmación terminal hasta s30. Solo estudio.";
 
   const paintMode = () => {
     if (!modeBtn) return;
@@ -28094,23 +28094,25 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II2 — Inicio Inamovible experimental.
+// V113.33-II3 — Inicio Inamovible experimental orientado a GIRO.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
-// Entre impulsos solo puede haber pausa o microretroceso; se rechaza el zigzag alternado.
-// El ancla se reubica en el inicio del primer impulso y el aviso solo se habilita entre s15 y s25.
+// El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
+// se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
+// La estructura comienza dentro de s0–s25 y dispone de una gracia técnica hasta s30 exclusivamente
+// para confirmar el retroceso terminal. La señal siempre es CONTRARIA a los tres impulsos.
 function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const ticks = (candidate?.ticks || []).slice().sort((a, b) => Number(a.ms) - Number(b.ms));
-  if (ticks.length < 6) return null;
+  if (ticks.length < 7) return null;
   const lastMs = Number(ticks[ticks.length - 1]?.ms || 0);
   const requestedEvalMs = Math.max(0, Number(opts?.evalMs ?? lastMs ?? 0));
-  if (requestedEvalMs < 15000 || requestedEvalMs > 25000 || lastMs < 15000) return null;
+  if (requestedEvalMs < 15000 || requestedEvalMs > 30000 || lastMs < 15000) return null;
   const evalMs = requestedEvalMs;
 
   const clean = ensureTicksWithBoundary(ticks, evalMs)
     .map((p) => ({ ms: Number(p.ms), quote: Number(p.quote) }))
     .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= evalMs)
     .sort((a, b) => a.ms - b.ms);
-  if (clean.length < 6) return null;
+  if (clean.length < 7) return null;
 
   const quotes = clean.map((p) => Number(p.quote));
   const open = Number(quotes[0]);
@@ -28121,9 +28123,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const tol = Math.max(localRange * 0.009, Math.abs(open) * 0.00000005, 1e-9);
   const allCandidates = [];
 
-  // II2: los tres movimientos primarios tienen SIEMPRE la misma dirección real.
-  // side=+1 busca tres impulsos alcistas; side=-1 busca tres impulsos bajistas.
-  // Entre ellos solo se permiten pausas o retrocesos pequeños del grupo contrario.
+  // side=+1 busca tres impulsos alcistas que anticipan GIRO PUT.
+  // side=-1 busca tres impulsos bajistas que anticipan GIRO CALL.
   for (const side of [1, -1]) {
     const aligned = clean.map((p) => ({ ...p, y: Number(p.quote) * side }));
     const alignedHigh = Math.max(...aligned.map((p) => p.y));
@@ -28133,7 +28134,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     const correctionMin = Math.max(alignedRange * 0.016, tol * 0.66, 1e-9);
     const runs = getVisualRuns25s(clean, side, evalMs, tol, alignedRange)
       .map((r, idx) => ({ ...r, idx, move: Number(r?.move || 0) }));
-    if (runs.length < 3) continue;
+    if (runs.length < 4) continue;
 
     const primaryRuns = runs.filter((r) => Number(r.sign || 0) > 0 && Number(r.move || 0) >= impulseMin);
     if (primaryRuns.length < 3) continue;
@@ -28151,15 +28152,29 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const central = primaryRuns[i + 1];
       const last = primaryRuns[i + 2];
 
-      // Debe ser el bloque vigente: no aceptamos un cuarto impulso primario ya formado.
+      // No aceptamos un cuarto impulso primario: el bloque debe terminar en el tercer tramo.
       if (i + 2 !== primaryRuns.length - 1) continue;
 
       const sepOne = separatorPack(first, central);
       const sepTwo = separatorPack(central, last);
       if (!sepOne.separated || !sepTwo.separated) continue;
 
+      // II3: el tercer impulso solo queda cerrado cuando aparece después un retroceso visible.
+      const tailRuns = runs.filter((r) => Number(r.idx) > Number(last.idx));
+      const firstTailDirectional = tailRuns.find((r) => Number(r.sign || 0) !== 0) || null;
+      if (!firstTailDirectional || Number(firstTailDirectional.sign || 0) >= 0) continue;
+      const terminalCorrection = firstTailDirectional;
+
       const moves = [Number(first.move || 0), Number(central.move || 0), Number(last.move || 0)];
       if (!moves.every((v) => Number.isFinite(v) && v > 0)) continue;
+
+      const terminalCorrectionMin = Math.max(alignedRange * 0.018, tol * 0.90, moves[2] * 0.035, 1e-9);
+      const terminalCorrectionMove = Number(terminalCorrection.move || 0);
+      if (terminalCorrectionMove < terminalCorrectionMin) continue;
+      const terminalCorrectionMax = Math.max(moves[2] * 0.68, moves[1] * 0.42, alignedRange * 0.19, tol * 4.0, 1e-9);
+      if (terminalCorrectionMove > terminalCorrectionMax) continue;
+
+      // Se clasifica con el tercer movimiento COMPLETO, ya cerrado por el retroceso terminal.
       const labels = summarizeVisualMoves(moves).labels;
       if (labels[1] !== "G" || !["P", "M"].includes(labels[0]) || !["P", "M"].includes(labels[2])) continue;
       if (!(moves[1] > moves[0] && moves[1] > moves[2])) continue;
@@ -28186,13 +28201,17 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       if (progressOne < progressReqOne || progressTwo < progressReqTwo) continue;
 
       const anchorOffsetMs = Number(first.startMs || 0);
-      const formedAtMs = Number(last.endMs || 0);
-      const elapsedFromAnchorMs = evalMs - anchorOffsetMs;
-      if (anchorOffsetMs < 0 || formedAtMs <= anchorOffsetMs) continue;
-      if (formedAtMs - anchorOffsetMs > 25000) continue;
-      if (elapsedFromAnchorMs < 15000 || elapsedFromAnchorMs > 25000) continue;
+      const setupFormedAtMs = Number(last.endMs || 0);
+      const confirmedAtMs = Number(terminalCorrection.endMs || evalMs);
+      const setupElapsedFromAnchorMs = setupFormedAtMs - anchorOffsetMs;
+      const confirmationElapsedFromAnchorMs = confirmedAtMs - anchorOffsetMs;
+      if (anchorOffsetMs < 0 || setupFormedAtMs <= anchorOffsetMs || confirmedAtMs <= setupFormedAtMs) continue;
+      // Los tres impulsos deben haber empezado dentro de los primeros 25s.
+      if (Number(last.startMs || 0) - anchorOffsetMs > 25000) continue;
+      // Gracia de cierre: el tercer tramo y su primer retroceso pueden confirmarse hasta s30.
+      if (setupElapsedFromAnchorMs > 28000 || confirmationElapsedFromAnchorMs < 15000 || confirmationElapsedFromAnchorMs > 30000) continue;
 
-      const blockPts = aligned.filter((p) => Number(p.ms) >= anchorOffsetMs && Number(p.ms) <= formedAtMs);
+      const blockPts = aligned.filter((p) => Number(p.ms) >= anchorOffsetMs && Number(p.ms) <= setupFormedAtMs);
       if (blockPts.length < 5) continue;
       const y0 = Number(blockPts[0]?.y);
       const terminalEndY = Number(last.endY);
@@ -28207,7 +28226,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const correctionSum = correctionMoves.reduce((a, b) => a + b, 0);
       const dominanceRatio = primarySum / Math.max(primarySum + correctionSum, 1e-9);
       const displacementRatio = netAdvance / Math.max(primarySum, 1e-9);
-      const realDisplacement = Math.max(...blockPts.map((p) => p.y)) - Math.min(...blockPts.map((p) => p.y));
+      const realDisplacement = yMax - yMin;
 
       if (netAdvance < Math.max(alignedRange * 0.20, tol * 3.0, centralMin * 0.78)) continue;
       if (dominanceRatio < 0.70) continue;
@@ -28218,28 +28237,27 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const terminalTolerance = Math.max(alignedRange * 0.014, tol * 0.88, 1e-9);
       if (yMax - terminalEndY > terminalTolerance) continue;
 
-      // Después del tercer impulso solo puede quedar pausa o retroceso pequeño hasta el aviso.
-      const tailRuns = runs.filter((r) => Number(r.idx) > Number(last.idx));
-      const strongTailPrimary = tailRuns.some((r) => Number(r.sign || 0) > 0 && Number(r.move || 0) >= impulseMin);
-      if (strongTailPrimary) continue;
-      const tailCorrectionLimit = Math.max(Math.min(moves[1], moves[2]) * 0.62, alignedRange * 0.075, tol * 2.0, 1e-9);
-      const strongTailCorrection = tailRuns.some((r) => Number(r.sign || 0) < 0 && Number(r.move || 0) > tailCorrectionLimit);
-      if (strongTailCorrection) continue;
+      // Después del retroceso que cierra el tercer tramo no debe haberse formado otro impulso fuerte.
+      const afterTerminal = runs.filter((r) => Number(r.idx) > Number(terminalCorrection.idx));
+      const strongAfterTerminal = afterTerminal.some((r) => Number(r.sign || 0) > 0 && Number(r.move || 0) >= impulseMin);
+      if (strongAfterTerminal) continue;
 
       const centralRatio = moves[1] / Math.max(moves[0], moves[2], 1e-9);
       const centerShare = moves[1] / Math.max(primarySum, 1e-9);
-      const score = 62
+      const score = 66
         + Math.min(18, (centralRatio - 1) * 20)
         + Math.min(10, efficiency * 12)
         + Math.min(10, dominanceRatio * 11)
         + Math.min(8, displacementRatio * 10)
-        - Math.max(0, elapsedFromAnchorMs - 22000) / 1300;
+        + Math.min(5, terminalCorrectionMove / Math.max(moves[2], 1e-9) * 12)
+        - Math.max(0, confirmationElapsedFromAnchorMs - 26000) / 1300;
 
       allCandidates.push({
-        side, first, central, last, moves, labels, runs, correctionRuns,
-        anchorOffsetMs, formedAtMs, elapsedFromAnchorMs,
+        side, first, central, last, terminalCorrection, moves, labels, runs, correctionRuns,
+        anchorOffsetMs, setupFormedAtMs, confirmedAtMs,
+        setupElapsedFromAnchorMs, confirmationElapsedFromAnchorMs,
         efficiency, dominanceRatio, displacementRatio, realDisplacement,
-        centralRatio, centerShare, netAdvance, correctionSum, score,
+        centralRatio, centerShare, netAdvance, correctionSum, terminalCorrectionMove, score,
         sepOne, sepTwo,
       });
     }
@@ -28248,23 +28266,26 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const best = allCandidates.sort((a, b) => Number(b.score || 0) - Number(a.score || 0))[0] || null;
   if (!best) return null;
 
-  const direction = best.side > 0 ? "CALL" : "PUT";
+  // Buscamos GIRO: la señal siempre es contraria a los tres impulsos observados.
+  const direction = best.side > 0 ? "PUT" : "CALL";
   const pattern = best.labels.join("→");
   const movementSideText = best.side > 0 ? "alcista" : "bajista";
-  const groupText = best.side > 0 ? "comprador" : "vendedor";
-  const contraryText = best.side > 0 ? "vendedor" : "comprador";
-  const level = direction === "CALL" ? low : high;
+  const movementGroupText = best.side > 0 ? "comprador" : "vendedor";
+  const turnSideText = best.side > 0 ? "bajista" : "alcista";
+  const turnGroupText = best.side > 0 ? "vendedor" : "comprador";
+  const level = best.side > 0 ? high : low;
   const zone = Math.max(tol * 4, localRange * 0.10);
-  const signalAtSec = Math.round(best.elapsedFromAnchorMs / 1000);
+  const signalAtSec = Math.round(best.confirmationElapsedFromAnchorMs / 1000);
+  const setupAtSec = Math.round(best.setupElapsedFromAnchorMs / 1000);
   const reasons = [
     `${pattern}: tres impulsos ${movementSideText}s en la misma dirección`,
-    `G central dominante y laterales ${best.labels[0]}/${best.labels[2]} menores`,
+    `tercer movimiento completo, cerrado por retroceso ${turnSideText}`,
+    `G central único; laterales ${best.labels[0]}/${best.labels[2]} menores`,
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
-    `eficiencia direccional ${Math.round(best.efficiency * 100)}%`,
-    `aviso dentro de s15–s25 (${signalAtSec}s)`,
+    `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
-  const status = `🧲 INICIO INAMOVIBLE · ${pattern} · 3 movimientos ${movementSideText}s con G central. Señal ${direction}. Solo aviso y registro.`;
-  const logicText = `Motor experimental V113.33-II2: detecta tres impulsos primarios consecutivos del mismo grupo (${groupText}), separados únicamente por pausas o microretrocesos ${contraryText}s. El impulso central debe ser G y los laterales P/M menores; no tienen que ser iguales. Rechaza estructuras alternadas comprador-vendedor-comprador o vendedor-comprador-vendedor. El ancla es el inicio del primer impulso, exige desplazamiento real y emite únicamente entre 15 y 25 segundos. Solo estudio: no prepara ni ejecuta operaciones.`;
+  const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Solo aviso y registro.`;
+  const logicText = `Motor experimental V113.33-II3: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G y los laterales P/M menores. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
 
   return {
     direction,
@@ -28273,8 +28294,10 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     meta: {
       level,
       levelMode: "inicio_inamovible_experimental",
-      levelType: direction === "CALL" ? "inicio_inamovible_three_buyer_impulses" : "inicio_inamovible_three_seller_impulses",
+      levelType: best.side > 0 ? "inicio_inamovible_bullish_exhaustion_put" : "inicio_inamovible_bearish_exhaustion_call",
       direction,
+      movementDirection: movementSideText,
+      expectedTurnDirection: turnSideText,
       tolerance: tol,
       zone,
       zoneLow: level - zone * 0.45,
@@ -28288,14 +28311,17 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       low,
       range: localRange,
       evalSec: signalAtSec,
+      setupCompletedSec: setupAtSec,
+      terminalConfirmedSec: signalAtSec,
       analysisWindowMs: evalMs,
-      irregularityWindow: "flotante s15–s25",
-      maxAnalysisSec: 25,
+      irregularityWindow: "estructura s0–s25 + cierre terminal hasta s30",
+      maxAnalysisSec: 30,
       signalFromSec: signalAtSec,
       motorIndependiente: true,
       constructiveReductionMode: true,
       visualReductionMode: true,
       inicioInamovibleMode: true,
+      giroExpected: true,
       sameDirectionThreeMoves: true,
       studyOnly: true,
       visualReductionScore: Math.round(best.score),
@@ -28306,9 +28332,15 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       turnQualityConditions: {
         allThreeSameDirection: true,
         movementDirection: movementSideText,
+        expectedTurnDirection: turnSideText,
+        signalDirection: direction,
         movementSigns: [best.side, best.side, best.side],
         lateralLabels: [best.labels[0], best.labels[2]],
         centralLabel: "G",
+        centralIsUniqueG: true,
+        thirdMoveClosed: true,
+        terminalCorrectionMove: best.terminalCorrectionMove,
+        terminalCorrectionRatio: best.terminalCorrectionMove / Math.max(best.moves[2], 1e-9),
         centralDominanceRatio: best.centralRatio,
         directionalEfficiency: best.efficiency,
         primaryDominanceRatio: best.dominanceRatio,
@@ -28316,18 +28348,19 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         centerShare: best.centerShare,
         realDisplacement: best.realDisplacement,
       },
-      turnQualityValidatedAtMs: evalMs,
-      turnQualitySetupFormedAtMs: best.formedAtMs,
-      turnQualitySetupElapsedMs: best.formedAtMs - best.anchorOffsetMs,
-      visualReductionSubtype: `Inicio Inamovible ${pattern} ${movementSideText}`,
-      visualReductionGroup: groupText,
-      visualReductionContraryGroup: contraryText,
+      turnQualityValidatedAtMs: best.confirmedAtMs,
+      turnQualitySetupFormedAtMs: best.setupFormedAtMs,
+      turnQualitySetupElapsedMs: best.setupElapsedFromAnchorMs,
+      visualReductionSubtype: `Inicio Inamovible ${pattern} ${movementSideText} → giro ${direction}`,
+      visualReductionGroup: movementGroupText,
+      visualReductionContraryGroup: turnGroupText,
       visualReductionPattern: pattern,
       visualReductionLabels: best.labels,
       visualReductionMoves: best.moves,
       visualReductionRuns: best.runs,
       visualReductionPrimaryRuns: [best.first, best.central, best.last],
       visualReductionCorrectionRuns: best.correctionRuns,
+      terminalCorrectionRun: best.terminalCorrection,
       acceptedChainPattern: pattern,
       acceptedChainLabels: best.labels,
       acceptedChainRuns: [best.first, best.central, best.last],
@@ -28335,56 +28368,72 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       acceptedReductionBlocks: [{
         pattern,
         direction: movementSideText,
+        expectedTurnDirection: turnSideText,
+        signalDirection: direction,
         allThreeSameDirection: true,
+        thirdMoveClosed: true,
         startMs: best.first.startMs,
         endMs: best.last.endMs,
+        confirmedAtMs: best.confirmedAtMs,
         labels: best.labels,
         runs: [best.first, best.central, best.last],
         correctionRuns: best.correctionRuns,
+        terminalCorrectionRun: best.terminalCorrection,
       }],
       firstConstructiveReduction: null,
       secondConstructiveReduction: null,
       thirdConstructiveReduction: null,
-      constructiveQualificationRoute: "inicio_inamovible_three_same_direction",
-      constructiveQualificationLabel: `Inicio Inamovible ${pattern} ${movementSideText}`,
+      constructiveQualificationRoute: "inicio_inamovible_giro_three_same_direction_terminal_close",
+      constructiveQualificationLabel: `Inicio Inamovible ${pattern} ${movementSideText} → giro ${direction}`,
       doubleMgmSignal: false,
       anchoredMgmConfirmed: true,
-      anchoredMgmFollowupType: "three_same_direction",
-      constructiveConfirmationPack: null,
+      anchoredMgmFollowupType: "three_same_direction_terminal_close",
+      constructiveConfirmationPack: {
+        type: "terminal_retracement",
+        label: `retroceso terminal ${turnSideText}`,
+        formedAtMs: best.confirmedAtMs,
+        runs: [best.terminalCorrection],
+        recovery: best.terminalCorrectionMove,
+        recoveryRatio: best.terminalCorrectionMove / Math.max(best.moves[2], 1e-9),
+      },
       irregularInitialBlock: {
         pattern,
         direction: movementSideText,
+        expectedTurnDirection: turnSideText,
+        signalDirection: direction,
         allThreeSameDirection: true,
         anchoredMgm: true,
         inicioInamovible: true,
         startMs: best.first.startMs,
         endMs: best.last.endMs,
+        confirmedAtMs: best.confirmedAtMs,
         anchorMs: best.first.startMs,
         primaryRuns: [best.first, best.central, best.last],
         correctionRuns: best.correctionRuns,
+        terminalCorrectionRun: best.terminalCorrection,
       },
-      constructiveElapsedFromFirstMovementMs: best.elapsedFromAnchorMs,
-      visualReductionContraryRuns: best.correctionRuns,
+      constructiveElapsedFromFirstMovementMs: best.confirmationElapsedFromAnchorMs,
+      visualReductionContraryRuns: [...best.correctionRuns, best.terminalCorrection],
       visualReductionAllPrimaryRuns: [best.first, best.central, best.last],
-      visualReductionAllContraryRuns: best.correctionRuns,
+      visualReductionAllContraryRuns: [...best.correctionRuns, best.terminalCorrection],
       constructiveReductionPairs: [],
       constructiveReductionConsecutive: true,
       constructiveReductionDistinct: true,
       constructiveAnchorOffsetMs: best.anchorOffsetMs,
-      constructiveFormedAtMs: best.formedAtMs,
+      constructiveFormedAtMs: best.confirmedAtMs,
       constructiveFloatingWindow: true,
       cutsBetween: best.correctionRuns.length,
-      contraryStrong: false,
+      contraryStrong: true,
       secondReductionConfirmed: false,
-      thirdReductionConfirmed: false,
+      thirdReductionConfirmed: true,
       secondReductionConfirmation: null,
-      secondReductionConfirmedAtMs: best.formedAtMs,
-      secondReductionRetraceRatio: 0,
-      secondReductionOppositeSteps: 0,
+      secondReductionConfirmedAtMs: best.confirmedAtMs,
+      secondReductionRetraceRatio: best.terminalCorrectionMove / Math.max(best.moves[2], 1e-9),
+      secondReductionOppositeSteps: 1,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: "v113_33_ii2_three_same_direction_pmg_displacement",
+      movementFilter: "v113_33_ii3_giro_three_same_direction_terminal_close",
       priority: "STUDY_ONLY",
-      stage: "inicio_inamovible_tres_misma_direccion_s15_25",
+      stage: "inicio_inamovible_giro_cierre_terminal_s15_30",
       logic: logicText,
       status,
     },
@@ -28441,6 +28490,49 @@ function normalizeConstructiveAbsWindow(absTicks, anchorEpochMs, nowEpochMs) {
     .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= CONSTRUCTIVE_FLOATING_WINDOW_MS)
     .sort((a, b) => a.ms - b.ms);
 }
+// II3: evita reanclar dentro de un impulso que ya venía avanzando.
+// El comienzo del primer lateral debe coincidir con un extremo local razonable
+// respecto de los segundos inmediatamente anteriores al ancla.
+function isInicioInamovibleTrueAnchor(absTicks, anchorEpochMs, match) {
+  try {
+    const anchor = Number(anchorEpochMs);
+    const meta = match?.meta || {};
+    const side = Math.sign(Number(meta?.turnQualityConditions?.movementSigns?.[0] || 0));
+    const firstMove = Math.abs(Number(meta?.visualReductionMoves?.[0] || 0));
+    if (!Number.isFinite(anchor) || !side || !(firstMove > 0)) return false;
+
+    const ordered = (Array.isArray(absTicks) ? absTicks : [])
+      .map((p) => ({ epochMs: Number(p?.epochMs), quote: Number(p?.quote) }))
+      .filter((p) => Number.isFinite(p.epochMs) && Number.isFinite(p.quote))
+      .sort((a, b) => a.epochMs - b.epochMs);
+    const previous = ordered.filter((p) => p.epochMs < anchor && p.epochMs >= anchor - 6500);
+    if (previous.length < 2) return true;
+
+    const atOrAfter = ordered.find((p) => p.epochMs >= anchor);
+    const atOrBefore = [...ordered].reverse().find((p) => p.epochMs <= anchor);
+    const anchorQuote = Number(atOrAfter?.quote ?? atOrBefore?.quote);
+    if (!Number.isFinite(anchorQuote)) return true;
+
+    const priorQuotes = previous.map((p) => p.quote);
+    const priorMin = Math.min(...priorQuotes);
+    const priorMax = Math.max(...priorQuotes);
+    const priorRange = Math.max(priorMax - priorMin, 1e-9);
+    const tolerance = Math.max(
+      Math.abs(Number(meta?.tolerance || 0)) * 2.2,
+      firstMove * 0.30,
+      priorRange * 0.16,
+      1e-9
+    );
+
+    // Alcista: el ancla debe estar cerca del mínimo local previo.
+    // Bajista: el ancla debe estar cerca del máximo local previo.
+    if (side > 0) return anchorQuote - priorMin <= tolerance;
+    return priorMax - anchorQuote <= tolerance;
+  } catch {
+    return false;
+  }
+}
+
 function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
   try {
     if (!isReduccionConstructivaContinuaMode(signalMode)) return false;
@@ -28505,6 +28597,7 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
           refined = rebaseConstructiveMatchTiming(refined, residualOffsetMs);
         }
       }
+      if (!isInicioInamovibleTrueAnchor(absTicks, anchorEpochMs, refined)) continue;
       const q = Number(refined.quality || 0) - Math.max(0, (now - anchorEpochMs) - Number(refined.meta?.constructiveFormedAtMs || 0)) / 2500;
       if (!bestPack || q > Number(bestPack.rank || 0)) {
         bestPack = { match: refined, anchorEpochMs, ticks: anchoredTicks, rank: q };
@@ -28536,7 +28629,7 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
       signalPrealertAtSec: Math.round(Number(bestPack.match.meta?.signalFromSec || 0)),
       signalRadar: true,
       signalRadarStartSec: 0,
-      signalRadarEndSec: 25,
+      signalRadarEndSec: 30,
       signalAutoEntrySec: SIGNAL_AUTO_ENTRY_SEC,
       signalRequiresManualPoints: 0,
       signalConfirmations: [],
@@ -28568,7 +28661,7 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
     if (added) {
       constructiveLastSignalBySymbol[sym] = { epochMs: now, key: signalKey };
       const patternLabel = String(bestPack.match.meta?.visualReductionPattern || "P/M→G→P/M");
-      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · solo aviso y registro`, 2300);
+      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · GIRO ${direction} · solo aviso y registro`, 2300);
       return true;
     }
   } catch (e) {

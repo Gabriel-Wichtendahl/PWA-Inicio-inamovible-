@@ -1,7 +1,7 @@
 {
-  "name": "Deriv · Inicio Inamovible II2",
-  "short_name": "Inicio II2",
-  "start_url": "./index.html?variant=inicio-inamovible-v11333-ii2",
+  "name": "Deriv · Inicio Inamovible II3",
+  "short_name": "Inicio II3",
+  "start_url": "./index.html?variant=inicio-inamovible-v11333-ii3",
   "display": "standalone",
   "background_color": "#020617",
   "theme_color": "#020617",
@@ -17,7 +17,7 @@
       "type": "image/png"
     }
   ],
-  "id": "./inicio-inamovible-v11333-ii2",
-  "description": "Versión experimental II2: tres impulsos en la misma dirección con G central.",
+  "id": "./inicio-inamovible-v11333-ii3",
+  "description": "Versión experimental II3 orientada a giro: tres impulsos en la misma dirección, G central único y cierre confirmado por retroceso terminal.",
   "scope": "./"
 }
