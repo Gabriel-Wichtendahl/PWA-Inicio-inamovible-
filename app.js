@@ -1,4 +1,4 @@
-// v113.33-II6: calibra el movimiento P visual y exige cortes reales entre los tres impulsos.
+// v113.33-II7: calibra el movimiento P visual y exige cortes reales entre los tres impulsos.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
@@ -120,11 +120,11 @@
 // ✅ V66: pre-proposal 56-58s: arma proposal antes y en post-58 solo compra; disciplina 3 ITM/2 OTM desactivada para pruebas.
 "use strict";
 
-// V113.33-II6: persistencia estándar, igual que la PWA v113.33 original.
+// V113.33-II7: persistencia estándar, igual que la PWA v113.33 original.
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II6";
+const APP_BUILD_VERSION = "v113.33-II7";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1508,9 +1508,10 @@ const MODE_ALCISTA_IRREGULAR_25S = "ALCISTA IRREGULAR QUIEBRES 30S";
 const MODE_ALCISTA_REDUCCION_30S = "ALCISTA REDUCCIÓN 30S";
 const MODE_REDUCCION_VISUAL_25S = "REDUCCIÓN VISUAL 25S";
 const MODE_REDUCCION_CONSTRUCTIVA_CONTINUA = "INICIO INAMOVIBLE";
-// II6: interruptor maestro. La variante no ejecuta detectores, confirmaciones,
-// autoentradas, SNR, polaridad, GIRO++ ni rutas históricas en paralelo.
+// II7: interruptor maestro de análisis. Mantiene apagados SNR, polaridad, GIRO++,
+// doble reducción y rutas históricas. La ejecución de Inicio Inamovible se habilita aparte.
 const INICIO_INAMOVIBLE_ONLY_RUNTIME = true;
+const INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME = true;
 const ANALYSIS_MODE_KEY = "analysisMode_v1";
 
 const GIRO_LOGIC_VERSION = "GIRO_RAMA_REEMPLAZO_20260421";
@@ -1527,7 +1528,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_LATERAL_VISUAL_22_CORTE_REAL_SOLO_MOTOR_V113_33_II6_20260730";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_LATERAL_VISUAL_22_CORTE_REAL_SOLO_MOTOR_V113_33_II7_20260730";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -3820,7 +3821,6 @@ function saveExecutionMode() {
   } catch {}
 }
 function shouldUseAutoHighLowExecution() {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
   return executionMode === EXECUTION_MODE_HIGHLOW_AUTO;
 }
 function getExecutionModeLabel() {
@@ -4426,7 +4426,7 @@ function cancelSignalAutoEntryNoPreProposal(item, side, readiness, reason = "AUT
   return true;
 }
 function scanSignalAutoPreProposals() {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME) return false;
   try {
     if (areSignalsPaused()) return false;
     if (!isNextCandleExpiryTiming() || shouldUseAutoHighLowExecution()) return false;
@@ -4434,7 +4434,7 @@ function scanSignalAutoPreProposals() {
     let started = false;
     const candidates = (history || [])
       .filter((it) => it && (it.minute === nowMinute || isItemLiveMinute(it)) && !it?.trade?.badge && !it?.signalAutoEntry?.attempted)
-      .filter((it) => !isInicioInamovibleStudyOnlySignal(it))
+      .filter((it) => isInicioInamovibleOperableSignal(it))
       .filter((it) => isAutoPreProposalWindow(it));
     for (const it of candidates) {
       // V112.1: empezamos a prearmar por la dirección de la señal aunque todavía
@@ -5756,6 +5756,10 @@ function makeHighLowEntryBisectionCandidate(hardPlan, easyPlan, side, triedBarri
 function getSignalSideEnabledAtMs(item, wantedSide) {
   const wanted = normalizeSignalConfirmationSide(wantedSide);
   if (!item || !wanted) return null;
+  if (isInicioInamovibleOperableSignal(item) && wanted === getSignalEnabledTradeSide(item)) {
+    const ms = Number(item?.giroPolaridad?.constructiveFormedAtMs ?? item?.giroPolaridad?.turnQualityValidatedAtMs ?? item?.signalPrealertAtSec * 1000);
+    return Number.isFinite(ms) ? ms : 0;
+  }
   let score = 0;
   for (const ev of getSignalConfirmationEvents(item)) {
     const side = normalizeSignalConfirmationSide(ev?.side);
@@ -7324,7 +7328,7 @@ function startUiTimers() {
     updateModalCandleStatusUI();
     refreshOpenSignalStageBadges();
     finalizeExpiredFloatingSignalRows();
-    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME) {
       scanSignalAutoPreProposals();
       scanSignalAutoEntriesAt57();
     }
@@ -13749,7 +13753,7 @@ function updateModalFooterReadingUI() {
   }
   if (panel) panel.style.display = "none";
   const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
-  if (tradeRow) tradeRow.style.display = "none";
+  if (tradeRow) tradeRow.style.display = isInicioInamovibleOperableSignal(modalCurrentItem) && isTradeEntryOpen(modalCurrentItem) ? "flex" : "none";
 
   if (modalCurrentItem) {
     const read = buildVisualReadFromItem(modalCurrentItem);
@@ -13822,6 +13826,9 @@ function getSignalNetSellPoints(item = modalCurrentItem) {
   return Math.max(0, -getSignalConfirmationScore(item));
 }
 function getSignalEnabledTradeSide(item = modalCurrentItem) {
+  if (isInicioInamovibleOperableSignal(item)) {
+    return normalizeSignalConfirmationSide(item?.direction || item?.giroPolaridad?.direction);
+  }
   const score = getSignalConfirmationScore(item);
   if (score >= SIGNAL_CONFIRM_MIN) return "CALL";
   if (score <= -SIGNAL_CONFIRM_MIN) return "PUT";
@@ -13839,9 +13846,14 @@ function hasSignalMinimumConfirmations(item = modalCurrentItem, side = null) {
   return wanted ? enabled === wanted : !!enabled;
 }
 function getSignalConfirmationStatusText(item = modalCurrentItem) {
+  if (isInicioInamovibleOperableSignal(item)) {
+    const side = getSignalEnabledTradeSide(item);
+    return side === "CALL" ? "GIRO CALL habilitado" : side === "PUT" ? "GIRO PUT habilitado" : "GIRO pendiente";
+  }
   return `COMPRA ${getSignalNetBuyPoints(item)}/${SIGNAL_CONFIRM_MIN} · VENTA ${getSignalNetSellPoints(item)}/${SIGNAL_CONFIRM_MIN}`;
 }
 function getSignalMissingConfirmations(side, item = modalCurrentItem) {
+  if (isInicioInamovibleOperableSignal(item)) return 0;
   const wanted = normalizeSignalConfirmationSide(side);
   if (wanted === "CALL") return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalNetBuyPoints(item));
   if (wanted === "PUT") return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalNetSellPoints(item));
@@ -14179,11 +14191,17 @@ function applySignalConfirmationTradeGate(locked = false, candleClosed = false) 
   const enabledSide = getSignalEnabledTradeSide(modalCurrentItem);
 
   if (enabledSide === "CALL") {
-    paintGiroOnlyButtonState(modalBuyPutBtn, false, `Confirmaciones reales: solo COMPRA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`);
+    const msg = isInicioInamovibleOperableSignal(modalCurrentItem)
+      ? "Inicio Inamovible: giro CALL habilitado; el lado PUT queda bloqueado."
+      : `Confirmaciones reales: solo COMPRA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`;
+    paintGiroOnlyButtonState(modalBuyPutBtn, false, msg);
     return;
   }
   if (enabledSide === "PUT") {
-    paintGiroOnlyButtonState(modalBuyCallBtn, false, `Confirmaciones reales: solo VENTA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`);
+    const msg = isInicioInamovibleOperableSignal(modalCurrentItem)
+      ? "Inicio Inamovible: giro PUT habilitado; el lado CALL queda bloqueado."
+      : `Confirmaciones reales: solo VENTA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`;
+    paintGiroOnlyButtonState(modalBuyCallBtn, false, msg);
     return;
   }
 
@@ -14473,6 +14491,17 @@ function assertSignalSNREntryGateAt57(side = null, item = modalCurrentItem) {
     throw new Error(`La autoentrada se valida recién en ${SIGNAL_AUTO_ENTRY_SEC}s.`);
   }
 
+  if (isInicioInamovibleOperableSignal(item)) {
+    const wanted = normalizeSignalConfirmationSide(side);
+    const enabled = getSignalEnabledTradeSide(item);
+    if (!wanted || wanted !== enabled) throw new Error("La dirección no coincide con el giro Inicio Inamovible");
+    return {
+      ok: true, pending: false, reason: "inicio_inamovible_auto58", side: enabled,
+      check_ms: Math.round(ms), check_sec: SIGNAL_AUTO_ENTRY_SEC,
+      message: `Inicio Inamovible operativo: giro ${enabled} habilitado automáticamente para AUTO ${SIGNAL_AUTO_ENTRY_SEC}.`,
+    };
+  }
+
   // Modo Línea dinámica: acá la línea sí valida la entrada.
   // Soporte dinámico => CALL solo si el precio respeta arriba.
   // Resistencia dinámica => PUT solo si el precio respeta abajo.
@@ -14621,14 +14650,14 @@ function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
 }
 
 function scanSignalAutoEntriesAt57() {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME) return false;
   try {
     if (areSignalsPaused()) return false;
     if (tradeInFlight) return false;
     const nowMinute = currentServerMinute();
     const candidates = (history || [])
       .filter((it) => it && (it.minute === nowMinute || isItemLiveMinute(it)) && !it?.trade?.badge && !it?.signalAutoEntry?.attempted)
-      .filter((it) => !isInicioInamovibleStudyOnlySignal(it))
+      .filter((it) => isInicioInamovibleOperableSignal(it))
       .filter((it) => getSignalEnabledTradeSide(it));
 
     for (const it of candidates) {
@@ -17550,11 +17579,35 @@ function applyVoteButtonsVisual(row, vote = "", { lock = false } = {}) {
 
 
 
+function isInicioInamovibleSignal(item) {
+  const meta = item?.giroPolaridad || item?.snrLevel || {};
+  return !!(
+    meta?.inicioInamovibleMode ||
+    String(meta?.levelMode || "") === "inicio_inamovible_experimental" ||
+    String(item?.mode || "") === MODE_REDUCCION_CONSTRUCTIVA_CONTINUA ||
+    String(item?.mode_version || "").includes("INICIO_INAMOVIBLE")
+  );
+}
+function isInicioInamovibleOperableSignal(item) {
+  if (!INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME || !isInicioInamovibleSignal(item)) return false;
+  // Solo las señales creadas como operativas por II7 pueden comprar. Las señales
+  // históricas de II1-II6 conservan su estado de estudio y nunca se ejecutan al actualizar.
+  return item?.signalAutoTradeAllowed === true || String(item?.mode_version || "").includes("_II7_");
+}
 function isInicioInamovibleStudyOnlySignal(item) {
-  return !!(item?.signalStudyOnly || item?.giroPolaridad?.studyOnly || item?.giroPolaridad?.inicioInamovibleMode);
+  if (isInicioInamovibleOperableSignal(item)) return false;
+  return !!(item?.signalStudyOnly || item?.giroPolaridad?.studyOnly);
 }
 function getSignalLifecycleStageInfo(item) {
   if (!item) return { key: "", label: "", title: "" };
+  if (isInicioInamovibleOperableSignal(item) && !item?.minuteComplete && !item?.trade?.badge && !item?.signalAutoEntry?.attempted) {
+    const side = getSignalEnabledTradeSide(item);
+    return {
+      key: "inicio_inamovible_auto58",
+      label: `🚀 AUTO ${SIGNAL_AUTO_ENTRY_SEC} · ${side || "GIRO"}`,
+      title: `Inicio Inamovible operativo: ${side || "giro"} habilitado automáticamente; propuesta antes de s58 y compra en s58.`,
+    };
+  }
   if (isInicioInamovibleStudyOnlySignal(item)) {
     return {
       key: "inicio_inamovible_study",
@@ -18495,16 +18548,15 @@ function assertEntryWindowOpen(item = modalCurrentItem) {
 
 async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, itemOverride = null) {
   const itemCtx = itemOverride || modalCurrentItem;
-  if (isInicioInamovibleStudyOnlySignal(itemCtx)) throw new Error("Esta versión experimental es solo para aviso y registro; las operaciones están desactivadas.");
-  assertCanTrade();
+  const inicioOperable = isInicioInamovibleOperableSignal(itemCtx);
+  if (!inicioOperable) assertCanTrade();
   assertEntryWindowOpen(itemCtx);
-  assertBrainProcessCanTrade(itemCtx);
+  if (!inicioOperable) assertBrainProcessCanTrade(itemCtx);
   assertSignalMinimumConfirmations(side, itemCtx);
-  // V46: en SNR/SNR polaridad, la operación se permite por puntos completos + AUTO 58.
-  // El cierre final fuera de SNR y la distancia al SNR quedan registrados, pero no bloquean.
-  // En Línea dinámica se mantiene su validación específica.
+  // Inicio Inamovible usa únicamente su propia dirección de giro. No hereda filtros
+  // SNR, GIRO++, proceso mental ni C100 del motor principal.
   const snrEntryGate = assertSignalSNREntryGateAt57(side, itemCtx);
-  assertC100CanTrade();
+  if (!inicioOperable) assertC100CanTrade();
 
   if (tradeInFlight) throw new Error("Operación en curso");
   tradeInFlight = true;
@@ -19603,7 +19655,10 @@ function onTick(tick) {
   }
 
   // II5: esta variante es solo de estudio; no escanea ni prepara autoentradas.
-  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME && !areSignalsPaused()) scanSignalAutoEntriesAt57();
+  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME) && !areSignalsPaused()) {
+    scanSignalAutoPreProposals();
+    scanSignalAutoEntriesAt57();
+  }
 
   if (!areSignalsPaused()) {
     // II5: única búsqueda de señales activa. No existe fallback a otros modos.
@@ -28073,7 +28128,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II6 — Inicio Inamovible experimental orientado a GIRO.
+// V113.33-II7 — Inicio Inamovible experimental orientado a GIRO.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28273,8 +28328,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
-  const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Solo aviso y registro.`;
-  const logicText = `Motor experimental V113.33-II6: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
+  const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Operativa AUTO 58 habilitada.`;
+  const logicText = `Motor experimental V113.33-II7: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa: prepara la propuesta antes de s58 y ejecuta el giro en AUTO 58.`;
 
   return {
     direction,
@@ -28312,12 +28367,12 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       inicioInamovibleMode: true,
       giroExpected: true,
       sameDirectionThreeMoves: true,
-      studyOnly: true,
+      studyOnly: false,
       visualReductionScore: Math.round(best.score),
       visualReductionQuality: "EXPERIMENTAL",
       turnQualityClass: "E",
       turnQualityScore: Math.round(best.score),
-      turnQualityAutoAllowed: false,
+      turnQualityAutoAllowed: true,
       turnQualityConditions: {
         allThreeSameDirection: true,
         movementDirection: movementSideText,
@@ -28622,8 +28677,8 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
       signalConfirmations: [],
       signalQualityClass: String(bestPack.match.meta?.turnQualityClass || "B"),
       signalQualityScore: Number(bestPack.match.meta?.turnQualityScore || 0),
-      signalAutoTradeAllowed: false,
-      signalStudyOnly: true,
+      signalAutoTradeAllowed: true,
+      signalStudyOnly: false,
       signalFloatingWindow: true,
       signalAnchorEpochMs: anchorEpochMs,
       signalAnchorSecond: Number(((anchorEpochMs % 60000) + 60000) % 60000) / 1000,
@@ -28648,7 +28703,7 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
     if (added) {
       constructiveLastSignalBySymbol[sym] = { epochMs: now, key: signalKey };
       const patternLabel = String(bestPack.match.meta?.visualReductionPattern || "P/M→G→P/M");
-      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · GIRO ${direction} · solo aviso y registro`, 2300);
+      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · GIRO ${direction} · AUTO 58 habilitado`, 2300);
       return true;
     }
   } catch (e) {
@@ -29553,7 +29608,7 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
     trimSignalsDomToVisibleLimit();
   }
   updateRowChartBtn(item);
-  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME && shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(item);
+  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME) && shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(item);
 
   const fatigueTriggered = INICIO_INAMOVIBLE_ONLY_RUNTIME ? false : registerSignalForFatigueGuard(item);
   if (fatigueTriggered) return item;
@@ -30083,7 +30138,7 @@ function recoverPublicConnection(reason = "resume") {
   startPendingContractWatchdog({ immediate: true });
   try {
     finalizeExpiredFloatingSignalRows();
-    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
+    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_AUTO_TRADE_RUNTIME) {
       scanSignalAutoPreProposals();
       scanSignalAutoEntriesAt57();
     }

@@ -1,4 +1,4 @@
-/* sw.js — Deriv Inicio Inamovible v113.33-II6 */
+/* sw.js — Deriv Inicio Inamovible v113.33-II7 */
 "use strict";
 
 // Caché exclusiva de Inicio Inamovible para que no colisione con la PWA estable ni con II1.
