@@ -2807,7 +2807,11 @@ body.light .tradesDayCount{
 
 /* II5 · Variante exclusiva Inicio Inamovible */
 .inicioOnlyHiddenControls,
-#signalConfirmPanel,
 .giroPlusBadge{
   display:none!important;
+}
+
+/* II9: el panel original de + COMPRA / + VENTA debe permanecer visible. */
+#signalConfirmPanel{
+  display:block;
 }
