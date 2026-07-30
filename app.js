@@ -1,4 +1,4 @@
-// v113.33-II5: ejecución exclusiva de Inicio Inamovible; desactiva rutas antiguas y limpia Lectura ON.
+// v113.33-II6: calibra el movimiento P visual y exige cortes reales entre los tres impulsos.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
@@ -120,11 +120,11 @@
 // ✅ V66: pre-proposal 56-58s: arma proposal antes y en post-58 solo compra; disciplina 3 ITM/2 OTM desactivada para pruebas.
 "use strict";
 
-// V113.33-II5: persistencia estándar, igual que la PWA v113.33 original.
+// V113.33-II6: persistencia estándar, igual que la PWA v113.33 original.
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II5";
+const APP_BUILD_VERSION = "v113.33-II6";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1508,7 +1508,7 @@ const MODE_ALCISTA_IRREGULAR_25S = "ALCISTA IRREGULAR QUIEBRES 30S";
 const MODE_ALCISTA_REDUCCION_30S = "ALCISTA REDUCCIÓN 30S";
 const MODE_REDUCCION_VISUAL_25S = "REDUCCIÓN VISUAL 25S";
 const MODE_REDUCCION_CONSTRUCTIVA_CONTINUA = "INICIO INAMOVIBLE";
-// II5: interruptor maestro. La variante no ejecuta detectores, confirmaciones,
+// II6: interruptor maestro. La variante no ejecuta detectores, confirmaciones,
 // autoentradas, SNR, polaridad, GIRO++ ni rutas históricas en paralelo.
 const INICIO_INAMOVIBLE_ONLY_RUNTIME = true;
 const ANALYSIS_MODE_KEY = "analysisMode_v1";
@@ -1527,7 +1527,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_3_MISMA_DIRECCION_CIERRE_TERMINAL_SOLO_MOTOR_V113_33_II5_20260729";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_LATERAL_VISUAL_22_CORTE_REAL_SOLO_MOTOR_V113_33_II6_20260730";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -28073,7 +28073,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II5 — Inicio Inamovible experimental orientado a GIRO.
+// V113.33-II6 — Inicio Inamovible experimental orientado a GIRO.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28123,7 +28123,10 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const corrections = between.filter((r) => Number(r.sign || 0) < 0 && Number(r.move || 0) >= correctionMin);
       const pauses = between.filter((r) => Number(r.sign || 0) === 0 || (Number(r.sign || 0) < 0 && Number(r.move || 0) < correctionMin));
       const internalSplit = Number(b.idx) === Number(a.idx) + 1 && (!!a.internalSplit || !!b.internalSplit);
-      return { between, corrections, pauses, internalSplit, separated: between.length > 0 || internalSplit };
+      // II6: una desaceleración interna no alcanza para inventar otro movimiento.
+      // Debe existir entre ambos impulsos una pausa o un retroceso observable como tramo separado.
+      const realSeparator = between.length > 0;
+      return { between, corrections, pauses, internalSplit, realSeparator, separated: realSeparator };
     };
 
     for (let i = 0; i + 2 < primaryRuns.length; i++) {
@@ -28157,6 +28160,12 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const labels = summarizeVisualMoves(moves).labels;
       if (labels[1] !== "G" || !["P", "M"].includes(labels[0]) || !["P", "M"].includes(labels[2])) continue;
       if (!(moves[1] > moves[0] && moves[1] > moves[2])) continue;
+
+      // II6: P no significa micro movimiento. Los ejemplos corregidos dejan el límite
+      // visual cerca de 24% del G; usamos 22% para conservar el caso válido al límite.
+      const lateralVisualRatioMin = 0.22;
+      const lateralToCentralRatios = [moves[0] / Math.max(moves[1], 1e-9), moves[2] / Math.max(moves[1], 1e-9)];
+      if (lateralToCentralRatios.some((ratio) => ratio < lateralVisualRatioMin)) continue;
 
       const lateralMin = Math.max(alignedRange * 0.032, tol * 1.02, Math.abs(open) * 0.000000035, 1e-9);
       const centralMin = Math.max(alignedRange * 0.16, tol * 2.40, Math.abs(open) * 0.00000010, 1e-9);
@@ -28237,7 +28246,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         setupElapsedFromAnchorMs, confirmationElapsedFromAnchorMs,
         efficiency, dominanceRatio, displacementRatio, realDisplacement,
         centralRatio, centerShare, netAdvance, correctionSum, terminalCorrectionMove, score,
-        sepOne, sepTwo,
+        lateralVisualRatioMin, lateralToCentralRatios, sepOne, sepTwo,
       });
     }
   }
@@ -28259,12 +28268,13 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const reasons = [
     `${pattern}: tres impulsos ${movementSideText}s en la misma dirección`,
     `tercer movimiento completo, cerrado por retroceso ${turnSideText}`,
-    `G central único; laterales ${best.labels[0]}/${best.labels[2]} menores`,
+    `G central único; laterales ${best.labels[0]}/${best.labels[2]} menores y visuales`,
+    `cada lateral mide al menos ${(best.lateralVisualRatioMin * 100).toFixed(0)}% del G y tiene corte real`,
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Solo aviso y registro.`;
-  const logicText = `Motor experimental V113.33-II5: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G y los laterales P/M menores. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
+  const logicText = `Motor experimental V113.33-II6: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Solo estudio: no prepara ni ejecuta operaciones.`;
 
   return {
     direction,
@@ -28321,6 +28331,9 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         terminalCorrectionMove: best.terminalCorrectionMove,
         terminalCorrectionRatio: best.terminalCorrectionMove / Math.max(best.moves[2], 1e-9),
         centralDominanceRatio: best.centralRatio,
+        lateralVisualRatioMin: best.lateralVisualRatioMin,
+        lateralToCentralRatios: best.lateralToCentralRatios,
+        realSeparators: [!!best.sepOne?.realSeparator, !!best.sepTwo?.realSeparator],
         directionalEfficiency: best.efficiency,
         primaryDominanceRatio: best.dominanceRatio,
         displacementRatio: best.displacementRatio,
@@ -28405,9 +28418,9 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       secondReductionRetraceRatio: null,
       secondReductionOppositeSteps: 0,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: "v113_33_ii5_inicio_inamovible_only_terminal_close",
+      movementFilter: "v113_33_ii6_inicio_inamovible_lateral_visual_22_corte_real",
       priority: "STUDY_ONLY",
-      stage: "inicio_inamovible_giro_cierre_terminal_s15_30",
+      stage: "inicio_inamovible_giro_lateral_visual_corte_real_s15_30",
       logic: logicText,
       status,
     },
