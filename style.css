@@ -2805,16 +2805,9 @@ body.light .tradesDayCount{
 }
 
 
-/* II7 · Inicio Inamovible operativo. Sin panel amarillo ni GIRO++ heredado. */
+/* II5 · Variante exclusiva Inicio Inamovible */
+.inicioOnlyHiddenControls,
 #signalConfirmPanel,
 .giroPlusBadge{
   display:none!important;
 }
-.inicioOnlyTradeControls{
-  display:flex;
-  gap:10px;
-}
-.inicioOnlyTradeControls .btn{
-  flex:1 1 0;
-}
-
