@@ -1,21 +1,26 @@
 {
+  "id": "./",
   "name": "Deriv · Inicio Inamovible",
-  "short_name": "Inicio Inamovible",
-  "start_url": "./index.html",
+  "short_name": "Inicio II",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#020617",
   "theme_color": "#020617",
+  "orientation": "portrait",
   "icons": [
     {
-      "src": "icon-192.png",
+      "src": "./icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     },
     {
-      "src": "icon-512.png",
+      "src": "./icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ],
-  "description": "Versión experimental exclusiva para detectar giros de Inicio Inamovible."
+  "description": "Versión experimental de Deriv para detectar y operar giros de Inicio Inamovible."
 }

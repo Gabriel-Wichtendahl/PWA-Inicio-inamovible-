@@ -1,4 +1,4 @@
-// v113.33-II9: corrige la visibilidad del panel original de + COMPRA / + VENTA y conserva la operativa por 6 puntos netos.
+// v113.33-II10: corrige la visibilidad del panel original de + COMPRA / + VENTA y conserva la operativa por 6 puntos netos.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
@@ -124,7 +124,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II9";
+const APP_BUILD_VERSION = "v113.33-II10";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1530,7 +1530,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_LATERAL_VISUAL_22_CORTE_REAL_OPERATIVA_6_PUNTOS_PANEL_VISIBLE_V113_33_II9_20260730";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_LATERAL_VISUAL_22_CORTE_REAL_OPERATIVA_6_PUNTOS_PANEL_VISIBLE_V113_33_II10_20260730";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -14690,7 +14690,7 @@ function updateModalCandleStatusUI() {
   bar.style.display = "block";
 
   // Las señales históricas marcadas studyOnly permanecen bloqueadas.
-  // Las señales nuevas II9 muestran el panel original de 6 puntos y operación.
+  // Las señales nuevas II10 muestran el panel original de 6 puntos y operación.
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
     const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
     if (tradeRow) tradeRow.style.display = "none";
@@ -28080,7 +28080,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II9 — Inicio Inamovible orientado a GIRO con operativa original por puntos y panel visible.
+// V113.33-II10 — Inicio Inamovible orientado a GIRO con operativa original por puntos y panel visible.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28281,7 +28281,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Esperando 6 puntos netos para operar.`;
-  const logicText = `Motor experimental V113.33-II9: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa original: requiere 6 puntos netos en COMPRA o VENTA y solo entonces queda habilitado AUTO 58.`;
+  const logicText = `Motor experimental V113.33-II10: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa original: requiere 6 puntos netos en COMPRA o VENTA y solo entonces queda habilitado AUTO 58.`;
 
   return {
     direction,

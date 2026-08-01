@@ -2811,7 +2811,7 @@ body.light .tradesDayCount{
   display:none!important;
 }
 
-/* II9: el panel original de + COMPRA / + VENTA debe permanecer visible. */
+/* II10: el panel original de + COMPRA / + VENTA debe permanecer visible. */
 #signalConfirmPanel{
   display:block;
 }
