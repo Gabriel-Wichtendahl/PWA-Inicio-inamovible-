@@ -1,4 +1,5 @@
-// v113.33-II10: corrige la visibilidad del panel original de + COMPRA / + VENTA y conserva la operativa por 6 puntos netos.
+// v113.33-II11: reemplaza los puntos por un asistente PGP guiado por el flujograma.
+// La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
@@ -124,7 +125,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II10";
+const APP_BUILD_VERSION = "v113.33-II11";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1511,8 +1512,8 @@ const MODE_REDUCCION_CONSTRUCTIVA_CONTINUA = "INICIO INAMOVIBLE";
 // II6: interruptor maestro. La variante no ejecuta detectores, confirmaciones,
 // autoentradas, SNR, polaridad, GIRO++ ni rutas históricas en paralelo.
 const INICIO_INAMOVIBLE_ONLY_RUNTIME = true;
-// Solo el detector nuevo analiza; la compra conserva exactamente el flujo original:
-// botones de puntos, 6 netos y AUTO 58 únicamente después de la autorización manual.
+// Solo el detector nuevo analiza. La operativa usa el flujo guiado PGP:
+// una rama de continuidad bloquea la señal y una rama de giro requiere autorización final explícita antes de AUTO 58.
 const INICIO_INAMOVIBLE_OPERATIONS_RUNTIME = true;
 const ANALYSIS_MODE_KEY = "analysisMode_v1";
 
@@ -1530,7 +1531,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_LATERAL_VISUAL_22_CORTE_REAL_OPERATIVA_6_PUNTOS_PANEL_VISIBLE_V113_33_II10_20260730";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_FLUJO_GUIADO_AUTORIZACION_FINAL_V113_33_II11_20260802";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2416,6 +2417,11 @@ let signalConfirmBuyBtnEl = null;
 let signalConfirmSellBtnEl = null;
 let signalConfirmUndoBtnEl = null;
 let signalConfirmHintEl = null;
+let signalFlowPathEl = null;
+let signalFlowQuestionEl = null;
+let signalFlowActionsEl = null;
+let signalFlowBackBtnEl = null;
+let signalFlowResetBtnEl = null;
 let giroAprendizajePanelEl = null;
 let giroAprendizajeCountEl = null;
 let giroAprendizajeHintEl = null;
@@ -5758,18 +5764,9 @@ function makeHighLowEntryBisectionCandidate(hardPlan, easyPlan, side, triedBarri
 function getSignalSideEnabledAtMs(item, wantedSide) {
   const wanted = normalizeSignalConfirmationSide(wantedSide);
   if (!item || !wanted) return null;
-  let score = 0;
-  for (const ev of getSignalConfirmationEvents(item)) {
-    const side = normalizeSignalConfirmationSide(ev?.side);
-    if (side === "CALL") score += 1;
-    else if (side === "PUT") score -= 1;
-    const enabled = score >= SIGNAL_CONFIRM_MIN ? "CALL" : score <= -SIGNAL_CONFIRM_MIN ? "PUT" : "";
-    if (enabled === wanted) {
-      const ms = Number(ev?.ms);
-      return Number.isFinite(ms) ? ms : null;
-    }
-  }
-  return null;
+  const flow = derivePGPDecisionFlow(item);
+  if (flow.result !== "authorized" || flow.authorizedSide !== wanted) return null;
+  return Number.isFinite(Number(flow.authorizedAtMs)) ? Number(flow.authorizedAtMs) : null;
 }
 
 function getHighLowFinalEntryPlan(item, side, stake, maxAgeMs = SIGNAL_HIGHLOW_FINAL_PLAN_MAX_AGE_MS) {
@@ -8778,6 +8775,7 @@ function compactSignalForAnalysis(item) {
     giroPolaridad: compactVisualLevelForAnalysis(item.giroPolaridad),
     snrLevel: compactVisualLevelForAnalysis(item.snrLevel),
     manualGiro: item.manualGiro ? stripForAnalysisCopy(item.manualGiro) : null,
+    pgpDecision: item.pgpDecision ? stripForAnalysisCopy(item.pgpDecision) : null,
     visualRead: item.visualRead ? stripForAnalysisCopy(item.visualRead) : null,
     giroPlus: item.giroPlus ? stripForAnalysisCopy(item.giroPlus) : null,
     ticks: Array.isArray(item.ticks)
@@ -13823,11 +13821,231 @@ function getSignalNetBuyPoints(item = modalCurrentItem) {
 function getSignalNetSellPoints(item = modalCurrentItem) {
   return Math.max(0, -getSignalConfirmationScore(item));
 }
+
+const PGP_FLOW_VERSION = "PGP_FLOW_V1_II11";
+function createDefaultPGPDecisionState() {
+  return {
+    version: PGP_FLOW_VERSION,
+    answers: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    result: "pending",
+    tradeAuthorized: false,
+    authorizedSide: "",
+    authorizedAt: null,
+    authorizedAtMs: null,
+  };
+}
+function normalizePGPDecisionState(item = modalCurrentItem, { persist = false } = {}) {
+  if (!item) return createDefaultPGPDecisionState();
+  const raw = item.pgpDecision && typeof item.pgpDecision === "object" ? item.pgpDecision : {};
+  const state = {
+    ...createDefaultPGPDecisionState(),
+    ...raw,
+    version: PGP_FLOW_VERSION,
+    answers: Array.isArray(raw.answers)
+      ? raw.answers
+          .filter((a) => a && typeof a === "object" && a.step && a.value)
+          .map((a) => ({
+            step: String(a.step),
+            value: String(a.value),
+            label: String(a.label || a.value),
+            at: Number(a.at || 0) || Date.now(),
+            ms: Number.isFinite(Number(a.ms)) ? Number(a.ms) : null,
+          }))
+      : [],
+  };
+  item.pgpDecision = state;
+  if (persist) saveHistory(history);
+  return state;
+}
+function getPGPGroupLabels(item = modalCurrentItem) {
+  const meta = item?.giroPolaridad || item?.snrLevel || {};
+  const movement = String(meta.visualReductionGroup || meta.turnQualityConditions?.movementDirection || "").toLowerCase();
+  const contrary = String(meta.visualReductionContraryGroup || "").toLowerCase();
+  const movementLabel = movement.includes("vendedor") || movement.includes("baj") ? "vendedor" : movement.includes("comprador") || movement.includes("alc") ? "comprador" : "dominante";
+  const contraryLabel = contrary.includes("vendedor") || contrary.includes("baj") ? "vendedor" : contrary.includes("comprador") || contrary.includes("alc") ? "comprador" : (movementLabel === "comprador" ? "vendedor" : movementLabel === "vendedor" ? "comprador" : "contrario");
+  return { gd: movementLabel, gc: contraryLabel };
+}
+function getPGPTradeLabel(side) {
+  const safe = normalizeSignalConfirmationSide(side);
+  return safe === "CALL" ? "COMPRA" : safe === "PUT" ? "VENTA" : "OPERACIÓN";
+}
+function derivePGPDecisionFlow(item = modalCurrentItem) {
+  const state = normalizePGPDecisionState(item);
+  let step = "attack_gc";
+  let result = "pending";
+  const path = [];
+  let tradeAuthorized = false;
+  let authorizedSide = "";
+  let authorizedAt = null;
+  let authorizedAtMs = null;
+
+  for (const ans of state.answers) {
+    if (String(ans.step) !== step) break;
+    path.push(String(ans.label || ans.value));
+    if (step === "attack_gc") {
+      step = ans.value === "yes" ? "breaks_level" : "gd_response";
+    } else if (step === "breaks_level") {
+      step = ans.value === "yes" ? "break_health" : "gd_response";
+    } else if (step === "break_health") {
+      step = "gd_response";
+    } else if (step === "gd_response") {
+      if (ans.value === "good") {
+        result = "continuity";
+        step = "continuity";
+      } else {
+        result = "search_giro";
+        step = "giro_authorization";
+      }
+    } else if (step === "giro_authorization") {
+      if (ans.value === "confirm") {
+        result = "authorized";
+        step = "authorized";
+        tradeAuthorized = true;
+        authorizedSide = normalizeSignalConfirmationSide(item?.direction);
+        authorizedAt = Number(ans.at || Date.now());
+        authorizedAtMs = Number.isFinite(Number(ans.ms)) ? Number(ans.ms) : null;
+      } else {
+        result = "cancelled";
+        step = "cancelled";
+      }
+    }
+  }
+
+  return {
+    state,
+    step,
+    result,
+    path,
+    tradeAuthorized,
+    authorizedSide,
+    authorizedAt,
+    authorizedAtMs,
+    groups: getPGPGroupLabels(item),
+  };
+}
+function syncPGPDecisionSummary(item = modalCurrentItem) {
+  if (!item) return null;
+  const flow = derivePGPDecisionFlow(item);
+  const state = normalizePGPDecisionState(item);
+  state.result = flow.result;
+  state.tradeAuthorized = flow.tradeAuthorized;
+  state.authorizedSide = flow.authorizedSide;
+  state.authorizedAt = flow.authorizedAt;
+  state.authorizedAtMs = flow.authorizedAtMs;
+  state.updatedAt = Date.now();
+  item.pgpDecision = state;
+  return flow;
+}
+function getPGPFlowQuestion(flow) {
+  if (!flow) return "¿Qué observás en el PGP?";
+  if (flow.step === "attack_gc") return "¿El Grupo Dominante ataca al Grupo Contrario?";
+  if (flow.step === "breaks_level") return "¿El ataque rompe el nivel?";
+  if (flow.step === "break_health") return "¿La ruptura es sana o insana?";
+  if (flow.step === "gd_response") return "¿Cómo responde el Grupo Dominante?";
+  if (flow.step === "giro_authorization") return "La ruta pide buscar giro. ¿Confirmaste visualmente el giro?";
+  if (flow.step === "continuity") return "Continuidad: la señal de giro quedó anulada.";
+  if (flow.step === "authorized") return `Giro confirmado: ${getPGPTradeLabel(flow.authorizedSide)} habilitada.`;
+  if (flow.step === "cancelled") return "La señal fue anulada manualmente.";
+  return "Decisión PGP";
+}
+function applyPGPFlowChoice(value, label = "") {
+  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
+  if (isInicioInamovibleStudyOnlySignal(modalCurrentItem) || modalCurrentItem?.trade?.badge || modalCurrentItem?.signalAutoEntry?.attempted) return;
+  const flow = derivePGPDecisionFlow(modalCurrentItem);
+  const allowedSteps = new Set(["attack_gc", "breaks_level", "break_health", "gd_response", "giro_authorization"]);
+  if (!allowedSteps.has(flow.step)) return;
+  const state = normalizePGPDecisionState(modalCurrentItem);
+  state.answers.push({
+    step: flow.step,
+    value: String(value),
+    label: String(label || value),
+    at: Date.now(),
+    ms: getSignalConfirmationMs(modalCurrentItem),
+  });
+  modalCurrentItem.pgpDecision = state;
+  const next = syncPGPDecisionSummary(modalCurrentItem);
+  saveHistory(history);
+  updateSignalConfirmationUI();
+  updateModalCandleStatusUI();
+
+  if (next?.result === "continuity") {
+    toast("✅ CONTINUIDAD: señal de giro anulada", 1700);
+    return;
+  }
+  if (next?.result === "cancelled") {
+    toast("⛔ Señal PGP anulada", 1500);
+    return;
+  }
+  if (next?.result === "authorized" && next.authorizedSide) {
+    if (shouldUseAutoHighLowExecution()) {
+      void refreshExecutionPlanForSignal(modalCurrentItem, true, next.authorizedSide);
+      scheduleHighLowFinalEntryTimers(modalCurrentItem);
+    } else {
+      void prepareRiseFallAutoPreProposal(modalCurrentItem, next.authorizedSide, "pgp_flow_authorized");
+    }
+    toast(`✅ GIRO confirmado · ${getPGPTradeLabel(next.authorizedSide)} habilitada · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`, 2100);
+    trySignalAutoEntryAt57("PGP_AUTORIZACION_DESPUES_DE_57");
+  }
+}
+function undoPGPFlowStep() {
+  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
+  const state = normalizePGPDecisionState(modalCurrentItem);
+  if (!state.answers.length || modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
+  state.answers.pop();
+  modalCurrentItem.pgpDecision = state;
+  syncPGPDecisionSummary(modalCurrentItem);
+  saveHistory(history);
+  updateSignalConfirmationUI();
+  updateModalCandleStatusUI();
+}
+function resetPGPFlow() {
+  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
+  if (modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
+  modalCurrentItem.pgpDecision = createDefaultPGPDecisionState();
+  saveHistory(history);
+  updateSignalConfirmationUI();
+  updateModalCandleStatusUI();
+  toast("↻ Decisión PGP reiniciada", 1200);
+}
+function appendPGPFlowButton(container, text, value, label, tone = "neutral", disabled = false) {
+  if (!container) return null;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn pgpFlowBtn";
+  btn.textContent = text;
+  btn.disabled = !!disabled;
+  btn.style.minHeight = "50px";
+  btn.style.borderRadius = "14px";
+  btn.style.fontWeight = "950";
+  btn.style.fontSize = "13.5px";
+  btn.style.lineHeight = "1.12";
+  btn.style.whiteSpace = "pre-line";
+  btn.style.padding = "9px 10px";
+  btn.style.touchAction = "manipulation";
+  const palettes = {
+    green: ["rgba(34,197,94,.66)", "linear-gradient(180deg,rgba(34,197,94,.28),rgba(22,101,52,.17))", "#dcfce7"],
+    red: ["rgba(239,68,68,.66)", "linear-gradient(180deg,rgba(239,68,68,.27),rgba(127,29,29,.18))", "#fee2e2"],
+    blue: ["rgba(56,189,248,.62)", "linear-gradient(180deg,rgba(14,165,233,.25),rgba(8,47,73,.18))", "#e0f2fe"],
+    purple: ["rgba(167,139,250,.62)", "linear-gradient(180deg,rgba(139,92,246,.25),rgba(76,29,149,.18))", "#ede9fe"],
+    amber: ["rgba(251,191,36,.62)", "linear-gradient(180deg,rgba(245,158,11,.25),rgba(120,53,15,.18))", "#fef3c7"],
+    neutral: ["rgba(148,163,184,.42)", "rgba(15,23,42,.52)", "#e2e8f0"],
+  };
+  const p = palettes[tone] || palettes.neutral;
+  btn.style.border = `1px solid ${p[0]}`;
+  btn.style.background = p[1];
+  btn.style.color = p[2];
+  btn.style.opacity = btn.disabled ? ".44" : "1";
+  btn.onclick = () => applyPGPFlowChoice(value, label);
+  container.appendChild(btn);
+  return btn;
+}
 function getSignalEnabledTradeSide(item = modalCurrentItem) {
-  const score = getSignalConfirmationScore(item);
-  if (score >= SIGNAL_CONFIRM_MIN) return "CALL";
-  if (score <= -SIGNAL_CONFIRM_MIN) return "PUT";
-  return "";
+  const flow = derivePGPDecisionFlow(item);
+  if (!flow.tradeAuthorized || flow.result !== "authorized") return "";
+  const signalSide = normalizeSignalConfirmationSide(item?.direction);
+  return flow.authorizedSide && flow.authorizedSide === signalSide ? signalSide : "";
 }
 function getSignalConfirmationCount(item = modalCurrentItem, side = null) {
   const wanted = normalizeSignalConfirmationSide(side);
@@ -13841,22 +14059,28 @@ function hasSignalMinimumConfirmations(item = modalCurrentItem, side = null) {
   return wanted ? enabled === wanted : !!enabled;
 }
 function getSignalConfirmationStatusText(item = modalCurrentItem) {
-  return `COMPRA ${getSignalNetBuyPoints(item)}/${SIGNAL_CONFIRM_MIN} · VENTA ${getSignalNetSellPoints(item)}/${SIGNAL_CONFIRM_MIN}`;
+  if (!item) return "PGP · sin señal";
+  const flow = derivePGPDecisionFlow(item);
+  if (flow.result === "authorized") return `PGP · GIRO CONFIRMADO · ${getPGPTradeLabel(flow.authorizedSide)} lista`;
+  if (flow.result === "continuity") return "PGP · CONTINUIDAD · giro anulado";
+  if (flow.result === "search_giro") return "PGP · buscar confirmación de giro";
+  if (flow.result === "cancelled") return "PGP · señal anulada";
+  if (flow.step === "attack_gc") return "PGP · decidir ataque a GC";
+  if (flow.step === "breaks_level") return "PGP · decidir ruptura de nivel";
+  if (flow.step === "break_health") return "PGP · decidir sano/insano";
+  if (flow.step === "gd_response") return "PGP · decidir respuesta del GD";
+  return "PGP · decisión pendiente";
 }
 function getSignalMissingConfirmations(side, item = modalCurrentItem) {
   const wanted = normalizeSignalConfirmationSide(side);
-  if (wanted === "CALL") return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalNetBuyPoints(item));
-  if (wanted === "PUT") return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalNetSellPoints(item));
-  return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalConfirmationCount(item));
+  const enabled = getSignalEnabledTradeSide(item);
+  return wanted && enabled === wanted ? 0 : 1;
 }
 function ensureSignalConfirmationControls() {
   if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) return null;
   if (signalConfirmPanelEl && signalConfirmPanelEl.isConnected) return signalConfirmPanelEl;
 
-  const footer =
-    document.querySelector("#chartModal .modalFooter") ||
-    (chartModal ? chartModal.querySelector(".modalFooter") : null);
-
+  const footer = document.querySelector("#chartModal .modalFooter") || (chartModal ? chartModal.querySelector(".modalFooter") : null);
   if (!footer) return null;
 
   const panel = document.createElement("div");
@@ -13864,11 +14088,11 @@ function ensureSignalConfirmationControls() {
   panel.style.width = "100%";
   panel.style.boxSizing = "border-box";
   panel.style.margin = "0 0 8px 0";
-  panel.style.padding = "10px";
-  panel.style.borderRadius = "16px";
-  panel.style.border = "1px solid rgba(255,255,255,.14)";
-  panel.style.background = "linear-gradient(180deg, rgba(251,191,36,.075), rgba(255,255,255,.025))";
-  panel.style.boxShadow = "0 10px 22px rgba(0,0,0,.14), inset 0 0 0 1px rgba(251,191,36,.035)";
+  panel.style.padding = "11px";
+  panel.style.borderRadius = "17px";
+  panel.style.border = "1px solid rgba(56,189,248,.28)";
+  panel.style.background = "linear-gradient(180deg,rgba(8,47,73,.30),rgba(2,6,23,.54))";
+  panel.style.boxShadow = "0 10px 24px rgba(0,0,0,.18),inset 0 0 0 1px rgba(56,189,248,.035)";
 
   const top = document.createElement("div");
   top.style.display = "flex";
@@ -13881,12 +14105,11 @@ function ensureSignalConfirmationControls() {
   count.id = "signalConfirmCount";
   count.style.fontWeight = "950";
   count.style.letterSpacing = ".25px";
-  count.style.fontSize = "14px";
-  count.style.padding = "8px 11px";
+  count.style.fontSize = "13.5px";
+  count.style.padding = "8px 10px";
   count.style.borderRadius = "999px";
-  count.style.border = "1px solid rgba(255,255,255,.14)";
-  count.style.background = "rgba(0,0,0,.16)";
-  count.style.whiteSpace = "normal";
+  count.style.border = "1px solid rgba(56,189,248,.32)";
+  count.style.background = "rgba(8,47,73,.30)";
   count.style.lineHeight = "1.15";
 
   const hint = document.createElement("div");
@@ -13895,91 +14118,84 @@ function ensureSignalConfirmationControls() {
   hint.style.textAlign = "right";
   hint.style.fontSize = "11.5px";
   hint.style.fontWeight = "850";
-  hint.style.opacity = ".90";
+  hint.style.opacity = ".92";
   hint.style.lineHeight = "1.18";
-  hint.style.maxWidth = "150px";
+
+  const path = document.createElement("div");
+  path.id = "signalFlowPath";
+  path.style.fontSize = "11.5px";
+  path.style.fontWeight = "800";
+  path.style.color = "rgba(186,230,253,.86)";
+  path.style.margin = "2px 1px 8px";
+  path.style.lineHeight = "1.25";
+  path.style.wordBreak = "break-word";
+
+  const question = document.createElement("div");
+  question.id = "signalFlowQuestion";
+  question.style.fontWeight = "950";
+  question.style.fontSize = "15px";
+  question.style.lineHeight = "1.22";
+  question.style.color = "#f8fafc";
+  question.style.margin = "0 1px 9px";
+
+  const actions = document.createElement("div");
+  actions.id = "signalFlowActions";
+  actions.style.display = "grid";
+  actions.style.gridTemplateColumns = "repeat(2,minmax(0,1fr))";
+  actions.style.gap = "8px";
+
+  const nav = document.createElement("div");
+  nav.style.display = "grid";
+  nav.style.gridTemplateColumns = "1fr 1fr";
+  nav.style.gap = "8px";
+  nav.style.marginTop = "8px";
+
+  const backBtn = document.createElement("button");
+  backBtn.type = "button";
+  backBtn.className = "btn btnGhost";
+  backBtn.textContent = "↩️ VOLVER";
+  backBtn.style.minHeight = "40px";
+  backBtn.style.borderRadius = "12px";
+  backBtn.style.fontWeight = "900";
+  backBtn.onclick = undoPGPFlowStep;
+
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "btn btnGhost";
+  resetBtn.textContent = "↻ REINICIAR";
+  resetBtn.style.minHeight = "40px";
+  resetBtn.style.borderRadius = "12px";
+  resetBtn.style.fontWeight = "900";
+  resetBtn.onclick = resetPGPFlow;
 
   top.appendChild(count);
   top.appendChild(hint);
-
-  const row = document.createElement("div");
-  row.style.display = "grid";
-  row.style.gridTemplateColumns = "minmax(0, 1fr) minmax(0, 1fr) auto";
-  row.style.gap = "8px";
-  row.style.alignItems = "stretch";
-
-  const buyBtn = document.createElement("button");
-  buyBtn.id = "signalConfirmBuyBtn";
-  buyBtn.type = "button";
-  buyBtn.className = "btn";
-  buyBtn.textContent = "🟢 + COMPRA";
-  buyBtn.title = "Sumar una confirmación a favor de COMPRA. Si había puntos de VENTA, primero los resta.";
-  buyBtn.style.minHeight = "48px";
-  buyBtn.style.borderRadius = "14px";
-  buyBtn.style.fontWeight = "950";
-  buyBtn.style.fontSize = "14px";
-  buyBtn.style.letterSpacing = ".25px";
-  buyBtn.style.border = "1px solid rgba(34,197,94,.62)";
-  buyBtn.style.background = "linear-gradient(180deg, rgba(34,197,94,.26), rgba(34,197,94,.10))";
-  buyBtn.style.boxShadow = "0 0 18px rgba(34,197,94,.14), inset 0 0 14px rgba(34,197,94,.07)";
-  buyBtn.style.touchAction = "manipulation";
-
-  const sellBtn = document.createElement("button");
-  sellBtn.id = "signalConfirmSellBtn";
-  sellBtn.type = "button";
-  sellBtn.className = "btn";
-  sellBtn.textContent = "🔴 + VENTA";
-  sellBtn.title = "Sumar una confirmación a favor de VENTA. Si había puntos de COMPRA, primero los resta.";
-  sellBtn.style.minHeight = "48px";
-  sellBtn.style.borderRadius = "14px";
-  sellBtn.style.fontWeight = "950";
-  sellBtn.style.fontSize = "14px";
-  sellBtn.style.letterSpacing = ".25px";
-  sellBtn.style.border = "1px solid rgba(239,68,68,.62)";
-  sellBtn.style.background = "linear-gradient(180deg, rgba(239,68,68,.24), rgba(239,68,68,.10))";
-  sellBtn.style.boxShadow = "0 0 18px rgba(239,68,68,.13), inset 0 0 14px rgba(239,68,68,.07)";
-  sellBtn.style.touchAction = "manipulation";
-
-  const undoBtn = document.createElement("button");
-  undoBtn.id = "signalConfirmUndoBtn";
-  undoBtn.type = "button";
-  undoBtn.className = "btn btnGhost";
-  undoBtn.textContent = "↩️";
-  undoBtn.title = "Quitar última confirmación";
-  undoBtn.style.minHeight = "48px";
-  undoBtn.style.minWidth = "52px";
-  undoBtn.style.borderRadius = "14px";
-  undoBtn.style.fontWeight = "950";
-  undoBtn.style.fontSize = "18px";
-  undoBtn.style.touchAction = "manipulation";
-
-  row.appendChild(buyBtn);
-  row.appendChild(sellBtn);
-  row.appendChild(undoBtn);
+  nav.appendChild(backBtn);
+  nav.appendChild(resetBtn);
   panel.appendChild(top);
-  panel.appendChild(row);
+  panel.appendChild(path);
+  panel.appendChild(question);
+  panel.appendChild(actions);
+  panel.appendChild(nav);
 
   const statusBar = ensureModalCandleStatusBar();
   const tradeRow = footer.querySelector(".tradeRow");
-  if (statusBar && statusBar.parentElement === footer) {
-    statusBar.insertAdjacentElement("afterend", panel);
-  } else if (tradeRow) {
-    footer.insertBefore(panel, tradeRow);
-  } else {
-    footer.prepend(panel);
-  }
+  if (statusBar && statusBar.parentElement === footer) statusBar.insertAdjacentElement("afterend", panel);
+  else if (tradeRow) footer.insertBefore(panel, tradeRow);
+  else footer.prepend(panel);
 
   signalConfirmPanelEl = panel;
   signalConfirmCountEl = count;
-  signalConfirmBtnEl = buyBtn; // compat
-  signalConfirmBuyBtnEl = buyBtn;
-  signalConfirmSellBtnEl = sellBtn;
-  signalConfirmUndoBtnEl = undoBtn;
   signalConfirmHintEl = hint;
-
-  buyBtn.onclick = () => addSignalConfirmation("CALL");
-  sellBtn.onclick = () => addSignalConfirmation("PUT");
-  undoBtn.onclick = () => removeSignalConfirmation();
+  signalFlowPathEl = path;
+  signalFlowQuestionEl = question;
+  signalFlowActionsEl = actions;
+  signalFlowBackBtnEl = backBtn;
+  signalFlowResetBtnEl = resetBtn;
+  signalConfirmBtnEl = null;
+  signalConfirmBuyBtnEl = null;
+  signalConfirmSellBtnEl = null;
+  signalConfirmUndoBtnEl = null;
 
   updateSignalConfirmationUI();
   return panel;
@@ -14111,62 +14327,100 @@ function updateSignalConfirmationUI() {
     return;
   }
   ensureSignalConfirmationControls();
+  if (!signalConfirmPanelEl) return;
 
   const hasItem = !!modalCurrentItem;
   const isOpen = hasItem && isTradeEntryOpen(modalCurrentItem);
-  const buyPts = getSignalNetBuyPoints(modalCurrentItem);
-  const sellPts = getSignalNetSellPoints(modalCurrentItem);
-  const totalEvents = getSignalConfirmationEvents(modalCurrentItem).length;
-  const enabled = getSignalEnabledTradeSide(modalCurrentItem);
-  const ok = !!enabled;
+  if (hasItem) syncPGPDecisionSummary(modalCurrentItem);
+  const flow = derivePGPDecisionFlow(modalCurrentItem);
+  const controlsDisabled = !hasItem || !isOpen || isInicioInamovibleStudyOnlySignal(modalCurrentItem) || !!modalCurrentItem?.trade?.badge || !!modalCurrentItem?.signalAutoEntry?.attempted;
+  const side = normalizeSignalConfirmationSide(modalCurrentItem?.direction);
+  const sideLabel = getPGPTradeLabel(side);
 
   if (signalConfirmCountEl) {
-    const activePts = enabled === "CALL" ? buyPts : enabled === "PUT" ? sellPts : Math.max(buyPts, sellPts);
-    if (enabled === "CALL" || enabled === "PUT") {
-      signalConfirmCountEl.innerHTML = `${enabled === "CALL" ? "COMPRA" : "VENTA"} habilitada <span class="signalConfirmPts">${activePts}/${SIGNAL_CONFIRM_MIN} pts</span>`;
-    } else {
-      signalConfirmCountEl.textContent = getSignalConfirmationStatusText(modalCurrentItem);
-    }
-    signalConfirmCountEl.style.color = enabled === "CALL" ? "#dcfce7" : enabled === "PUT" ? "#fecaca" : "rgba(255,255,255,.92)";
-    signalConfirmCountEl.style.borderColor = enabled === "CALL" ? "rgba(34,197,94,.46)" : enabled === "PUT" ? "rgba(239,68,68,.46)" : "rgba(251,191,36,.24)";
-    signalConfirmCountEl.style.background = enabled === "CALL" ? "rgba(22,163,74,.16)" : enabled === "PUT" ? "rgba(127,29,29,.19)" : "rgba(0,0,0,.13)";
-    signalConfirmCountEl.style.boxShadow = ok ? "0 0 14px rgba(255,255,255,.07)" : "none";
+    signalConfirmCountEl.textContent = flow.result === "authorized"
+      ? `✅ GIRO · ${sideLabel} HABILITADA`
+      : flow.result === "continuity"
+        ? "✅ CONTINUIDAD · GIRO ANULADO"
+        : flow.result === "search_giro"
+          ? "🔄 BUSCAR GIRO"
+          : flow.result === "cancelled"
+            ? "⛔ SEÑAL ANULADA"
+            : "🧭 DECISIÓN PGP";
+    const tone = flow.result === "authorized" || flow.result === "search_giro" ? "red" : flow.result === "continuity" ? "green" : flow.result === "cancelled" ? "neutral" : "blue";
+    const colors = tone === "red"
+      ? ["#fee2e2", "rgba(127,29,29,.24)", "rgba(239,68,68,.46)"]
+      : tone === "green"
+        ? ["#dcfce7", "rgba(22,101,52,.22)", "rgba(34,197,94,.44)"]
+        : tone === "neutral"
+          ? ["#e2e8f0", "rgba(51,65,85,.28)", "rgba(148,163,184,.32)"]
+          : ["#e0f2fe", "rgba(8,47,73,.30)", "rgba(56,189,248,.38)"];
+    signalConfirmCountEl.style.color = colors[0];
+    signalConfirmCountEl.style.background = colors[1];
+    signalConfirmCountEl.style.borderColor = colors[2];
   }
   if (signalConfirmHintEl) {
-    const scope = formatCompactScopeLabel ? formatCompactScopeLabel() : "";
-    const nextOutcomeTxt = formatNextCandleOutcomeLabel(modalCurrentItem, true);
-    if (enabled === "CALL") {
-      signalConfirmHintEl.textContent = `AUTO ${SIGNAL_AUTO_ENTRY_SEC}s · ${nextOutcomeTxt} · ${isDynamicLineMode(modalCurrentItem?.mode) ? "línea respetada" : "zona azul/amarilla"}${scope ? " · " + scope : ""}`;
-      signalConfirmHintEl.style.color = getNextCandleOutcomeTextColor(modalCurrentItem, "#bbf7d0");
-    } else if (enabled === "PUT") {
-      signalConfirmHintEl.textContent = `AUTO ${SIGNAL_AUTO_ENTRY_SEC}s · ${nextOutcomeTxt} · ${isDynamicLineMode(modalCurrentItem?.mode) ? "línea respetada" : "zona azul/amarilla"}${scope ? " · " + scope : ""}`;
-      signalConfirmHintEl.style.color = getNextCandleOutcomeTextColor(modalCurrentItem, "#fecaca");
+    signalConfirmHintEl.textContent = `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s` : ""}`;
+    signalConfirmHintEl.style.color = flow.result === "authorized" ? "#fecaca" : "rgba(186,230,253,.86)";
+  }
+  if (signalFlowPathEl) {
+    signalFlowPathEl.textContent = flow.path.length ? `Ruta: ${flow.path.join(" › ")}` : "Ruta: inicio";
+  }
+  if (signalFlowQuestionEl) signalFlowQuestionEl.textContent = getPGPFlowQuestion(flow);
+  if (signalFlowActionsEl) {
+    signalFlowActionsEl.innerHTML = "";
+    if (flow.step === "attack_gc") {
+      appendPGPFlowButton(signalFlowActionsEl, "💥 ATACA GC", "yes", "Ataca GC", "blue", controlsDisabled);
+      appendPGPFlowButton(signalFlowActionsEl, "🛡️ NO ATACA GC", "no", "No ataca GC", "green", controlsDisabled);
+    } else if (flow.step === "breaks_level") {
+      appendPGPFlowButton(signalFlowActionsEl, "📈 ROMPE NIVEL", "yes", "Rompe nivel", "purple", controlsDisabled);
+      appendPGPFlowButton(signalFlowActionsEl, "⛔ NO ROMPE", "no", "No rompe nivel", "blue", controlsDisabled);
+    } else if (flow.step === "break_health") {
+      appendPGPFlowButton(signalFlowActionsEl, "❤️ SANO", "healthy", "Sano", "green", controlsDisabled);
+      appendPGPFlowButton(signalFlowActionsEl, "🧠 INSANO", "unhealthy", "Insano", "amber", controlsDisabled);
+    } else if (flow.step === "gd_response") {
+      appendPGPFlowButton(signalFlowActionsEl, "✅ GD BIEN\nANULA GIRO", "good", "GD bien", "green", controlsDisabled);
+      appendPGPFlowButton(signalFlowActionsEl, "❌ GD MAL\nBUSCAR GIRO", "bad", "GD mal", "red", controlsDisabled);
+    } else if (flow.step === "giro_authorization") {
+      appendPGPFlowButton(signalFlowActionsEl, `✅ CONFIRMÉ GIRO\nHABILITAR ${sideLabel}`, "confirm", `Giro confirmado · ${sideLabel}`, "red", controlsDisabled || !side);
+      appendPGPFlowButton(signalFlowActionsEl, "⛔ ANULAR SEÑAL", "cancel", "Señal anulada", "neutral", controlsDisabled);
     } else {
-      const score = getSignalConfirmationScore(modalCurrentItem);
-      signalConfirmHintEl.textContent = score === 0
-        ? `PREALERTA · mínimo ${SIGNAL_CONFIRM_MIN} netas`
-        : `PREALERTA · neto ${score > 0 ? "+" : ""}${score}`;
-      signalConfirmHintEl.style.color = "rgba(255,255,255,.68)";
+      const info = document.createElement("div");
+      info.style.gridColumn = "1 / -1";
+      info.style.padding = "10px 11px";
+      info.style.borderRadius = "13px";
+      info.style.fontWeight = "900";
+      info.style.fontSize = "12.5px";
+      info.style.lineHeight = "1.25";
+      info.style.textAlign = "center";
+      if (flow.result === "authorized") {
+        info.textContent = `${sideLabel} habilitada. Se ejecutará en AUTO ${SIGNAL_AUTO_ENTRY_SEC}s si la entrada sigue abierta.`;
+        info.style.color = "#fee2e2";
+        info.style.background = "rgba(127,29,29,.22)";
+        info.style.border = "1px solid rgba(239,68,68,.38)";
+      } else if (flow.result === "continuity") {
+        info.textContent = "El GD respondió bien: se busca continuidad y esta señal de giro queda bloqueada.";
+        info.style.color = "#dcfce7";
+        info.style.background = "rgba(22,101,52,.20)";
+        info.style.border = "1px solid rgba(34,197,94,.36)";
+      } else {
+        info.textContent = "Esta señal no está habilitada para operar.";
+        info.style.color = "#e2e8f0";
+        info.style.background = "rgba(51,65,85,.24)";
+        info.style.border = "1px solid rgba(148,163,184,.30)";
+      }
+      signalFlowActionsEl.appendChild(info);
     }
   }
 
-  const controlsDisabled = !hasItem || !isOpen || isInicioInamovibleStudyOnlySignal(modalCurrentItem) || !!modalCurrentItem?.trade?.badge || !!modalCurrentItem?.signalAutoEntry?.attempted;
-  [signalConfirmBuyBtnEl, signalConfirmSellBtnEl].forEach((btn) => {
-    if (!btn) return;
-    btn.disabled = controlsDisabled;
-    btn.style.opacity = btn.disabled ? ".45" : "1";
-  });
-  if (signalConfirmBuyBtnEl) {
-    signalConfirmBuyBtnEl.textContent = `🟢 + COMPRA ${buyPts}/${SIGNAL_CONFIRM_MIN}`;
-    signalConfirmBuyBtnEl.style.transform = enabled === "CALL" ? "translateY(-1px)" : "none";
+  const answerCount = flow.state.answers.length;
+  if (signalFlowBackBtnEl) {
+    signalFlowBackBtnEl.disabled = controlsDisabled || answerCount <= 0;
+    signalFlowBackBtnEl.style.opacity = signalFlowBackBtnEl.disabled ? ".42" : "1";
   }
-  if (signalConfirmSellBtnEl) {
-    signalConfirmSellBtnEl.textContent = `🔴 + VENTA ${sellPts}/${SIGNAL_CONFIRM_MIN}`;
-    signalConfirmSellBtnEl.style.transform = enabled === "PUT" ? "translateY(-1px)" : "none";
-  }
-  if (signalConfirmUndoBtnEl) {
-    signalConfirmUndoBtnEl.disabled = controlsDisabled || totalEvents <= 0;
-    signalConfirmUndoBtnEl.style.opacity = signalConfirmUndoBtnEl.disabled ? ".42" : "1";
+  if (signalFlowResetBtnEl) {
+    signalFlowResetBtnEl.disabled = controlsDisabled || answerCount <= 0;
+    signalFlowResetBtnEl.style.opacity = signalFlowResetBtnEl.disabled ? ".42" : "1";
   }
 }
 function setSignalConfirmationControlsVisible(show) {
@@ -14176,30 +14430,39 @@ function setSignalConfirmationControlsVisible(show) {
 function applySignalConfirmationTradeGate(locked = false, candleClosed = false) {
   if (!modalCurrentItem) return;
   updateSignalConfirmationUI();
-
   if (locked || candleClosed) return;
   const enabledSide = getSignalEnabledTradeSide(modalCurrentItem);
+  const flow = derivePGPDecisionFlow(modalCurrentItem);
 
   if (enabledSide === "CALL") {
-    paintGiroOnlyButtonState(modalBuyPutBtn, false, `Confirmaciones reales: solo COMPRA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`);
+    paintGiroOnlyButtonState(modalBuyPutBtn, false, "Flujo PGP: solo COMPRA habilitada para el giro confirmado.");
     return;
   }
   if (enabledSide === "PUT") {
-    paintGiroOnlyButtonState(modalBuyCallBtn, false, `Confirmaciones reales: solo VENTA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`);
+    paintGiroOnlyButtonState(modalBuyCallBtn, false, "Flujo PGP: solo VENTA habilitada para el giro confirmado.");
     return;
   }
 
-  const msg = `Necesitas ${SIGNAL_CONFIRM_MIN} puntos netos en un grupo para operar: ${getSignalConfirmationStatusText(modalCurrentItem)}.`;
+  const msg = flow.result === "continuity"
+    ? "Flujo PGP: continuidad confirmada; la operación de giro está anulada."
+    : flow.result === "search_giro"
+      ? "Flujo PGP: falta confirmar visualmente el giro para habilitar la operación."
+      : flow.result === "cancelled"
+        ? "Flujo PGP: señal anulada."
+        : `Completá el flujo PGP: ${getPGPFlowQuestion(flow)}`;
   paintGiroOnlyButtonState(modalBuyCallBtn, false, msg);
   paintGiroOnlyButtonState(modalBuyPutBtn, false, msg);
 }
 function assertSignalMinimumConfirmations(side = null, item = modalCurrentItem) {
   if (!item) return;
   const wanted = normalizeSignalConfirmationSide(side);
-  if (!hasSignalMinimumConfirmations(item, wanted)) {
-    const faltan = getSignalMissingConfirmations(wanted, item);
-    const label = wanted === "CALL" ? "COMPRA" : wanted === "PUT" ? "VENTA" : "un lado";
-    throw new Error(`Faltan ${faltan} punto${faltan === 1 ? "" : "s"} neto${faltan === 1 ? "" : "s"} para ${label}`);
+  const enabled = getSignalEnabledTradeSide(item);
+  if (!wanted || enabled !== wanted) {
+    const flow = derivePGPDecisionFlow(item);
+    if (flow.result === "continuity") throw new Error("El flujo PGP confirmó continuidad y anuló el giro");
+    if (flow.result === "cancelled") throw new Error("La señal PGP fue anulada");
+    if (flow.result === "search_giro") throw new Error("Falta confirmar visualmente el giro en el flujo PGP");
+    throw new Error(`Completá el flujo PGP antes de operar: ${getPGPFlowQuestion(flow)}`);
   }
 }
 function getSignalSNREntryMeta(item) {
@@ -14487,7 +14750,7 @@ function assertSignalSNREntryGateAt57(side = null, item = modalCurrentItem) {
 
   // V46: en modos SNR/SNR polaridad NO se exige que la vela cierre dentro del SNR
   // ni se bloquea la autoentrada por estar lejos de la zona al check de 58s.
-  // La operación se decide por: formación viva + puntos netos requeridos + disciplina OK.
+  // La operación se decide por: formación viva + flujo PGP con giro autorizado + disciplina OK.
   // Igual calculamos el gate SNR para registrar si el precio estaba dentro/cerca/lejos,
   // pero no lo usamos como bloqueo operativo.
   const gate = buildSignalSNREntryGate(item, side, SIGNAL_AUTO_SNR_CHECK_MS);
@@ -14495,23 +14758,23 @@ function assertSignalSNREntryGateAt57(side = null, item = modalCurrentItem) {
     return {
       ok: true,
       pending: false,
-      reason: "auto58_5pts_snr_sin_cierre_zona",
+      reason: "auto58_pgp_autorizado_snr_sin_cierre_zona",
       side: normalizeSignalConfirmationSide(side) || "",
       check_ms: SIGNAL_AUTO_SNR_CHECK_MS,
       check_sec: SIGNAL_AUTO_ENTRY_SEC,
-      message: `AUTO 58 habilitado por ${SIGNAL_CONFIRM_MIN} puntos; cierre/zona SNR no bloquean la entrada.`,
+      message: "AUTO 58 habilitado por flujo PGP con giro autorizado; cierre/zona SNR no bloquean la entrada.",
       original_gate: gate,
     };
   }
   return Object.assign({}, gate || {}, {
     ok: true,
     pending: false,
-    reason: gate?.reason ? `auto58_5pts_sin_bloqueo_${gate.reason}` : "auto58_5pts_sin_cierre_zona",
+    reason: gate?.reason ? `auto58_pgp_sin_bloqueo_${gate.reason}` : "auto58_pgp_sin_cierre_zona",
     original_ok: !!gate?.ok,
     original_reason: gate?.reason || "sin_snr_gate",
     message: gate?.ok
-      ? (gate.message || `AUTO 58 por ${SIGNAL_CONFIRM_MIN} puntos; precio dentro/cerca del SNR.`)
-      : `AUTO 58 por ${SIGNAL_CONFIRM_MIN} puntos; SNR no bloquea entrada (${gate?.message || "sin validación SNR"}).`,
+      ? (gate.message || "AUTO 58 por flujo PGP autorizado; precio dentro/cerca del SNR.")
+      : `AUTO 58 por flujo PGP autorizado; SNR no bloquea entrada (${gate?.message || "sin validación SNR"}).`,
   });
 }
 
@@ -14690,7 +14953,7 @@ function updateModalCandleStatusUI() {
   bar.style.display = "block";
 
   // Las señales históricas marcadas studyOnly permanecen bloqueadas.
-  // Las señales nuevas II10 muestran el panel original de 6 puntos y operación.
+  // Las señales nuevas II11 muestran el flujo guiado PGP y solo operan tras autorización final de giro.
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
     const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
     if (tradeRow) tradeRow.style.display = "none";
@@ -14824,7 +15087,7 @@ function updateModalCandleStatusUI() {
   applyBrainProcessTradeGate(locked, candleClosed);
   updateVisualReadPanelUI();
 
-  // Auto-entrada real: al segundo 58 si ya están completos los puntos netos requeridos.
+  // Auto-entrada real: al segundo 58 solo si el flujo PGP terminó en giro autorizado.
   if (!locked && !candleClosed && !brainBlocked) trySignalAutoEntryAt57("TIMER_58");
 }
 
@@ -17604,6 +17867,39 @@ function getSignalLifecycleStageInfo(item) {
     }
   }
 
+  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !item.minuteComplete) {
+    const flow = derivePGPDecisionFlow(item);
+    if (flow.result === "authorized") {
+      return {
+        key: "pgp_authorized",
+        label: `🔴 GIRO · ${getPGPTradeLabel(flow.authorizedSide)}`,
+        title: `Flujo PGP completo y giro confirmado. ${getPGPTradeLabel(flow.authorizedSide)} habilitada para AUTO ${autoSec}s.`,
+      };
+    }
+    if (flow.result === "continuity") {
+      return {
+        key: "pgp_continuity",
+        label: "✅ CONTINUIDAD",
+        title: "El GD respondió bien: la señal de giro quedó anulada por el flujo PGP.",
+      };
+    }
+    if (flow.result === "search_giro") {
+      return {
+        key: "pgp_giro",
+        label: "🔄 BUSCAR GIRO",
+        title: "El GD respondió mal. Falta la confirmación visual final del giro para habilitar la operación.",
+      };
+    }
+    if (flow.result === "cancelled") {
+      return { key: "pgp_cancelled", label: "⛔ ANULADA", title: "La señal fue anulada manualmente en el flujo PGP." };
+    }
+    return {
+      key: "pgp_pending",
+      label: "🧭 PGP PENDIENTE",
+      title: `${getPGPFlowQuestion(flow)} · ${getSignalConfirmationStatusText(item)}`,
+    };
+  }
+
   if (item.minuteComplete) {
     if (hasTrade || attempted) {
       const badge = item?.trade?.badge ? String(item.trade.badge) : status === "sent" ? "TRADE" : "AUTO";
@@ -17703,6 +17999,22 @@ function updateRowSignalStageOnRow(row, item) {
     el.style.borderColor = "rgba(251,191,36,.42)";
     el.style.background = "rgba(251,191,36,.10)";
     el.style.color = "#fef3c7";
+  } else if (st.key === "pgp_pending") {
+    el.style.borderColor = "rgba(56,189,248,.42)";
+    el.style.background = "rgba(14,165,233,.10)";
+    el.style.color = "#e0f2fe";
+  } else if (st.key === "pgp_giro" || st.key === "pgp_authorized") {
+    el.style.borderColor = "rgba(239,68,68,.44)";
+    el.style.background = "rgba(239,68,68,.11)";
+    el.style.color = "#fee2e2";
+  } else if (st.key === "pgp_continuity") {
+    el.style.borderColor = "rgba(34,197,94,.44)";
+    el.style.background = "rgba(34,197,94,.11)";
+    el.style.color = "#dcfce7";
+  } else if (st.key === "pgp_cancelled") {
+    el.style.borderColor = "rgba(148,163,184,.36)";
+    el.style.background = "rgba(71,85,105,.13)";
+    el.style.color = "#e2e8f0";
   } else if (st.key === "auto_ready" || st.key === "auto_zone" || st.key === "closed_ok") {
     el.style.borderColor = "rgba(34,197,94,.42)";
     el.style.background = "rgba(34,197,94,.10)";
@@ -28080,7 +28392,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II10 — Inicio Inamovible orientado a GIRO con operativa original por puntos y panel visible.
+// V113.33-II11 — Inicio Inamovible orientado a GIRO con flujo PGP guiado y autorización final.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28280,8 +28592,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
-  const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Esperando 6 puntos netos para operar.`;
-  const logicText = `Motor experimental V113.33-II10: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa original: requiere 6 puntos netos en COMPRA o VENTA y solo entonces queda habilitado AUTO 58.`;
+  const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
+  const logicText = `Motor experimental V113.33-II11: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; únicamente una confirmación final explícita de giro habilita la dirección de la señal y AUTO 58.`;
 
   return {
     direction,
@@ -28626,7 +28938,9 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
       signalRadarEndSec: 30,
       signalAutoEntrySec: SIGNAL_AUTO_ENTRY_SEC,
       signalRequiresManualPoints: 0,
+      signalDecisionFlow: PGP_FLOW_VERSION,
       signalConfirmations: [],
+      pgpDecision: createDefaultPGPDecisionState(),
       signalQualityClass: String(bestPack.match.meta?.turnQualityClass || "B"),
       signalQualityScore: Number(bestPack.match.meta?.turnQualityScore || 0),
       signalAutoTradeAllowed: true,
@@ -28655,7 +28969,7 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
     if (added) {
       constructiveLastSignalBySymbol[sym] = { epochMs: now, key: signalKey };
       const patternLabel = String(bestPack.match.meta?.visualReductionPattern || "P/M→G→P/M");
-      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · GIRO ${direction} · sumá 6 puntos para habilitar AUTO 58`, 2600);
+      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · GIRO ${direction} · completá el flujo PGP`, 2600);
       return true;
     }
   } catch (e) {
@@ -29539,6 +29853,7 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
     minuteComplete: false,
     trade: null,
     signalConfirmations: [],
+    pgpDecision: createDefaultPGPDecisionState(),
     signalAutoEntry: null,
     manualGiro: createDefaultManualGiroState(),
     ...(extra && typeof extra === "object" ? extra : {}),

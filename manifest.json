@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "Deriv · Inicio Inamovible",
-  "short_name": "Inicio II",
+  "name": "Deriv · Inicio Inamovible PGP",
+  "short_name": "Inicio PGP",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -22,5 +22,5 @@
       "purpose": "any maskable"
     }
   ],
-  "description": "Versión experimental de Deriv para detectar y operar giros de Inicio Inamovible."
+  "description": "PWA experimental Deriv para giros de Inicio Inamovible con decisión guiada PGP."
 }
