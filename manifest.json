@@ -22,5 +22,5 @@
       "purpose": "any maskable"
     }
   ],
-  "description": "PWA experimental Deriv para giros de Inicio Inamovible con decisión guiada PGP."
+  "description": "PWA experimental Deriv para giros de Inicio Inamovible con decisión guiada PGP y doble confirmación de giro."
 }

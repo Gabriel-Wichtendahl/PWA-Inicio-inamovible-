@@ -1,4 +1,4 @@
-// v113.33-II11: reemplaza los puntos por un asistente PGP guiado por el flujograma.
+// v113.33-II12: flujo PGP guiado con dos confirmaciones explícitas antes de habilitar la operación.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
@@ -125,7 +125,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II11";
+const APP_BUILD_VERSION = "v113.33-II12";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1531,7 +1531,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_FLUJO_GUIADO_AUTORIZACION_FINAL_V113_33_II11_20260802";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_FLUJO_GUIADO_DOBLE_CONFIRMACION_V113_33_II12_20260802";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -13822,7 +13822,7 @@ function getSignalNetSellPoints(item = modalCurrentItem) {
   return Math.max(0, -getSignalConfirmationScore(item));
 }
 
-const PGP_FLOW_VERSION = "PGP_FLOW_V1_II11";
+const PGP_FLOW_VERSION = "PGP_FLOW_V2_II12";
 function createDefaultPGPDecisionState() {
   return {
     version: PGP_FLOW_VERSION,
@@ -13876,6 +13876,8 @@ function derivePGPDecisionFlow(item = modalCurrentItem) {
   let step = "attack_gc";
   let result = "pending";
   const path = [];
+  let confirmationCount = 0;
+  let firstConfirmationAt = null;
   let tradeAuthorized = false;
   let authorizedSide = "";
   let authorizedAt = null;
@@ -13896,10 +13898,21 @@ function derivePGPDecisionFlow(item = modalCurrentItem) {
         step = "continuity";
       } else {
         result = "search_giro";
-        step = "giro_authorization";
+        step = "giro_confirmation_1";
       }
-    } else if (step === "giro_authorization") {
-      if (ans.value === "confirm") {
+    } else if (step === "giro_confirmation_1") {
+      if (ans.value === "confirm_1") {
+        confirmationCount = 1;
+        firstConfirmationAt = Number(ans.at || Date.now());
+        result = "confirmation_1";
+        step = "giro_confirmation_2";
+      } else {
+        result = "cancelled";
+        step = "cancelled";
+      }
+    } else if (step === "giro_confirmation_2") {
+      if (ans.value === "confirm_2") {
+        confirmationCount = 2;
         result = "authorized";
         step = "authorized";
         tradeAuthorized = true;
@@ -13918,6 +13931,8 @@ function derivePGPDecisionFlow(item = modalCurrentItem) {
     step,
     result,
     path,
+    confirmationCount,
+    firstConfirmationAt,
     tradeAuthorized,
     authorizedSide,
     authorizedAt,
@@ -13944,9 +13959,10 @@ function getPGPFlowQuestion(flow) {
   if (flow.step === "breaks_level") return "¿El ataque rompe el nivel?";
   if (flow.step === "break_health") return "¿La ruptura es sana o insana?";
   if (flow.step === "gd_response") return "¿Cómo responde el Grupo Dominante?";
-  if (flow.step === "giro_authorization") return "La ruta pide buscar giro. ¿Confirmaste visualmente el giro?";
+  if (flow.step === "giro_confirmation_1") return "La ruta pide buscar giro. Realizá la primera confirmación visual.";
+  if (flow.step === "giro_confirmation_2") return "Confirmación 1/2 registrada. ¿Confirmás nuevamente el giro para habilitar la operación?";
   if (flow.step === "continuity") return "Continuidad: la señal de giro quedó anulada.";
-  if (flow.step === "authorized") return `Giro confirmado: ${getPGPTradeLabel(flow.authorizedSide)} habilitada.`;
+  if (flow.step === "authorized") return `Giro confirmado 2/2: ${getPGPTradeLabel(flow.authorizedSide)} habilitada.`;
   if (flow.step === "cancelled") return "La señal fue anulada manualmente.";
   return "Decisión PGP";
 }
@@ -13954,8 +13970,18 @@ function applyPGPFlowChoice(value, label = "") {
   if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem) || modalCurrentItem?.trade?.badge || modalCurrentItem?.signalAutoEntry?.attempted) return;
   const flow = derivePGPDecisionFlow(modalCurrentItem);
-  const allowedSteps = new Set(["attack_gc", "breaks_level", "break_health", "gd_response", "giro_authorization"]);
+  const allowedSteps = new Set(["attack_gc", "breaks_level", "break_health", "gd_response", "giro_confirmation_1", "giro_confirmation_2"]);
   if (!allowedSteps.has(flow.step)) return;
+
+  // Evita que un doble toque accidental cuente como las dos confirmaciones.
+  if (flow.step === "giro_confirmation_2") {
+    const elapsed = Date.now() - Number(flow.firstConfirmationAt || 0);
+    if (!Number.isFinite(elapsed) || elapsed < 900) {
+      toast("⏳ Confirmación 1/2 registrada · esperá un instante para confirmar la segunda", 1500);
+      return;
+    }
+  }
+
   const state = normalizePGPDecisionState(modalCurrentItem);
   state.answers.push({
     step: flow.step,
@@ -13978,15 +14004,19 @@ function applyPGPFlowChoice(value, label = "") {
     toast("⛔ Señal PGP anulada", 1500);
     return;
   }
+  if (next?.result === "confirmation_1") {
+    toast("1️⃣ Confirmación 1/2 registrada · falta la segunda", 1700);
+    return;
+  }
   if (next?.result === "authorized" && next.authorizedSide) {
     if (shouldUseAutoHighLowExecution()) {
       void refreshExecutionPlanForSignal(modalCurrentItem, true, next.authorizedSide);
       scheduleHighLowFinalEntryTimers(modalCurrentItem);
     } else {
-      void prepareRiseFallAutoPreProposal(modalCurrentItem, next.authorizedSide, "pgp_flow_authorized");
+      void prepareRiseFallAutoPreProposal(modalCurrentItem, next.authorizedSide, "pgp_flow_authorized_2_of_2");
     }
-    toast(`✅ GIRO confirmado · ${getPGPTradeLabel(next.authorizedSide)} habilitada · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`, 2100);
-    trySignalAutoEntryAt57("PGP_AUTORIZACION_DESPUES_DE_57");
+    toast(`✅ GIRO confirmado 2/2 · ${getPGPTradeLabel(next.authorizedSide)} habilitada · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`, 2100);
+    trySignalAutoEntryAt57("PGP_DOBLE_AUTORIZACION_DESPUES_DE_57");
   }
 }
 function undoPGPFlowStep() {
@@ -14339,29 +14369,41 @@ function updateSignalConfirmationUI() {
 
   if (signalConfirmCountEl) {
     signalConfirmCountEl.textContent = flow.result === "authorized"
-      ? `✅ GIRO · ${sideLabel} HABILITADA`
+      ? `✅ GIRO 2/2 · ${sideLabel} HABILITADA`
       : flow.result === "continuity"
         ? "✅ CONTINUIDAD · GIRO ANULADO"
-        : flow.result === "search_giro"
-          ? "🔄 BUSCAR GIRO"
+        : flow.result === "confirmation_1"
+          ? "1️⃣ GIRO CONFIRMADO 1/2"
+          : flow.result === "search_giro"
+            ? "🔄 BUSCAR GIRO · 0/2"
+            : flow.result === "cancelled"
+              ? "⛔ SEÑAL ANULADA"
+              : "🧭 DECISIÓN PGP";
+    const tone = flow.result === "authorized" || flow.result === "search_giro"
+      ? "red"
+      : flow.result === "confirmation_1"
+        ? "amber"
+        : flow.result === "continuity"
+          ? "green"
           : flow.result === "cancelled"
-            ? "⛔ SEÑAL ANULADA"
-            : "🧭 DECISIÓN PGP";
-    const tone = flow.result === "authorized" || flow.result === "search_giro" ? "red" : flow.result === "continuity" ? "green" : flow.result === "cancelled" ? "neutral" : "blue";
+            ? "neutral"
+            : "blue";
     const colors = tone === "red"
       ? ["#fee2e2", "rgba(127,29,29,.24)", "rgba(239,68,68,.46)"]
-      : tone === "green"
-        ? ["#dcfce7", "rgba(22,101,52,.22)", "rgba(34,197,94,.44)"]
-        : tone === "neutral"
-          ? ["#e2e8f0", "rgba(51,65,85,.28)", "rgba(148,163,184,.32)"]
-          : ["#e0f2fe", "rgba(8,47,73,.30)", "rgba(56,189,248,.38)"];
+      : tone === "amber"
+        ? ["#fef3c7", "rgba(120,53,15,.22)", "rgba(245,158,11,.44)"]
+        : tone === "green"
+          ? ["#dcfce7", "rgba(22,101,52,.22)", "rgba(34,197,94,.44)"]
+          : tone === "neutral"
+            ? ["#e2e8f0", "rgba(51,65,85,.28)", "rgba(148,163,184,.32)"]
+            : ["#e0f2fe", "rgba(8,47,73,.30)", "rgba(56,189,248,.38)"];
     signalConfirmCountEl.style.color = colors[0];
     signalConfirmCountEl.style.background = colors[1];
     signalConfirmCountEl.style.borderColor = colors[2];
   }
   if (signalConfirmHintEl) {
-    signalConfirmHintEl.textContent = `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s` : ""}`;
-    signalConfirmHintEl.style.color = flow.result === "authorized" ? "#fecaca" : "rgba(186,230,253,.86)";
+    signalConfirmHintEl.textContent = `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s` : flow.result === "confirmation_1" ? " · falta 1 confirmación" : ""}`;
+    signalConfirmHintEl.style.color = flow.result === "authorized" ? "#fecaca" : flow.result === "confirmation_1" ? "#fde68a" : "rgba(186,230,253,.86)";
   }
   if (signalFlowPathEl) {
     signalFlowPathEl.textContent = flow.path.length ? `Ruta: ${flow.path.join(" › ")}` : "Ruta: inicio";
@@ -14381,8 +14423,11 @@ function updateSignalConfirmationUI() {
     } else if (flow.step === "gd_response") {
       appendPGPFlowButton(signalFlowActionsEl, "✅ GD BIEN\nANULA GIRO", "good", "GD bien", "green", controlsDisabled);
       appendPGPFlowButton(signalFlowActionsEl, "❌ GD MAL\nBUSCAR GIRO", "bad", "GD mal", "red", controlsDisabled);
-    } else if (flow.step === "giro_authorization") {
-      appendPGPFlowButton(signalFlowActionsEl, `✅ CONFIRMÉ GIRO\nHABILITAR ${sideLabel}`, "confirm", `Giro confirmado · ${sideLabel}`, "red", controlsDisabled || !side);
+    } else if (flow.step === "giro_confirmation_1") {
+      appendPGPFlowButton(signalFlowActionsEl, "1️⃣ CONFIRMAR GIRO\nCONFIRMACIÓN 1/2", "confirm_1", "Giro confirmado 1/2", "amber", controlsDisabled || !side);
+      appendPGPFlowButton(signalFlowActionsEl, "⛔ ANULAR SEÑAL", "cancel", "Señal anulada", "neutral", controlsDisabled);
+    } else if (flow.step === "giro_confirmation_2") {
+      appendPGPFlowButton(signalFlowActionsEl, `2️⃣ CONFIRMAR GIRO\nHABILITAR ${sideLabel}`, "confirm_2", `Giro confirmado 2/2 · ${sideLabel}`, "red", controlsDisabled || !side);
       appendPGPFlowButton(signalFlowActionsEl, "⛔ ANULAR SEÑAL", "cancel", "Señal anulada", "neutral", controlsDisabled);
     } else {
       const info = document.createElement("div");
@@ -14394,7 +14439,7 @@ function updateSignalConfirmationUI() {
       info.style.lineHeight = "1.25";
       info.style.textAlign = "center";
       if (flow.result === "authorized") {
-        info.textContent = `${sideLabel} habilitada. Se ejecutará en AUTO ${SIGNAL_AUTO_ENTRY_SEC}s si la entrada sigue abierta.`;
+        info.textContent = `${sideLabel} habilitada después de 2/2 confirmaciones. Se ejecutará en AUTO ${SIGNAL_AUTO_ENTRY_SEC}s si la entrada sigue abierta.`;
         info.style.color = "#fee2e2";
         info.style.background = "rgba(127,29,29,.22)";
         info.style.border = "1px solid rgba(239,68,68,.38)";
@@ -14435,21 +14480,23 @@ function applySignalConfirmationTradeGate(locked = false, candleClosed = false) 
   const flow = derivePGPDecisionFlow(modalCurrentItem);
 
   if (enabledSide === "CALL") {
-    paintGiroOnlyButtonState(modalBuyPutBtn, false, "Flujo PGP: solo COMPRA habilitada para el giro confirmado.");
+    paintGiroOnlyButtonState(modalBuyPutBtn, false, "Flujo PGP: solo COMPRA habilitada después de 2/2 confirmaciones.");
     return;
   }
   if (enabledSide === "PUT") {
-    paintGiroOnlyButtonState(modalBuyCallBtn, false, "Flujo PGP: solo VENTA habilitada para el giro confirmado.");
+    paintGiroOnlyButtonState(modalBuyCallBtn, false, "Flujo PGP: solo VENTA habilitada después de 2/2 confirmaciones.");
     return;
   }
 
   const msg = flow.result === "continuity"
     ? "Flujo PGP: continuidad confirmada; la operación de giro está anulada."
-    : flow.result === "search_giro"
-      ? "Flujo PGP: falta confirmar visualmente el giro para habilitar la operación."
-      : flow.result === "cancelled"
-        ? "Flujo PGP: señal anulada."
-        : `Completá el flujo PGP: ${getPGPFlowQuestion(flow)}`;
+    : flow.result === "confirmation_1"
+      ? "Flujo PGP: confirmación 1/2 registrada; falta la segunda confirmación."
+      : flow.result === "search_giro"
+        ? "Flujo PGP: faltan dos confirmaciones visuales de giro para habilitar la operación."
+        : flow.result === "cancelled"
+          ? "Flujo PGP: señal anulada."
+          : `Completá el flujo PGP: ${getPGPFlowQuestion(flow)}`;
   paintGiroOnlyButtonState(modalBuyCallBtn, false, msg);
   paintGiroOnlyButtonState(modalBuyPutBtn, false, msg);
 }
@@ -14461,7 +14508,8 @@ function assertSignalMinimumConfirmations(side = null, item = modalCurrentItem) 
     const flow = derivePGPDecisionFlow(item);
     if (flow.result === "continuity") throw new Error("El flujo PGP confirmó continuidad y anuló el giro");
     if (flow.result === "cancelled") throw new Error("La señal PGP fue anulada");
-    if (flow.result === "search_giro") throw new Error("Falta confirmar visualmente el giro en el flujo PGP");
+    if (flow.result === "confirmation_1") throw new Error("Confirmación 1/2 registrada; falta la segunda confirmación de giro");
+    if (flow.result === "search_giro") throw new Error("Faltan dos confirmaciones visuales de giro en el flujo PGP");
     throw new Error(`Completá el flujo PGP antes de operar: ${getPGPFlowQuestion(flow)}`);
   }
 }
@@ -14953,7 +15001,7 @@ function updateModalCandleStatusUI() {
   bar.style.display = "block";
 
   // Las señales históricas marcadas studyOnly permanecen bloqueadas.
-  // Las señales nuevas II11 muestran el flujo guiado PGP y solo operan tras autorización final de giro.
+  // Las señales nuevas II12 muestran el flujo guiado PGP y solo operan tras dos confirmaciones explícitas de giro.
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
     const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
     if (tradeRow) tradeRow.style.display = "none";
@@ -17883,11 +17931,18 @@ function getSignalLifecycleStageInfo(item) {
         title: "El GD respondió bien: la señal de giro quedó anulada por el flujo PGP.",
       };
     }
+    if (flow.result === "confirmation_1") {
+      return {
+        key: "pgp_giro_1_2",
+        label: "1️⃣ GIRO 1/2",
+        title: "Primera confirmación registrada. Falta la segunda para habilitar la operación.",
+      };
+    }
     if (flow.result === "search_giro") {
       return {
         key: "pgp_giro",
-        label: "🔄 BUSCAR GIRO",
-        title: "El GD respondió mal. Falta la confirmación visual final del giro para habilitar la operación.",
+        label: "🔄 BUSCAR GIRO 0/2",
+        title: "El GD respondió mal. Faltan dos confirmaciones visuales de giro para habilitar la operación.",
       };
     }
     if (flow.result === "cancelled") {
@@ -28392,7 +28447,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II11 — Inicio Inamovible orientado a GIRO con flujo PGP guiado y autorización final.
+// V113.33-II12 — Inicio Inamovible orientado a GIRO con flujo PGP guiado y doble confirmación.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28593,7 +28648,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II11: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; únicamente una confirmación final explícita de giro habilita la dirección de la señal y AUTO 58.`;
+  const logicText = `Motor experimental V113.33-II12: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58.`;
 
   return {
     direction,
