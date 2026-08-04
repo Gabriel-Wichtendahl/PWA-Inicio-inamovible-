@@ -1,4 +1,4 @@
-// v113.33-II12: flujo PGP guiado con dos confirmaciones explícitas antes de habilitar la operación.
+// v113.33-II13: flujo PGP con doble confirmación y bloqueo irreversible si el precio vuelve al ancla antes de operar.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
@@ -125,7 +125,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II12";
+const APP_BUILD_VERSION = "v113.33-II13";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1531,7 +1531,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_FLUJO_GUIADO_DOBLE_CONFIRMACION_V113_33_II12_20260802";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_RETORNO_ANCLA_V113_33_II13_20260804";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -4332,7 +4332,7 @@ function markAutoPreProposalOnItem(item, payload) {
   try { if (modalCurrentItem && item.id && modalCurrentItem.id === item.id) updateSignalConfirmationUI(); } catch {}
 }
 async function prepareRiseFallAutoPreProposal(item, side, reason = "auto_preproposal") {
-  if (isInicioInamovibleStudyOnlySignal(item)) return false;
+  if (isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item)) return false;
   const safeSide = normalizeSignalConfirmationSide(side);
   if (!item || !safeSide) return false;
   if (!isNextCandleExpiryTiming() || shouldUseAutoHighLowExecution()) return false;
@@ -5927,7 +5927,7 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
 
 
 function scheduleHighLowFinalEntryTimers(item) {
-  if (isInicioInamovibleStudyOnlySignal(item)) return false;
+  if (isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item)) return false;
   if (!shouldUseAutoHighLowExecution() || !item?.id || !isTradeEntryOpen(item) || item?.signalAutoEntry?.attempted) return;
   const cache = getOrCreateExecutionPlan(item);
   const ms = getSignalConfirmationMs(item);
@@ -6743,7 +6743,7 @@ function cleanupExecutionPlanCache() {
   }
 }
 async function refreshExecutionPlanForSignal(item, force = false, requestedSide = "") {
-  if (!shouldUseAutoHighLowExecution() || !item?.id) return null;
+  if (isSignalAnchorReturnBlocked(item) || !shouldUseAutoHighLowExecution() || !item?.id) return null;
   const cache = getOrCreateExecutionPlan(item);
   if (!cache) return null;
 
@@ -13822,7 +13822,123 @@ function getSignalNetSellPoints(item = modalCurrentItem) {
   return Math.max(0, -getSignalConfirmationScore(item));
 }
 
-const PGP_FLOW_VERSION = "PGP_FLOW_V2_II12";
+const SIGNAL_ANCHOR_RETURN_GUARD_VERSION = "ANCHOR_RETURN_BLOCK_V1_II13";
+function getSignalAnchorQuote(item = modalCurrentItem) {
+  const direct = Number(item?.signalAnchorQuote);
+  if (Number.isFinite(direct)) return direct;
+  const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
+  const first = ticks
+    .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
+    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote))
+    .sort((a, b) => a.ms - b.ms)[0];
+  return Number.isFinite(Number(first?.quote)) ? Number(first.quote) : null;
+}
+function getSignalFormationMovementSide(item = modalCurrentItem) {
+  const meta = item?.giroPolaridad || item?.snrLevel || {};
+  const fromMeta = Math.sign(Number(meta?.turnQualityConditions?.movementSigns?.[0] || 0));
+  if (fromMeta) return fromMeta;
+  const signalSide = normalizeSignalConfirmationSide(item?.direction);
+  // La señal es contraria a los tres impulsos: PUT proviene de formación alcista y CALL de bajista.
+  if (signalSide === "PUT") return 1;
+  if (signalSide === "CALL") return -1;
+  return 0;
+}
+function getSignalAnchorReturnBlock(item = modalCurrentItem) {
+  const block = item?.signalAnchorReturnBlock;
+  return block && typeof block === "object" && block.blocked ? block : null;
+}
+function isSignalAnchorReturnBlocked(item = modalCurrentItem) {
+  return !!getSignalAnchorReturnBlock(item) || (
+    !!item?.signalOperationalBlocked &&
+    String(item?.signalOperationalBlockedReason || "") === "RETURN_TO_ANCHOR"
+  );
+}
+function getSignalAnchorReturnBlockText(item = modalCurrentItem) {
+  const block = getSignalAnchorReturnBlock(item) || {};
+  const anchor = Number(block.anchorQuote ?? getSignalAnchorQuote(item));
+  const touch = Number(block.touchQuote);
+  const anchorTxt = Number.isFinite(anchor) ? anchor.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") : "—";
+  const touchTxt = Number.isFinite(touch) ? touch.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") : "—";
+  return `Volvió al ancla ${anchorTxt}${touchTxt !== "—" ? ` · toque ${touchTxt}` : ""}`;
+}
+function markSignalAnchorReturnBlocked(item, epochMs, quote, msFromAnchor) {
+  if (!item || isSignalAnchorReturnBlocked(item)) return false;
+  const anchorQuote = getSignalAnchorQuote(item);
+  if (!Number.isFinite(Number(anchorQuote))) return false;
+  const movementSide = getSignalFormationMovementSide(item);
+  const block = {
+    version: SIGNAL_ANCHOR_RETURN_GUARD_VERSION,
+    blocked: true,
+    reason: "RETURN_TO_ANCHOR",
+    anchorQuote: Number(anchorQuote),
+    touchQuote: Number(quote),
+    movementSide,
+    blockedAtEpochMs: Number(epochMs),
+    blockedAtMs: Math.max(0, Number(msFromAnchor || 0)),
+    blockedAt: Date.now(),
+    message: "Operativa bloqueada: el precio volvió a tocar o atravesar el ancla de la formación.",
+  };
+  item.signalAnchorQuote = Number(anchorQuote);
+  item.signalAnchorReturnBlock = block;
+  item.signalOperationalBlocked = true;
+  item.signalOperationalBlockedReason = "RETURN_TO_ANCHOR";
+
+  const state = normalizePGPDecisionState(item);
+  state.result = "anchor_return_blocked";
+  state.tradeAuthorized = false;
+  state.authorizedSide = "";
+  state.authorizedAt = null;
+  state.authorizedAtMs = null;
+  state.updatedAt = Date.now();
+  item.pgpDecision = state;
+
+  if (!item?.trade?.badge && !item?.signalAutoEntry?.attempted) {
+    item.signalAutoEntry = {
+      type: "AUTO_58_REAL",
+      attempted: true,
+      status: "cancelled",
+      side: "",
+      ms: Math.max(0, Math.round(Number(msFromAnchor || 0))),
+      sec: Math.max(0, Math.round(Number(msFromAnchor || 0) / 1000)),
+      reason: "RETURN_TO_ANCHOR",
+      at: Date.now(),
+      error: "Cancelada: el precio volvió al punto de inicio de la formación.",
+      anchor_return_block: { ...block },
+    };
+  }
+  if (item.signalAutoPreProposal && typeof item.signalAutoPreProposal === "object") {
+    item.signalAutoPreProposal.status = "cancelled_anchor_return";
+    item.signalAutoPreProposal.cancelled_at = Date.now();
+    item.signalAutoPreProposal.cancel_reason = "RETURN_TO_ANCHOR";
+  }
+  try { toast(`⛔ ${item.symbol || "Señal"}: volvió al ancla · operativa bloqueada`, 2600); } catch {}
+  return true;
+}
+function evaluateSignalAnchorReturnOnTick(item, epochMs, quote) {
+  if (!item?.signalAnchorReturnGuardEnabled || isSignalAnchorReturnBlocked(item)) return false;
+  if (item?.trade?.badge) return false;
+  const autoStatus = String(item?.signalAutoEntry?.status || "");
+  if (["sending", "sent"].includes(autoStatus)) return false;
+
+  const anchorEpochMs = Number(item?.signalAnchorEpochMs || 0);
+  const detectedEpochMs = Number(item?.signalDetectedEpochMs || item?.signalCreatedEpochMs || 0);
+  const ep = Number(epochMs);
+  const q = Number(quote);
+  if (!Number.isFinite(anchorEpochMs) || anchorEpochMs <= 0 || !Number.isFinite(ep) || !Number.isFinite(q)) return false;
+  const ms = ep - anchorEpochMs;
+  if (ms < 0 || ms > 60000) return false;
+  // El guard empieza después de creada la señal; no invalida el propio retroceso que cerró el tercer movimiento.
+  if (Number.isFinite(detectedEpochMs) && detectedEpochMs > 0 && ep <= detectedEpochMs + 250) return false;
+
+  const anchorQuote = getSignalAnchorQuote(item);
+  const movementSide = getSignalFormationMovementSide(item);
+  if (!Number.isFinite(Number(anchorQuote)) || !movementSide) return false;
+  const touchedOrCrossed = movementSide > 0 ? q <= Number(anchorQuote) : q >= Number(anchorQuote);
+  if (!touchedOrCrossed) return false;
+  return markSignalAnchorReturnBlocked(item, ep, q, ms);
+}
+
+const PGP_FLOW_VERSION = "PGP_FLOW_V3_II13_ANCHOR_GUARD";
 function createDefaultPGPDecisionState() {
   return {
     version: PGP_FLOW_VERSION,
@@ -13926,6 +14042,16 @@ function derivePGPDecisionFlow(item = modalCurrentItem) {
     }
   }
 
+  const anchorReturnBlock = getSignalAnchorReturnBlock(item);
+  if (anchorReturnBlock) {
+    step = "anchor_return_blocked";
+    result = "anchor_return_blocked";
+    tradeAuthorized = false;
+    authorizedSide = "";
+    authorizedAt = null;
+    authorizedAtMs = null;
+  }
+
   return {
     state,
     step,
@@ -13937,6 +14063,7 @@ function derivePGPDecisionFlow(item = modalCurrentItem) {
     authorizedSide,
     authorizedAt,
     authorizedAtMs,
+    anchorReturnBlock,
     groups: getPGPGroupLabels(item),
   };
 }
@@ -13964,10 +14091,15 @@ function getPGPFlowQuestion(flow) {
   if (flow.step === "continuity") return "Continuidad: la señal de giro quedó anulada.";
   if (flow.step === "authorized") return `Giro confirmado 2/2: ${getPGPTradeLabel(flow.authorizedSide)} habilitada.`;
   if (flow.step === "cancelled") return "La señal fue anulada manualmente.";
+  if (flow.step === "anchor_return_blocked") return "El precio volvió al ancla: la operativa quedó bloqueada.";
   return "Decisión PGP";
 }
 function applyPGPFlowChoice(value, label = "") {
   if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
+  if (isSignalAnchorReturnBlocked(modalCurrentItem)) {
+    toast("⛔ Operativa bloqueada: el precio volvió al ancla", 1800);
+    return;
+  }
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem) || modalCurrentItem?.trade?.badge || modalCurrentItem?.signalAutoEntry?.attempted) return;
   const flow = derivePGPDecisionFlow(modalCurrentItem);
   const allowedSteps = new Set(["attack_gc", "breaks_level", "break_health", "gd_response", "giro_confirmation_1", "giro_confirmation_2"]);
@@ -14020,7 +14152,7 @@ function applyPGPFlowChoice(value, label = "") {
   }
 }
 function undoPGPFlowStep() {
-  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
+  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
   const state = normalizePGPDecisionState(modalCurrentItem);
   if (!state.answers.length || modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
   state.answers.pop();
@@ -14031,7 +14163,7 @@ function undoPGPFlowStep() {
   updateModalCandleStatusUI();
 }
 function resetPGPFlow() {
-  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
+  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
   if (modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
   modalCurrentItem.pgpDecision = createDefaultPGPDecisionState();
   saveHistory(history);
@@ -14072,6 +14204,7 @@ function appendPGPFlowButton(container, text, value, label, tone = "neutral", di
   return btn;
 }
 function getSignalEnabledTradeSide(item = modalCurrentItem) {
+  if (isSignalAnchorReturnBlocked(item)) return "";
   const flow = derivePGPDecisionFlow(item);
   if (!flow.tradeAuthorized || flow.result !== "authorized") return "";
   const signalSide = normalizeSignalConfirmationSide(item?.direction);
@@ -14090,6 +14223,7 @@ function hasSignalMinimumConfirmations(item = modalCurrentItem, side = null) {
 }
 function getSignalConfirmationStatusText(item = modalCurrentItem) {
   if (!item) return "PGP · sin señal";
+  if (isSignalAnchorReturnBlocked(item)) return "PGP · VOLVIÓ AL ANCLA · operativa bloqueada";
   const flow = derivePGPDecisionFlow(item);
   if (flow.result === "authorized") return `PGP · GIRO CONFIRMADO · ${getPGPTradeLabel(flow.authorizedSide)} lista`;
   if (flow.result === "continuity") return "PGP · CONTINUIDAD · giro anulado";
@@ -14363,13 +14497,16 @@ function updateSignalConfirmationUI() {
   const isOpen = hasItem && isTradeEntryOpen(modalCurrentItem);
   if (hasItem) syncPGPDecisionSummary(modalCurrentItem);
   const flow = derivePGPDecisionFlow(modalCurrentItem);
-  const controlsDisabled = !hasItem || !isOpen || isInicioInamovibleStudyOnlySignal(modalCurrentItem) || !!modalCurrentItem?.trade?.badge || !!modalCurrentItem?.signalAutoEntry?.attempted;
+  const anchorReturnBlocked = isSignalAnchorReturnBlocked(modalCurrentItem);
+  const controlsDisabled = !hasItem || !isOpen || anchorReturnBlocked || isInicioInamovibleStudyOnlySignal(modalCurrentItem) || !!modalCurrentItem?.trade?.badge || !!modalCurrentItem?.signalAutoEntry?.attempted;
   const side = normalizeSignalConfirmationSide(modalCurrentItem?.direction);
   const sideLabel = getPGPTradeLabel(side);
 
   if (signalConfirmCountEl) {
-    signalConfirmCountEl.textContent = flow.result === "authorized"
-      ? `✅ GIRO 2/2 · ${sideLabel} HABILITADA`
+    signalConfirmCountEl.textContent = flow.result === "anchor_return_blocked"
+      ? "⛔ VOLVIÓ AL ANCLA · BLOQUEADA"
+      : flow.result === "authorized"
+        ? `✅ GIRO 2/2 · ${sideLabel} HABILITADA`
       : flow.result === "continuity"
         ? "✅ CONTINUIDAD · GIRO ANULADO"
         : flow.result === "confirmation_1"
@@ -14379,8 +14516,10 @@ function updateSignalConfirmationUI() {
             : flow.result === "cancelled"
               ? "⛔ SEÑAL ANULADA"
               : "🧭 DECISIÓN PGP";
-    const tone = flow.result === "authorized" || flow.result === "search_giro"
+    const tone = flow.result === "anchor_return_blocked"
       ? "red"
+      : flow.result === "authorized" || flow.result === "search_giro"
+        ? "red"
       : flow.result === "confirmation_1"
         ? "amber"
         : flow.result === "continuity"
@@ -14402,8 +14541,10 @@ function updateSignalConfirmationUI() {
     signalConfirmCountEl.style.borderColor = colors[2];
   }
   if (signalConfirmHintEl) {
-    signalConfirmHintEl.textContent = `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s` : flow.result === "confirmation_1" ? " · falta 1 confirmación" : ""}`;
-    signalConfirmHintEl.style.color = flow.result === "authorized" ? "#fecaca" : flow.result === "confirmation_1" ? "#fde68a" : "rgba(186,230,253,.86)";
+    signalConfirmHintEl.textContent = flow.result === "anchor_return_blocked"
+      ? getSignalAnchorReturnBlockText(modalCurrentItem)
+      : `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s` : flow.result === "confirmation_1" ? " · falta 1 confirmación" : ""}`;
+    signalConfirmHintEl.style.color = flow.result === "anchor_return_blocked" || flow.result === "authorized" ? "#fecaca" : flow.result === "confirmation_1" ? "#fde68a" : "rgba(186,230,253,.86)";
   }
   if (signalFlowPathEl) {
     signalFlowPathEl.textContent = flow.path.length ? `Ruta: ${flow.path.join(" › ")}` : "Ruta: inicio";
@@ -14438,7 +14579,12 @@ function updateSignalConfirmationUI() {
       info.style.fontSize = "12.5px";
       info.style.lineHeight = "1.25";
       info.style.textAlign = "center";
-      if (flow.result === "authorized") {
+      if (flow.result === "anchor_return_blocked") {
+        info.textContent = `Operativa bloqueada de forma irreversible. ${getSignalAnchorReturnBlockText(modalCurrentItem)}.`;
+        info.style.color = "#fee2e2";
+        info.style.background = "rgba(127,29,29,.28)";
+        info.style.border = "1px solid rgba(239,68,68,.48)";
+      } else if (flow.result === "authorized") {
         info.textContent = `${sideLabel} habilitada después de 2/2 confirmaciones. Se ejecutará en AUTO ${SIGNAL_AUTO_ENTRY_SEC}s si la entrada sigue abierta.`;
         info.style.color = "#fee2e2";
         info.style.background = "rgba(127,29,29,.22)";
@@ -14476,6 +14622,12 @@ function applySignalConfirmationTradeGate(locked = false, candleClosed = false) 
   if (!modalCurrentItem) return;
   updateSignalConfirmationUI();
   if (locked || candleClosed) return;
+  if (isSignalAnchorReturnBlocked(modalCurrentItem)) {
+    const msg = `Operativa bloqueada: ${getSignalAnchorReturnBlockText(modalCurrentItem)}.`;
+    paintGiroOnlyButtonState(modalBuyCallBtn, false, msg);
+    paintGiroOnlyButtonState(modalBuyPutBtn, false, msg);
+    return;
+  }
   const enabledSide = getSignalEnabledTradeSide(modalCurrentItem);
   const flow = derivePGPDecisionFlow(modalCurrentItem);
 
@@ -14502,6 +14654,7 @@ function applySignalConfirmationTradeGate(locked = false, candleClosed = false) 
 }
 function assertSignalMinimumConfirmations(side = null, item = modalCurrentItem) {
   if (!item) return;
+  if (isSignalAnchorReturnBlocked(item)) throw new Error("Operativa bloqueada: el precio volvió al ancla de la formación");
   const wanted = normalizeSignalConfirmationSide(side);
   const enabled = getSignalEnabledTradeSide(item);
   if (!wanted || enabled !== wanted) {
@@ -14828,7 +14981,7 @@ function assertSignalSNREntryGateAt57(side = null, item = modalCurrentItem) {
 
 function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
   const item = itemOverride || modalCurrentItem;
-  if (!item || isInicioInamovibleStudyOnlySignal(item) || !isTradeEntryOpen(item)) return false;
+  if (!item || isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item) || !isTradeEntryOpen(item)) return false;
   if (item?.trade?.badge) return false;
   if (tradeInFlight) return false;
   if (item?.signalAutoEntry?.attempted) return false;
@@ -15001,7 +15154,7 @@ function updateModalCandleStatusUI() {
   bar.style.display = "block";
 
   // Las señales históricas marcadas studyOnly permanecen bloqueadas.
-  // Las señales nuevas II12 muestran el flujo guiado PGP y solo operan tras dos confirmaciones explícitas de giro.
+  // Las señales nuevas II13 usan el flujo PGP, dos confirmaciones y bloqueo por retorno al ancla.
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
     const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
     if (tradeRow) tradeRow.style.display = "none";
@@ -15049,8 +15202,15 @@ function updateModalCandleStatusUI() {
   const remain = locked ? Math.max(0, disciplineLockUntilMs - Date.now()) : 0;
   const candleClosed = !isOpen;
   const brainBlocked = isBrainProcessTradeBlocked(modalCurrentItem);
+  const anchorReturnBlocked = isSignalAnchorReturnBlocked(modalCurrentItem);
 
-  if (locked) {
+  if (anchorReturnBlocked) {
+    bar.textContent = `⛔ OPERATIVA BLOQUEADA · ${getSignalAnchorReturnBlockText(modalCurrentItem)}`;
+    bar.style.color = "#fee2e2";
+    bar.style.background = "linear-gradient(180deg, rgba(127,29,29,.72), rgba(69,10,10,.58))";
+    bar.style.borderColor = "rgba(248,113,113,.58)";
+    bar.style.boxShadow = "0 0 0 1px rgba(248,113,113,.12) inset, 0 0 14px rgba(239,68,68,.14)";
+  } else if (locked) {
     bar.textContent = `🔒 DEMO bloqueada · ${getDisciplineCounterText()} · falta ${fmtRemaining(remain)}`;
     bar.style.color = "#fff";
     bar.style.background = "linear-gradient(180deg, rgba(127,29,29,.78), rgba(69,10,10,.78))";
@@ -26864,6 +27024,7 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
       const anchor = Number(it.signalAnchorEpochMs || 0);
       if (!Number.isFinite(anchor) || anchor <= 0) continue;
       const ms = ep - anchor;
+      if (evaluateSignalAnchorReturnOnTick(it, ep, q)) changed = true;
       // La formación flotante debe seguir completándose hasta sus propios 60s,
       // aunque Higher/Lower o Rise/Fall ya haya informado ITM/OTM.
       // Antes, trade.badge cortaba este bloque y dejaba el botón con candado
@@ -26894,6 +27055,12 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
         modalCurrentItem.ticks = Array.isArray(it.ticks) ? it.ticks.slice() : [];
         modalCurrentItem.minuteComplete = !!it.minuteComplete;
         modalCurrentItem.signalResult60 = it.signalResult60 ? { ...it.signalResult60 } : null;
+        modalCurrentItem.signalAnchorQuote = it.signalAnchorQuote;
+        modalCurrentItem.signalAnchorReturnBlock = it.signalAnchorReturnBlock ? { ...it.signalAnchorReturnBlock } : null;
+        modalCurrentItem.signalOperationalBlocked = !!it.signalOperationalBlocked;
+        modalCurrentItem.signalOperationalBlockedReason = String(it.signalOperationalBlockedReason || "");
+        modalCurrentItem.signalAutoEntry = it.signalAutoEntry ? { ...it.signalAutoEntry } : null;
+        modalCurrentItem.pgpDecision = it.pgpDecision ? { ...it.pgpDecision, answers: Array.isArray(it.pgpDecision.answers) ? it.pgpDecision.answers.map((a) => ({ ...a })) : [] } : null;
         setCompactModalHeader(modalCurrentItem);
         updateModalCandleStatusUI();
         updateModalFooterReadingUI();
@@ -28447,7 +28614,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II12 — Inicio Inamovible orientado a GIRO con flujo PGP guiado y doble confirmación.
+// V113.33-II13 — Inicio Inamovible orientado a GIRO, doble confirmación y bloqueo por retorno al ancla.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28648,7 +28815,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II12: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58.`;
+  const logicText = `Motor experimental V113.33-II13: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible.`;
 
   return {
     direction,
@@ -28996,6 +29163,12 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
       signalDecisionFlow: PGP_FLOW_VERSION,
       signalConfirmations: [],
       pgpDecision: createDefaultPGPDecisionState(),
+      signalAnchorQuote: Number(bestPack.ticks?.[0]?.quote),
+      signalAnchorReturnGuardEnabled: true,
+      signalAnchorReturnGuardVersion: SIGNAL_ANCHOR_RETURN_GUARD_VERSION,
+      signalAnchorReturnBlock: null,
+      signalOperationalBlocked: false,
+      signalOperationalBlockedReason: "",
       signalQualityClass: String(bestPack.match.meta?.turnQualityClass || "B"),
       signalQualityScore: Number(bestPack.match.meta?.turnQualityScore || 0),
       signalAutoTradeAllowed: true,
