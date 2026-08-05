@@ -22,5 +22,5 @@
       "purpose": "any maskable"
     }
   ],
-  "description": "PWA experimental Deriv para giros de Inicio Inamovible con decisión guiada PGP y doble confirmación de giro bloqueo de operativa si el precio vuelve al ancla y protección para no reemplazar el gráfico que se está analizando."
+  "description": "PWA experimental Deriv para giros de Inicio Inamovible con decisión guiada PGP y doble confirmación de giro bloqueo de operativa si el precio vuelve al ancla y protección para no reemplazar el gráfico que se está analizando y vencimiento Rise/Fall fijo en el segundo 60."
 }

@@ -1,4 +1,4 @@
-// v113.33-II14: flujo PGP, doble confirmación, bloqueo por retorno al ancla y bloqueo de auto-reemplazo del gráfico abierto.
+// v113.33-II15: mantiene II14 y fija el vencimiento operativo en el segundo 60; elimina el cierre visual en 58.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
@@ -125,7 +125,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II14";
+const APP_BUILD_VERSION = "v113.33-II15";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -246,7 +246,9 @@ const ENTRY_TIMING_MODE_KEY = "entryTimingMode_v1";
 const ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY = "AUTO58_NEXT_CANDLE_EXPIRY";
 const ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY = "AUTO58_VISUAL_58_EXPIRY";
 const ENTRY_TIMING_AUTO58_DURATION_1M = "AUTO58_DURATION_1M";
-let entryTimingMode = ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
+// II15: la operación debe vencer en el segundo 60. No se permite volver al modo visual de 58s.
+const ENTRY_TIMING_FORCE_SECOND_60 = true;
+let entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
 const AUTO_TARGET_RETURN_PCT = 130; // ganancia neta objetivo sobre el stake: (payout - stake) / stake × 100.
 const HIGHLOW_TARGET_PAYOUT_TOTAL_PCT = 100 + AUTO_TARGET_RETURN_PCT; // 230% total = stake + 130% de ganancia.
 const HIGHLOW_TARGET_TOLERANCE_PCT = 2;
@@ -1531,7 +1533,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_V113_33_II14_20260805";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_V113_33_II15_20260805";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -3883,48 +3885,40 @@ function ensureExecutionModeButton() {
    Timing de entrada Rise/Fall
    - AUTO post-58 cierre 60: espera el tick real >=58s, envía después de ese tick,
      intenta programar inicio en la próxima vela y fija el cierre al segundo 60.
-   - V94: Cierre visual (vela) ON/OFF: misma entrada, pero vencimiento next_start+58
-     para probar acople con el gráfico de velas visual de Deriv.
+   - II15: el modo de cierre visual en 58 queda eliminado. Rise/Fall inicia en la
+     próxima vela y vence exactamente 60 segundos después, en su segundo 60.
    - V66: la proposal se prepara desde 56s para que al post-58 la compra sea inmediata.
 ========================= */
 function normalizeEntryTimingMode(mode) {
-  const m = String(mode || "").toUpperCase().trim();
-  // V94: dejamos solo ON/OFF para Cierre visual (vela).
-  // Si venía guardado el modo viejo duration_1m, lo tratamos como OFF (cierre 60s).
-  if (m === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY) return ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
+  // II15: ignoramos cualquier preferencia anterior guardada. El vencimiento queda fijo en s60.
   return ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
 }
 function loadEntryTimingMode() {
-  try {
-    entryTimingMode = normalizeEntryTimingMode(localStorage.getItem(ENTRY_TIMING_MODE_KEY) || ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY);
-  } catch {
-    entryTimingMode = ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
-  }
+  entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
+  saveEntryTimingMode();
 }
 function saveEntryTimingMode() {
-  try { localStorage.setItem(ENTRY_TIMING_MODE_KEY, normalizeEntryTimingMode(entryTimingMode)); } catch {}
+  try { localStorage.setItem(ENTRY_TIMING_MODE_KEY, ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY); } catch {}
 }
 function isEntryTimingVisual58() {
-  return normalizeEntryTimingMode(entryTimingMode) === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
+  return false;
 }
 function isNextCandleExpiryTiming() {
-  // High/Low usa barreras/proposals propios; este timing aplica a Rise/Fall.
-  const m = normalizeEntryTimingMode(entryTimingMode);
-  return (m === ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY || m === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY) && !shouldUseAutoHighLowExecution();
+  // High/Low conserva su sistema propio; este vencimiento fijo corresponde a Rise/Fall.
+  return !shouldUseAutoHighLowExecution();
 }
 function isEntryTimingStoredNextCandle() {
-  const m = normalizeEntryTimingMode(entryTimingMode);
-  return m === ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY || m === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
+  return true;
 }
 function getEntryTimingModeLabel() {
-  const visualOn = isEntryTimingVisual58();
-  if (shouldUseAutoHighLowExecution()) return visualOn ? "⏱️ Cierre visual (vela) ON · solo RF" : "⏱️ Cierre visual (vela) OFF · solo RF";
-  return visualOn ? "⏱️ Cierre visual (vela) ON" : "⏱️ Cierre visual (vela) OFF";
+  return shouldUseAutoHighLowExecution()
+    ? "⏱️ Cierre fijo s60 · Rise/Fall"
+    : "⏱️ Cierre fijo en s60";
 }
 function getEntryTimingShortText() {
-  const visualOn = isEntryTimingVisual58();
-  if (shouldUseAutoHighLowExecution()) return visualOn ? "Cierre visual (vela) 58s · solo Rise/Fall" : "Cierre 60s · solo Rise/Fall";
-  return visualOn ? "AUTO prearmado · cierre visual (vela) 58s" : "AUTO prearmado · cierre 60s";
+  return shouldUseAutoHighLowExecution()
+    ? "Cierre fijo s60 · solo Rise/Fall"
+    : "AUTO prearmado · cierre fijo en s60";
 }
 function buildNextCandleTimingPlan(item = null) {
   const anchorMs = Number(item?.signalAnchorEpochMs || 0);
@@ -3935,20 +3929,20 @@ function buildNextCandleTimingPlan(item = null) {
     : (Number.isFinite(itemMinute) && itemMinute > 0 ? itemMinute : currentServerMinute());
   const currentStartEpochSec = hasFloatingAnchor ? Math.floor(anchorMs / 1000) : baseMinute * 60;
   const nextStartEpochSec = currentStartEpochSec + 60;
-  const visual58 = isEntryTimingVisual58();
-  const nextExpiryEpochSec = nextStartEpochSec + (visual58 ? 58 : 60);
+  const visual58 = false;
+  const nextExpiryEpochSec = nextStartEpochSec + 60;
   const nowEpochSec = Math.floor(serverNowMs() / 1000);
   return {
-    mode: visual58 ? ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY : ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY,
+    mode: ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY,
     current_minute: baseMinute,
     current_start_epoch_sec: currentStartEpochSec,
     next_start_epoch_sec: nextStartEpochSec,
     next_expiry_epoch_sec: nextExpiryEpochSec,
     now_epoch_sec: nowEpochSec,
-    planned_duration_sec: nextExpiryEpochSec - nextStartEpochSec,
-    visual_candle_sync: visual58,
-    visual_candle_expiry_second: visual58 ? 58 : 60,
-    expected_contract_duration_if_bought_at_58: visual58 ? 60 : 62,
+    planned_duration_sec: 60,
+    visual_candle_sync: false,
+    visual_candle_expiry_second: 60,
+    expected_contract_duration_if_bought_at_58: 62,
     floating_anchor: hasFloatingAnchor,
     anchor_epoch_ms: hasFloatingAnchor ? anchorMs : null,
   };
@@ -4055,6 +4049,10 @@ function buildNewApiRiseFallProposalAttempts(variants, side, symbol, stake, item
     }
   }
 
+  // II15: para garantizar el cierre en el segundo 60 no aceptamos fallbacks por duración.
+  // Un duration 2s cerraría cerca del s60 de la vela actual y duration 1m podría cerrar en s58.
+  if (ENTRY_TIMING_FORCE_SECOND_60) return out;
+
   // 2) Fallback seguro para post-58: duration 2s.
   // La proposal se prearma 56-58s, pero se compra después del tick >=58s.
   // Con duración 2s el cierre queda pegado al segundo 60 aprox.
@@ -4138,8 +4136,7 @@ function buildRiseFallTimingVariants(side, symbol, stake, item = null) {
     ? "entrada al cierre operativo de la formación (58s) y vencimiento 60s después"
     : "cierre fijo al segundo 60";
 
-  // V112.1: con cierre visual 58 no usamos date_start. La operación debe comenzar
-  // cuando se envía buy al tick 58, no dos segundos más tarde en el segundo 60.
+  // Rama histórica de cierre visual. En II15 no se alcanza porque visual_candle_sync es siempre false.
   if (plan.visual_candle_sync) {
     return [{
       label: `AUTO58_DATE_EXPIRY_ONLY_${suffix}`,
@@ -4320,7 +4317,7 @@ function getValidAutoPreProposal(item, side, symbol, stake) {
     ppVariant.includes("AUTO58_NEW_API_DURATION");
   // V112.1: en AUTO 58 visual no aceptamos fallbacks de 2s/1m como preproposal.
   // El contrato debe empezar al cierre de la formación y vencer exactamente en el objetivo.
-  if (isEntryTimingVisual58() && isDurationFallback) return null;
+  if ((ENTRY_TIMING_FORCE_SECOND_60 || isEntryTimingVisual58()) && isDurationFallback) return null;
   if (!isDurationFallback && ppExpiry && planExpiry && ppExpiry !== planExpiry) return null;
   if (Date.now() - Number(pp.prepared_at || 0) > SIGNAL_AUTO_PREPROPOSAL_TTL_MS) return null;
   return pp;
@@ -4367,8 +4364,8 @@ async function prepareRiseFallAutoPreProposal(item, side, reason = "auto_preprop
     const pack = await requestRiseFallProposalWithTiming(safeSide, symbol, stake, item, 9000);
     const proposal = pack?.res?.proposal;
     const timingVariant = String(pack?.timing?.variant || pack?.timing?.mode || "");
-    if (isEntryTimingVisual58() && (timingVariant.includes("duration_2s") || timingVariant.includes("duration_1m") || timingVariant.includes("AUTO58_NEW_API_DURATION"))) {
-      throw new Error("Deriv no devolvió una proposal con vencimiento exacto para AUTO 58");
+    if ((ENTRY_TIMING_FORCE_SECOND_60 || isEntryTimingVisual58()) && (timingVariant.includes("duration_2s") || timingVariant.includes("duration_1m") || timingVariant.includes("AUTO58_NEW_API_DURATION"))) {
+      throw new Error("Deriv no devolvió una proposal con vencimiento exacto en el segundo 60");
     }
     const proposalId = proposal?.id ? String(proposal.id) : "";
     const askPrice = Number(proposal?.ask_price);
@@ -4492,12 +4489,10 @@ async function prepareLiveAutoPreProposalIfNeeded(reason = "live_preproposal") {
 function applyEntryTimingModeUI() {
   const btn = pickEl("entryTimingModeBtn");
   if (!btn) return;
-  const visualOn = isEntryTimingVisual58();
+  entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
   btn.textContent = getEntryTimingModeLabel();
-  btn.classList.toggle("active", visualOn && !shouldUseAutoHighLowExecution());
-  btn.title = visualOn
-    ? "Cierre visual (vela) ON: compra post-58 como ahora, entrada en la próxima vela y vencimiento next_start+58 para probar acople con el gráfico de velas visual de Deriv. Solo aplica a Rise/Fall."
-    : "Cierre visual (vela) OFF: compra post-58 como ahora, entrada en la próxima vela y vencimiento next_start+60. Solo aplica a Rise/Fall.";
+  btn.classList.add("active");
+  btn.title = "II15: la entrada se prepara como antes, pero el contrato Rise/Fall comienza en la próxima vela y vence exactamente en su segundo 60. El cierre en 58 está desactivado.";
 }
 function ensureEntryTimingModeButton() {
   let btn = pickEl("entryTimingModeBtn");
@@ -4517,13 +4512,11 @@ function ensureEntryTimingModeButton() {
     else host.appendChild(btn);
   }
   btn.onclick = () => {
-    entryTimingMode = isEntryTimingVisual58()
-      ? ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY
-      : ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
+    entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
     saveEntryTimingMode();
     applyEntryTimingModeUI();
     updateModalCandleStatusUI();
-    toast(isEntryTimingVisual58() ? "⏱️ Cierre visual (vela) ON" : "⏱️ Cierre visual (vela) OFF", 1900);
+    toast("⏱️ Cierre fijado en el segundo 60", 1900);
   };
   applyEntryTimingModeUI();
   return btn;
@@ -15158,7 +15151,7 @@ function updateModalCandleStatusUI() {
   bar.style.display = "block";
 
   // Las señales históricas marcadas studyOnly permanecen bloqueadas.
-  // Las señales nuevas II14 usan flujo PGP, dos confirmaciones, bloqueo por retorno al ancla y modal fijado durante el análisis.
+  // Las señales nuevas II15 usan flujo PGP, dos confirmaciones, bloqueo por retorno al ancla, modal fijado y cierre en s60.
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
     const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
     if (tradeRow) tradeRow.style.display = "none";
@@ -28618,7 +28611,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II14 — Inicio Inamovible orientado a GIRO, doble confirmación, bloqueo por retorno al ancla y modal fijado.
+// V113.33-II15 — Inicio Inamovible con cierre operativo fijo en el segundo 60.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28819,7 +28812,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II14: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible.`;
+  const logicText = `Motor experimental V113.33-II15: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall, el contrato comienza en la próxima vela y vence exactamente en su segundo 60; el cierre visual en 58 está desactivado.`;
 
   return {
     direction,
