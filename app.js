@@ -1,4 +1,4 @@
-// v113.33-II13: flujo PGP con doble confirmación y bloqueo irreversible si el precio vuelve al ancla antes de operar.
+// v113.33-II14: flujo PGP, doble confirmación, bloqueo por retorno al ancla y bloqueo de auto-reemplazo del gráfico abierto.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
@@ -125,7 +125,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II13";
+const APP_BUILD_VERSION = "v113.33-II14";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1531,7 +1531,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_RETORNO_ANCLA_V113_33_II13_20260804";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_V113_33_II14_20260805";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -7147,16 +7147,20 @@ function ensureAutoOpenChartButton() {
   applyAutoOpenChartUI();
   return btn;
 }
+function isChartModalOpenForAutoLock() {
+  if (!chartModal) return false;
+  return !chartModal.classList.contains("hidden") && chartModal.getAttribute("aria-hidden") !== "true";
+}
 function shouldAutoOpenChartNow() {
   if (!autoOpenChartOnSignal) return false;
   if (document.visibilityState !== "visible") return false;
 
-  // ✅ NUEVO:
-  // Antes se bloqueaba el auto-open si ya había un gráfico abierto.
-  // Eso hacía que, si quedaba abierta una señal vieja, una señal nueva NO se mostrara.
-  // ✅ FIX: ahora también puede auto-abrir aunque estés en Trades o Práctica.
-  // Si sale una señal nueva, la app cambia a Señales y abre/reemplaza el gráfico.
-  // Solo se bloquea en Configuración para no tocar ajustes mientras los estás editando.
+  // II14 · Bloqueo de foco del gráfico:
+  // si el usuario ya está analizando una señal, una señal nueva se registra y avisa,
+  // pero nunca reemplaza automáticamente el modal actual. Solo la X libera el foco.
+  if (isChartModalOpenForAutoLock()) return false;
+
+  // Auto-abrir sigue disponible desde cualquier pestaña, excepto Configuración.
   if (settingsModal && !settingsModal.classList.contains("hidden")) return false;
   if (isSignalFatigueCooldownActive()) return false;
 
@@ -13822,7 +13826,7 @@ function getSignalNetSellPoints(item = modalCurrentItem) {
   return Math.max(0, -getSignalConfirmationScore(item));
 }
 
-const SIGNAL_ANCHOR_RETURN_GUARD_VERSION = "ANCHOR_RETURN_BLOCK_V1_II13";
+const SIGNAL_ANCHOR_RETURN_GUARD_VERSION = "ANCHOR_RETURN_BLOCK_V1_II14";
 function getSignalAnchorQuote(item = modalCurrentItem) {
   const direct = Number(item?.signalAnchorQuote);
   if (Number.isFinite(direct)) return direct;
@@ -13938,7 +13942,7 @@ function evaluateSignalAnchorReturnOnTick(item, epochMs, quote) {
   return markSignalAnchorReturnBlocked(item, ep, q, ms);
 }
 
-const PGP_FLOW_VERSION = "PGP_FLOW_V3_II13_ANCHOR_GUARD";
+const PGP_FLOW_VERSION = "PGP_FLOW_V4_II14_ANCHOR_GUARD_MODAL_LOCK";
 function createDefaultPGPDecisionState() {
   return {
     version: PGP_FLOW_VERSION,
@@ -15154,7 +15158,7 @@ function updateModalCandleStatusUI() {
   bar.style.display = "block";
 
   // Las señales históricas marcadas studyOnly permanecen bloqueadas.
-  // Las señales nuevas II13 usan el flujo PGP, dos confirmaciones y bloqueo por retorno al ancla.
+  // Las señales nuevas II14 usan flujo PGP, dos confirmaciones, bloqueo por retorno al ancla y modal fijado durante el análisis.
   if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
     const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
     if (tradeRow) tradeRow.style.display = "none";
@@ -28614,7 +28618,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II13 — Inicio Inamovible orientado a GIRO, doble confirmación y bloqueo por retorno al ancla.
+// V113.33-II14 — Inicio Inamovible orientado a GIRO, doble confirmación, bloqueo por retorno al ancla y modal fijado.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28815,7 +28819,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II13: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible.`;
+  const logicText = `Motor experimental V113.33-II14: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible.`;
 
   return {
     direction,
@@ -30114,9 +30118,13 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
   // Así evitamos sumar una vibración adicional desde la página abierta.
   showNotification(symbol, direction, modeLabel, item);
 
+  const autoOpenBlockedByCurrentAnalysis = autoOpenChartOnSignal && isChartModalOpenForAutoLock();
   if (shouldAutoOpenChartNow()) {
     requestAnimationFrame(() => {
       try {
+        // Revalidar dentro del frame evita reemplazar un modal que se abrió
+        // entre la detección de la señal y la ejecución del auto-open.
+        if (isChartModalOpenForAutoLock()) return;
         setActiveView("signals");
         openChartModal(item, { source: "signals", signalId: item.id || "" });
 
@@ -30127,6 +30135,8 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
         }
       } catch {}
     });
+  } else if (autoOpenBlockedByCurrentAnalysis) {
+    toast(`📈 Nueva señal ${symbol} ${labelDir(direction)} guardada · el gráfico actual queda fijado hasta cerrarlo`, 2600);
   }
 
   return item;
