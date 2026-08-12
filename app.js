@@ -1,4 +1,4 @@
-// v113.33-II16: mantiene II15 y agrega debilidad obligatoria en el tercer lateral.
+// v113.33-II17: mantiene II16 y fija también Higher/Lower al vencimiento absoluto s60.
 // La pendiente/velocidad del tercer P/M debe ser <= 85% de la pendiente del G central.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
@@ -126,7 +126,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II16";
+const APP_BUILD_VERSION = "v113.33-II17";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -259,7 +259,7 @@ const HIGHLOW_TARGET_MAX_SEARCH_QUOTES = 10;
 const AUTO_PRECALC_REFRESH_MS = 10000;
 const AUTO_PRECALC_STALE_MS = 120000;
 const HIGHLOW_PRECALC_MAX_ATTEMPTS = 1;
-const HIGHLOW_BARRIER_CACHE_KEY = "highLowBarrierCache_v12_profit130_precision_real";
+const HIGHLOW_BARRIER_CACHE_KEY = "highLowBarrierCache_v13_profit130_fixed_s60";
 const HIGHLOW_BARRIER_PRECISION_CACHE_KEY = "highLowBarrierPrecisionBySymbol_v3_real_symbol_precision";
 const HIGHLOW_API_MAX_BARRIER_DECIMALS = 4;
 const HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL = {
@@ -1534,7 +1534,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_DEBILIDAD_TERCER_85_V113_33_II16_20260812";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_DEBILIDAD_TERCER_85_V113_33_II17_20260812";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -3905,21 +3905,20 @@ function isEntryTimingVisual58() {
   return false;
 }
 function isNextCandleExpiryTiming() {
-  // High/Low conserva su sistema propio; este vencimiento fijo corresponde a Rise/Fall.
+  // Rise/Fall conserva su rama de timing propia. Higher/Lower II17 usa
+  // date_expiry absoluto dentro de su motor, sin alterar el disparo AUTO 58.
   return !shouldUseAutoHighLowExecution();
 }
 function isEntryTimingStoredNextCandle() {
   return true;
 }
 function getEntryTimingModeLabel() {
-  return shouldUseAutoHighLowExecution()
-    ? "⏱️ Cierre fijo s60 · Rise/Fall"
-    : "⏱️ Cierre fijo en s60";
+  return "⏱️ Cierre fijo en s60";
 }
 function getEntryTimingShortText() {
   return shouldUseAutoHighLowExecution()
-    ? "Cierre fijo s60 · solo Rise/Fall"
-    : "AUTO prearmado · cierre fijo en s60";
+    ? "Higher/Lower · vencimiento fijo en s60"
+    : "Rise/Fall · vencimiento fijo en s60";
 }
 function buildNextCandleTimingPlan(item = null) {
   const anchorMs = Number(item?.signalAnchorEpochMs || 0);
@@ -3947,6 +3946,30 @@ function buildNextCandleTimingPlan(item = null) {
     floating_anchor: hasFloatingAnchor,
     anchor_epoch_ms: hasFloatingAnchor ? anchorMs : null,
   };
+}
+
+// II17: Higher/Lower usa el mismo vencimiento absoluto que Rise/Fall.
+// Si la compra se envía cerca de s58, el contrato dura ~62 s y vence exactamente
+// en el s60 de la vela objetivo, en lugar de 1 minuto después de la compra.
+function getHighLowFixedExpiryEpochSec(item = null) {
+  const expiry = Number(buildNextCandleTimingPlan(item).next_expiry_epoch_sec || 0);
+  return Number.isFinite(expiry) && expiry > 0 ? Math.floor(expiry) : 0;
+}
+function applyHighLowFixedExpiryToRequest(req = {}, item = null) {
+  const expiry = getHighLowFixedExpiryEpochSec(item);
+  if (!expiry) throw new Error("Higher/Lower sin vencimiento s60 calculable.");
+  const now = Math.floor(serverNowMs() / 1000);
+  if (expiry <= now + 1) throw new Error("Higher/Lower: el vencimiento s60 ya pasó.");
+  delete req.duration;
+  delete req.duration_unit;
+  req.date_expiry = expiry;
+  return expiry;
+}
+function isHighLowPlanExpiryAligned(plan, item = null) {
+  if (!plan) return false;
+  const expected = getHighLowFixedExpiryEpochSec(item);
+  const actual = Number(plan.fixedExpiryEpochSec || plan.dateExpiry || plan.expiryEpochSec || 0);
+  return !!expected && Number.isFinite(actual) && Math.floor(actual) === Math.floor(expected);
 }
 const RISE_FALL_ALLOW_EQUALS_ENABLED = true;
 function getRiseFallDerivContractType(side) {
@@ -4493,7 +4516,7 @@ function applyEntryTimingModeUI() {
   entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
   btn.textContent = getEntryTimingModeLabel();
   btn.classList.add("active");
-  btn.title = "II16: conserva la entrada de II15 y el contrato Rise/Fall comienza en la próxima vela y vence exactamente en su segundo 60. El cierre en 58 está desactivado.";
+  btn.title = "II17: Rise/Fall y Higher/Lower vencen exactamente en el segundo 60 objetivo. Higher/Lower ya no usa 1 minuto desde la compra en s58.";
 }
 function ensureEntryTimingModeButton() {
   let btn = pickEl("entryTimingModeBtn");
@@ -4937,7 +4960,7 @@ function buildHighLowAbsoluteBarrier(relativeBarrier, spotHint) {
   return absolute.toFixed(getHighLowAbsoluteBarrierDecimals(spotHint));
 }
 
-async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, allowLegacy = true, preferredUnderlyingSymbol = "", spotHint = NaN) {
+async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, allowLegacy = true, preferredUnderlyingSymbol = "", spotHint = NaN, item = null) {
   const allErrors = [];
   const auditRows = [];
   const safeSymbol = String(symbol || "").trim();
@@ -5077,6 +5100,13 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
       }
     }
 
+    // II17: todas las proposals Higher/Lower de esta señal usan date_expiry absoluto.
+    // No hay fallback a duration=1m: si Deriv no acepta el s60 exacto, se cancela la entrada.
+    const fixedExpiryEpochSec = getHighLowFixedExpiryEpochSec(item);
+    for (const attempt of attempts) {
+      applyHighLowFixedExpiryToRequest(attempt.req, item);
+    }
+
     let retryWithPrecision = null;
     const roundErrors = [];
     for (const attempt of attempts) {
@@ -5089,6 +5119,8 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
         underlying_symbol: underlyingSymbol,
         sent_barrier: String(req.barrier || ""),
         relative_candidate: String(safeBarrier || ""),
+        date_expiry: Number(req.date_expiry || fixedExpiryEpochSec || 0) || null,
+        expiry_mode: "fixed_s60_absolute",
       };
       try {
         window.DerivDebug?.log?.("HIGHLOW_PROPOSAL_ATTEMPT", {
@@ -5098,6 +5130,8 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
           underlyingSymbol,
           barrier: String(req.barrier || "default"),
           relativeCandidate: String(safeBarrier || ""),
+          dateExpiry: Number(req.date_expiry || fixedExpiryEpochSec || 0) || null,
+          expiryMode: "fixed_s60_absolute",
         });
         const res = await wsRequest(req, timeoutMs);
         const proposal = res?.proposal || null;
@@ -5134,6 +5168,8 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
             barrier: safeBarrier,
             apiBarrier: String(req.barrier || ""),
             barrierPrecision: parsedBarrier?.precision ?? 0,
+            fixedExpiryEpochSec: Number(req.date_expiry || fixedExpiryEpochSec || 0) || null,
+            expiryMode: "fixed_s60_absolute",
           };
         }
 
@@ -5213,8 +5249,8 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
   }
 }
 
-async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS) {
-  const raw = await requestHighLowProposalRaw(symbol, side, stake, "", timeoutMs, false);
+async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, item = null) {
+  const raw = await requestHighLowProposalRaw(symbol, side, stake, "", timeoutMs, false, "", NaN, item);
   const plan = parseProposalToExecution({
     proposal: raw?.res?.proposal,
     defaultBarrier: true,
@@ -5225,16 +5261,18 @@ async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = A
   if (plan) {
     plan.symbolDefaultBarrier = true;
     plan.source = "symbol_default";
+    plan.fixedExpiryEpochSec = Number(raw?.fixedExpiryEpochSec || 0) || null;
+    plan.expiryMode = String(raw?.expiryMode || "fixed_s60_absolute");
   }
   return isHighLowPlanWithinPayoutCap(plan) ? plan : null;
 }
-async function getHighLowProposalQuote(symbol, side, barrierCandidate, precisionIgnored, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, preferredUnderlyingSymbol = "", spotHint = NaN) {
+async function getHighLowProposalQuote(symbol, side, barrierCandidate, precisionIgnored, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, preferredUnderlyingSymbol = "", spotHint = NaN, item = null) {
   const candidate = typeof barrierCandidate === "object" && barrierCandidate
     ? barrierCandidate
     : makeBarrierCandidateFromAbsolute(side, Math.abs(Number(barrierCandidate || 0)));
   if (!candidate?.barrier) return null;
   const normalizedBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol);
-  const raw = await requestHighLowProposalRaw(symbol, side, stake, normalizedBarrier, timeoutMs, true, preferredUnderlyingSymbol, spotHint);
+  const raw = await requestHighLowProposalRaw(symbol, side, stake, normalizedBarrier, timeoutMs, true, preferredUnderlyingSymbol, spotHint, item);
   const effectiveBarrier = String(raw?.barrier || normalizedBarrier);
   const normalizedParsed = parseRelativeBarrierString(effectiveBarrier);
   const plan = parseProposalToExecution({
@@ -5248,6 +5286,10 @@ async function getHighLowProposalQuote(symbol, side, barrierCandidate, precision
     barrierMode: raw?.barrierMode,
     apiBarrier: raw?.apiBarrier,
   }, side, normalizedParsed?.precision ?? candidate.precision);
+  if (plan) {
+    plan.fixedExpiryEpochSec = Number(raw?.fixedExpiryEpochSec || 0) || null;
+    plan.expiryMode = String(raw?.expiryMode || "fixed_s60_absolute");
+  }
   return isHighLowPlanWithinPayoutCap(plan) ? plan : null;
 }
 
@@ -5367,7 +5409,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
       : candidate;
     quotesUsed++;
     try {
-      const plan = await getHighLowProposalQuote(symbol, side, effectiveCandidate, effectiveCandidate.precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item));
+      const plan = await getHighLowProposalQuote(symbol, side, effectiveCandidate, effectiveCandidate.precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
       return { kind: "plan", plan: remember(plan, effectiveCandidate), candidate: effectiveCandidate };
     } catch (e) {
       const msg = e?.message || String(e || "");
@@ -5384,7 +5426,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   // Deriv exponga una barrera reproducible y ya quede dentro de 125–135% de ganancia neta (225–235% total).
   let defaultPlan = null;
   try {
-    defaultPlan = await getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs);
+    defaultPlan = await getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs, item);
     if (defaultPlan) remember(defaultPlan, null);
     if (defaultPlan && isHighLowPlanAcceptable(defaultPlan) && makeHighLowCandidateFromPlan(defaultPlan, side)) {
       rememberExecutionBarrierHint(symbol, side, defaultPlan, defaultPlan.precision || 0);
@@ -5608,7 +5650,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   return null;
 }
 
-async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPlan, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS) {
+async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPlan, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, item = null) {
   // Las recotizaciones de entrada siempre respetan el lado del contrato:
   // HIGHER/CALL usa barrera positiva y LOWER/PUT usa barrera negativa.
   const candidate = makeHighLowSameSideCandidate(barrierPlan, side, symbol);
@@ -5621,7 +5663,8 @@ async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPla
     stake,
     timeoutMs,
     String(barrierPlan?.underlyingSymbol || ""),
-    Number(lastQuoteBySymbol?.[symbol]) || getLatestSignalQuoteForBarrier({ symbol })
+    Number(lastQuoteBySymbol?.[symbol]) || getLatestSignalQuoteForBarrier(item || { symbol }),
+    item
   );
   if (!plan?.proposalId || !Number.isFinite(Number(plan.askPrice))) {
     throw new Error(`${side === "CALL" ? "HIGHER" : "LOWER"}: Deriv no devolvió una proposal válida.`);
@@ -5770,6 +5813,7 @@ function getHighLowFinalEntryPlan(item, side, stake, maxAgeMs = SIGNAL_HIGHLOW_F
   const persistedKey = side === "CALL" ? "finalEntryCall" : "finalEntryPut";
   let plan = cache?.[key] || item?.autoHighLow?.[persistedKey] || null;
   if (!plan || !isHighLowPlanAcceptable(plan) || !plan.proposalId || !isHighLowBarrierOnRequiredSide(plan, side)) return null;
+  if (!isHighLowPlanExpiryAligned(plan, item)) return null;
   const ask = Number(plan.askPrice);
   if (!Number.isFinite(ask) || ask <= 0 || Math.abs(ask - Number(stake)) > 0.02) return null;
   const preparedAt = Number(plan.finalPreparedAt || plan.updatedAt || 0);
@@ -5865,7 +5909,7 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
         tried.add(String(candidate.barrier));
 
         const remaining = Math.max(300, Math.min(800, SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS + 250 - nowMs + 120));
-        const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, remaining);
+        const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, remaining, item);
         if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
         if (plan && isHighLowPlanAcceptable(plan)) {
           const finalPlan = saveHighLowFinalEntryPlan(item, safeSide, plan, reason);
@@ -6041,7 +6085,7 @@ async function rescueNearRangeHighLowPlanAtEntry(item, side, stake) {
     if (!candidate?.barrier) continue;
     try {
       const remaining = Math.max(250, Math.min(650, SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_MAX_MS - nowMs + 80));
-      const plan = await requestFreshHighLowPlanForBarrier(item.symbol, side, stake, candidate, remaining);
+      const plan = await requestFreshHighLowPlanForBarrier(item.symbol, side, stake, candidate, remaining, item);
       if (plan && getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest)) closest = plan;
       if (plan && isHighLowPlanAcceptable(plan)) {
         plan.source = "entry_near_range_fine_precision_rescue";
@@ -6159,6 +6203,8 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
     item.signalAutoEntry.auto_trigger_delay_ms = Math.max(0, Math.round(triggerMs - SIGNAL_AUTO_ENTRY_MS));
     item.signalAutoEntry.trigger_timing = triggerMs - SIGNAL_AUTO_ENTRY_MS > SIGNAL_AUTO_TIMER_DELAY_WARN_MS ? "timer_delayed" : "on_time";
 
+    if (finalPlan && !isHighLowPlanExpiryAligned(finalPlan, item)) finalPlan = null;
+
     if (!finalPlan) {
       const diagnosis = classifyHighLowAutoTimingFailure(item, side);
       item.signalAutoEntry.timing_diagnosis = diagnosis;
@@ -6270,7 +6316,7 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
     let retryPlan = null;
     try {
       const remaining = Math.max(350, Math.min(850, SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS - afterFirstBuyMs + 120));
-      retryPlan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, finalPlan, remaining);
+      retryPlan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, finalPlan, remaining, item);
       if (retryPlan) {
         retryPlan.source = "market_moved_reprice_profit_130";
         retryPlan.repricedFromProposalId = String(finalPlan.proposalId || "");
@@ -6426,12 +6472,12 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
 
     try {
       const remainingMs = Math.max(450, SIGNAL_AUTO_POST58_MAX_MS - msBeforeQuote + 180);
-      const plan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, prepared, Math.min(1200, remainingMs));
+      const plan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, prepared, Math.min(1200, remainingMs), item);
       if (plan && (!closestQuoted || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closestQuoted))) {
         closestQuoted = plan;
       }
 
-      if (plan && isHighLowPlanAcceptable(plan)) {
+      if (plan && isHighLowPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
         const cache = getOrCreateExecutionPlan(item);
         if (cache) {
           if (side === "CALL") cache.call = plan;
@@ -6545,7 +6591,7 @@ async function findBestHighLowPlan(item, side, opts = {}) {
   for (const candidate of candidates) {
     if (isHighLowProposalCooldownActive()) return null;
     try {
-      const plan = await getHighLowProposalQuote(symbol, side, candidate, candidate?.precision || 0, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item));
+      const plan = await getHighLowProposalQuote(symbol, side, candidate, candidate?.precision || 0, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
       if (plan) {
         if (candidate.fixedBarrier) {
           plan.fixedBarrier = true;
@@ -6596,7 +6642,7 @@ async function findMirroredHighLowPlan(item, side, referencePlan, opts = {}) {
   const stake = Number(opts.stake || getEffectiveTradeStake());
   const timeoutMs = opts.fast ? AUTO_FAST_PROPOSAL_TIMEOUT_MS : AUTO_FULL_PROPOSAL_TIMEOUT_MS;
   try {
-    const plan = await getHighLowProposalQuote(item.symbol, wanted, candidate, precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item));
+    const plan = await getHighLowProposalQuote(item.symbol, wanted, candidate, precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
     if (plan) {
       plan.mirroredBarrier = true;
       plan.mirroredFrom = wanted === "CALL" ? "PUT" : "CALL";
@@ -6894,6 +6940,7 @@ function getCachedExecutionPlan(item, side, maxAgeMs = AUTO_PRECALC_STALE_MS) {
   if (!cache) return null;
   const plan = side === "CALL" ? cache.call : cache.put;
   if (!plan) return null;
+  if (!isHighLowPlanExpiryAligned(plan, item)) return null;
   if (Date.now() - Number(plan.updatedAt || cache.updatedAt || 0) > maxAgeMs) return null;
   if (!isHighLowPlanWithinPayoutCap(plan)) return null;
   if (!isHighLowPlanAcceptable(plan)) return null;
@@ -19124,6 +19171,9 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         actual_return_pct: Math.round(plan.profitPct),
         payout_total_pct: Number(plan.payoutTotalPct),
         proposal_id: plan.proposalId,
+        expiry_mode: String(plan.expiryMode || "fixed_s60_absolute"),
+        planned_expiry_time: Number(plan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(itemCtx) || 0) || null,
+        planned_duration_if_bought_at_58_sec: 62,
         ic2_enabled: isC100Active(),
         ic2_level: c100State?.level || null,
         ic2_step: c100State?.compoundStep || 0,
@@ -28612,7 +28662,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II16 — Inicio Inamovible con debilidad obligatoria del tercer lateral.
+// V113.33-II17 — Inicio Inamovible con debilidad obligatoria del tercer lateral.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -28711,7 +28761,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const centralMin = Math.max(alignedRange * 0.16, tol * 2.40, Math.abs(open) * 0.00000010, 1e-9);
       if (moves[0] < lateralMin || moves[2] < lateralMin || moves[1] < centralMin) continue;
 
-      // II16 — Debilidad visual del tercer movimiento.
+      // II17 — Debilidad visual del tercer movimiento.
       // En el gráfico tiempo/precio, comparar el ángulo equivale a comparar la pendiente
       // (desplazamiento / duración) usando la misma escala. El último P/M debe llegar
       // claramente menos inclinado que el G central. Para esta prueba usamos <= 85%.
@@ -28833,7 +28883,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II16: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Además, el tercer lateral debe mostrar debilidad angular clara: su pendiente normalizada (desplazamiento/duración) debe ser como máximo 85% de la pendiente del G central. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall, el contrato comienza en la próxima vela y vence exactamente en su segundo 60; el cierre visual en 58 está desactivado.`;
+  const logicText = `Motor experimental V113.33-II17: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Además, el tercer lateral debe mostrar debilidad angular clara: su pendiente normalizada (desplazamiento/duración) debe ser como máximo 85% de la pendiente del G central. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58.`;
 
   return {
     direction,
@@ -28985,7 +29035,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       secondReductionRetraceRatio: null,
       secondReductionOppositeSteps: 0,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: "v113_33_ii16_inicio_inamovible_lateral_visual_22_corte_real_debilidad_tercer_85",
+      movementFilter: "v113_33_ii17_inicio_inamovible_lateral_visual_22_corte_real_debilidad_tercer_85",
       priority: "STUDY_ONLY",
       stage: "inicio_inamovible_giro_lateral_visual_corte_real_debilidad_tercer_85_s15_30",
       logic: logicText,
