@@ -1,4 +1,5 @@
-// v113.33-II15: mantiene II14 y fija el vencimiento operativo en el segundo 60; elimina el cierre visual en 58.
+// v113.33-II16: mantiene II15 y agrega debilidad obligatoria en el tercer lateral.
+// La pendiente/velocidad del tercer P/M debe ser <= 85% de la pendiente del G central.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
@@ -125,7 +126,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II15";
+const APP_BUILD_VERSION = "v113.33-II16";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1533,7 +1534,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_V113_33_II15_20260805";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_DEBILIDAD_TERCER_85_V113_33_II16_20260812";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -4492,7 +4493,7 @@ function applyEntryTimingModeUI() {
   entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
   btn.textContent = getEntryTimingModeLabel();
   btn.classList.add("active");
-  btn.title = "II15: la entrada se prepara como antes, pero el contrato Rise/Fall comienza en la próxima vela y vence exactamente en su segundo 60. El cierre en 58 está desactivado.";
+  btn.title = "II16: conserva la entrada de II15 y el contrato Rise/Fall comienza en la próxima vela y vence exactamente en su segundo 60. El cierre en 58 está desactivado.";
 }
 function ensureEntryTimingModeButton() {
   let btn = pickEl("entryTimingModeBtn");
@@ -28611,7 +28612,8 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II15 — Inicio Inamovible con cierre operativo fijo en el segundo 60.
+// V113.33-II16 — Inicio Inamovible con debilidad obligatoria del tercer lateral.
+// Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
 // se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
@@ -28709,6 +28711,21 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const centralMin = Math.max(alignedRange * 0.16, tol * 2.40, Math.abs(open) * 0.00000010, 1e-9);
       if (moves[0] < lateralMin || moves[2] < lateralMin || moves[1] < centralMin) continue;
 
+      // II16 — Debilidad visual del tercer movimiento.
+      // En el gráfico tiempo/precio, comparar el ángulo equivale a comparar la pendiente
+      // (desplazamiento / duración) usando la misma escala. El último P/M debe llegar
+      // claramente menos inclinado que el G central. Para esta prueba usamos <= 85%.
+      const firstDurationMs = Math.max(1, Number(first.durationMs || (Number(first.endMs || 0) - Number(first.startMs || 0)) || 1));
+      const centralDurationMs = Math.max(1, Number(central.durationMs || (Number(central.endMs || 0) - Number(central.startMs || 0)) || 1));
+      const lastDurationMs = Math.max(1, Number(last.durationMs || (Number(last.endMs || 0) - Number(last.startMs || 0)) || 1));
+      const firstSpeed = moves[0] / firstDurationMs;
+      const centralSpeed = moves[1] / centralDurationMs;
+      const thirdSpeed = moves[2] / lastDurationMs;
+      const thirdWeaknessMaxRatio = 0.85;
+      const thirdVsCentralSpeedRatio = thirdSpeed / Math.max(centralSpeed, 1e-12);
+      const thirdVsFirstSpeedRatio = thirdSpeed / Math.max(firstSpeed, 1e-12);
+      if (!Number.isFinite(thirdVsCentralSpeedRatio) || thirdVsCentralSpeedRatio > thirdWeaknessMaxRatio) continue;
+
       const correctionRuns = [...sepOne.corrections, ...sepTwo.corrections];
       const correctionMoves = correctionRuns.map((r) => Number(r.move || 0));
       const cutOne = correctionMoves.length ? correctionMoves.slice(0, sepOne.corrections.length) : [];
@@ -28772,6 +28789,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const centerShare = moves[1] / Math.max(primarySum, 1e-9);
       const score = 66
         + Math.min(18, (centralRatio - 1) * 20)
+        + Math.min(6, Math.max(0, (thirdWeaknessMaxRatio - thirdVsCentralSpeedRatio) / thirdWeaknessMaxRatio) * 10)
         + Math.min(10, efficiency * 12)
         + Math.min(10, dominanceRatio * 11)
         + Math.min(8, displacementRatio * 10)
@@ -28785,6 +28803,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         efficiency, dominanceRatio, displacementRatio, realDisplacement,
         centralRatio, centerShare, netAdvance, correctionSum, terminalCorrectionMove, score,
         lateralVisualRatioMin, lateralToCentralRatios, sepOne, sepTwo,
+        firstDurationMs, centralDurationMs, lastDurationMs, firstSpeed, centralSpeed, thirdSpeed,
+        thirdWeaknessMaxRatio, thirdVsCentralSpeedRatio, thirdVsFirstSpeedRatio,
       });
     }
   }
@@ -28808,11 +28828,12 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `tercer movimiento completo, cerrado por retroceso ${turnSideText}`,
     `G central único; laterales ${best.labels[0]}/${best.labels[2]} menores y visuales`,
     `cada lateral mide al menos ${(best.lateralVisualRatioMin * 100).toFixed(0)}% del G y tiene corte real`,
+    `último ${best.labels[2]} debilitado: pendiente ${(best.thirdVsCentralSpeedRatio * 100).toFixed(0)}% de la pendiente del G (máx. ${(best.thirdWeaknessMaxRatio * 100).toFixed(0)}%)`,
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II15: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall, el contrato comienza en la próxima vela y vence exactamente en su segundo 60; el cierre visual en 58 está desactivado.`;
+  const logicText = `Motor experimental V113.33-II16: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Además, el tercer lateral debe mostrar debilidad angular clara: su pendiente normalizada (desplazamiento/duración) debe ser como máximo 85% de la pendiente del G central. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall, el contrato comienza en la próxima vela y vence exactamente en su segundo 60; el cierre visual en 58 está desactivado.`;
 
   return {
     direction,
@@ -28871,6 +28892,14 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         centralDominanceRatio: best.centralRatio,
         lateralVisualRatioMin: best.lateralVisualRatioMin,
         lateralToCentralRatios: best.lateralToCentralRatios,
+        thirdAngleWeaknessPassed: true,
+        thirdWeaknessMaxRatio: best.thirdWeaknessMaxRatio,
+        firstSpeed: best.firstSpeed,
+        centralSpeed: best.centralSpeed,
+        thirdSpeed: best.thirdSpeed,
+        thirdVsCentralSpeedRatio: best.thirdVsCentralSpeedRatio,
+        thirdVsFirstSpeedRatio: best.thirdVsFirstSpeedRatio,
+        movementDurationsMs: [best.firstDurationMs, best.centralDurationMs, best.lastDurationMs],
         realSeparators: [!!best.sepOne?.realSeparator, !!best.sepTwo?.realSeparator],
         directionalEfficiency: best.efficiency,
         primaryDominanceRatio: best.dominanceRatio,
@@ -28956,9 +28985,9 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       secondReductionRetraceRatio: null,
       secondReductionOppositeSteps: 0,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: "v113_33_ii6_inicio_inamovible_lateral_visual_22_corte_real",
+      movementFilter: "v113_33_ii16_inicio_inamovible_lateral_visual_22_corte_real_debilidad_tercer_85",
       priority: "STUDY_ONLY",
-      stage: "inicio_inamovible_giro_lateral_visual_corte_real_s15_30",
+      stage: "inicio_inamovible_giro_lateral_visual_corte_real_debilidad_tercer_85_s15_30",
       logic: logicText,
       status,
     },
