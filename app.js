@@ -1,7 +1,8 @@
-// v113.33-II18: mantiene II17 y prearma la barrera Higher/Lower de +130% solo en la dirección de giro,
+// v113.33-II20: mantiene II19 y agrega recuperación de entrada tardía s60→s65.
+// Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
+// La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
 // granularidad real de la barrera deja el payout apenas fuera del rango 125–135% neto.
-// La pendiente/velocidad del tercer P/M debe ser <= 85% de la pendiente del G central.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
 // Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
@@ -128,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II18";
+const APP_BUILD_VERSION = "v113.33-II20";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1536,7 +1537,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_DEBILIDAD_TERCER_85_V113_33_II18_20260813";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_RECOVERY_S65_V113_33_II20_20260813";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2469,6 +2470,13 @@ const SIGNAL_HIGHLOW_LATE_PLAN_MAX_AGE_MS = 750;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_MAX_MS = 58550;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_DISTANCE_PCT = 1.5;
 const SIGNAL_AUTO_TIMER_DELAY_WARN_MS = 350;
+// II20: recuperación tardía favorable. Solo Higher/Lower, solo después de un fallo seguro
+// de AUTO58 por timing/proposal y únicamente si el PGP 2/2 ya estaba autorizado.
+const SIGNAL_LATE_RECOVERY_START_MS = 60000;
+const SIGNAL_LATE_RECOVERY_END_MS = 65000;
+const SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS = 220;
+const SIGNAL_LATE_RECOVERY_MAX_QUOTES = 4;
+const SIGNAL_LATE_RECOVERY_PRICE_EPS = 1e-12;
 // V112.1: modo estricto. Si al tick 58 no hay proposal válida, se cancela.
 // Nunca se pide una proposal nueva después de 58 porque eso genera entradas tardías.
 const SIGNAL_AUTO_REQUIRE_PREPROPOSAL_STRICT = true;
@@ -6300,6 +6308,102 @@ function getHighLowEntryDiagnostics(item, side) {
   };
 }
 
+async function buyLateRecoveryHighLow(item, side, stake) {
+  const safeSide = normalizeSignalConfirmationSide(side);
+  const state = item?.lateEntryRecovery;
+  if (!item?.id || !safeSide || !state || String(state.status || "") !== "sending") throw new Error("Rescate tardío no armado.");
+  const symbol = String(item.symbol || "");
+  const startedElapsed = getSignalElapsedMsRaw(item);
+  if (startedElapsed < SIGNAL_LATE_RECOVERY_START_MS || startedElapsed > SIGNAL_LATE_RECOVERY_END_MS) {
+    throw new Error(`Rescate fuera de ventana (${(startedElapsed / 1000).toFixed(2)}s).`);
+  }
+  if (getSignalEnabledTradeSide(item) !== safeSide) throw new Error("Rescate cancelado: PGP 2/2 ya no autoriza esa dirección.");
+  if (isSignalAnchorReturnBlocked(item)) throw new Error("Rescate cancelado: retorno al ancla.");
+
+  const cache = getOrCreateExecutionPlan(item);
+  const rawSeeds = safeSide === "CALL"
+    ? [cache?.finalEntryCall, item?.autoHighLow?.finalEntryCall, cache?.call, item?.autoHighLow?.call, cache?.callCandidate, item?.autoHighLow?.callCandidate]
+    : [cache?.finalEntryPut, item?.autoHighLow?.finalEntryPut, cache?.put, item?.autoHighLow?.put, cache?.putCandidate, item?.autoHighLow?.putCandidate];
+  let prepared = rawSeeds.find((x) => x && makeHighLowCandidateFromPlan(x, safeSide)) || getHighLowProvisionalBarrierPlan(item, safeSide);
+  if (!prepared || !makeHighLowCandidateFromPlan(prepared, safeSide)) throw new Error("Rescate sin barrera +130% preparada.");
+
+  let closest = null;
+  let candidate = makeHighLowSameSideCandidate(prepared, safeSide, symbol);
+  const tried = new Set();
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= SIGNAL_LATE_RECOVERY_MAX_QUOTES; attempt++) {
+    const elapsedBeforeQuote = getSignalElapsedMsRaw(item);
+    const left = SIGNAL_LATE_RECOVERY_END_MS - elapsedBeforeQuote;
+    if (left < SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS) break;
+    if (!candidate?.barrier || tried.has(String(candidate.barrier))) break;
+    tried.add(String(candidate.barrier));
+
+    try {
+      const timeout = Math.max(250, Math.min(850, left));
+      const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, timeout, item);
+      if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
+      if (plan && isHighLowFinalEntryPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
+        const elapsedBeforeBuy = getSignalElapsedMsRaw(item);
+        if (elapsedBeforeBuy > SIGNAL_LATE_RECOVERY_END_MS) throw new Error("La proposal del rescate llegó después de s65.");
+        const current = Number(lastQuoteBySymbol?.[symbol]);
+        const ref = Number(state.reference_price);
+        if (!isLateRecoveryPriceFavorable(safeSide, current, ref)) {
+          throw new Error("El precio dejó de ser favorable mientras se refrescaba la proposal.");
+        }
+
+        state.barrier = String(plan.barrier || "");
+        state.payout_total_pct = Number(plan.payoutTotalPct || 0);
+        state.proposal_id = String(plan.proposalId || "");
+        state.proposal_attempt = attempt;
+        state.buy_request_elapsed_ms = Math.round(elapsedBeforeBuy);
+        state.buy_request_price = Number.isFinite(current) ? current : null;
+        state.expiry_time = Number(plan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(item) || 0) || null;
+        state.final_range_rescue = !isHighLowPlanAcceptable(plan);
+        try { rememberExecutionBarrierHint(symbol, safeSide, plan, plan.precision || 0); } catch {}
+        try { saveHistory(history); } catch {}
+
+        const buyPayload = { buy: String(plan.proposalId), price: Number(plan.askPrice) };
+        const res = await wsRequest(buyPayload, 10000);
+        if (res?.buy?.contract_id) {
+          return {
+            res,
+            plan,
+            attempt,
+            preparedPlan: prepared,
+            usedFinalPreproposal: false,
+            repriceUsed: attempt > 1,
+            lateRecoveryUsed: true,
+            lateRecoveryReferencePrice: ref,
+            lateRecoveryTriggerPrice: Number(state.trigger_price),
+            lateRecoveryTriggerElapsedMs: Number(state.trigger_elapsed_ms),
+          };
+        }
+        const msg = String(res?.error?.message || "Deriv no confirmó el buy del rescate.");
+        const moved = /underlying market has moved too much|contract payout has changed/i.test(msg);
+        if (!moved) throw new Error(msg);
+        lastError = new Error(msg);
+        candidate = makeHighLowSameSideCandidate(plan, safeSide, symbol);
+        continue;
+      }
+
+      if (!plan) break;
+      const adjusted = adjustHighLowBarrierSameSideTowardTarget(plan, safeSide, symbol);
+      if (!adjusted?.barrier || tried.has(String(adjusted.barrier))) break;
+      candidate = adjusted;
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e || "Error rescate Higher/Lower"));
+      if (/dejó de ser favorable/.test(String(lastError.message || ""))) throw lastError;
+      if (getSignalElapsedMsRaw(item) >= SIGNAL_LATE_RECOVERY_END_MS) break;
+    }
+  }
+
+  if (closest) {
+    throw new Error(`Rescate ${safeSide === "CALL" ? "HIGHER" : "LOWER"} sin barrera válida: mejor ${Number(closest.payoutTotalPct || 0).toFixed(1)}% total.`);
+  }
+  throw lastError || new Error("No se pudo obtener proposal +130% para el rescate tardío.");
+}
+
 async function buyFreshHighLowLikeWindows(item, side, stake) {
   const symbol = String(item?.symbol || "");
   let lastError = null;
@@ -8966,6 +9070,7 @@ function compactSignalForAnalysis(item) {
       confirmation_status: item.signalAutoEntry.confirmation_status,
       contract_id: item.signalAutoEntry.contract_id,
     } : null,
+    lateEntryRecovery: item.lateEntryRecovery ? stripForAnalysisCopy(item.lateEntryRecovery) : null,
     giroPolaridad: compactVisualLevelForAnalysis(item.giroPolaridad),
     snrLevel: compactVisualLevelForAnalysis(item.snrLevel),
     manualGiro: item.manualGiro ? stripForAnalysisCopy(item.manualGiro) : null,
@@ -12020,6 +12125,7 @@ function buildExportPayloadVoted() {
       nextOutcome: it.nextOutcome || "",
       trade: it.trade || null,
       signalAutoEntry: it.signalAutoEntry || null,
+      lateEntryRecovery: it.lateEntryRecovery || null,
       autoHighLow: it.autoHighLow || null,
       giroPolaridad: getSignalLevelMeta(it),
       snrLevel: getSignalLevelMeta(it),
@@ -14573,6 +14679,18 @@ function getSignalConfirmationMs(item = modalCurrentItem) {
       : Math.floor(now / 60000) * 60000);
   return Math.max(0, Math.min(60000, now - minuteStart));
 }
+function getSignalElapsedMsRaw(item = modalCurrentItem, nowMs = serverNowMs()) {
+  if (!item) return 0;
+  const now = Number(nowMs);
+  const anchorMs = Number(item.signalAnchorEpochMs || 0);
+  if (Number.isFinite(anchorMs) && anchorMs > 0 && Number.isFinite(now)) return Math.max(0, now - anchorMs);
+  const itemMinute = Number(item.minute);
+  const start = Number.isFinite(itemMinute) && itemMinute > 0
+    ? itemMinute * 60000
+    : (Number.isFinite(currentMinuteStartMs) && currentMinuteStartMs ? currentMinuteStartMs : Math.floor(now / 60000) * 60000);
+  return Number.isFinite(now) ? Math.max(0, now - start) : 0;
+}
+
 function getSignalLastTickMsInMinute(item = modalCurrentItem) {
   if (!item) return 0;
   const minute = Number(item.minute);
@@ -14629,6 +14747,7 @@ function cancelSignalAutoEntryLate(item, side, readiness, reason = "AUTO_POST58_
     post58_readiness: { ...(readiness || {}) },
   };
   saveHistory(history);
+  armLateEntryRecovery(item, reason || "auto_post58_late");
   if (modalCurrentItem && modalCurrentItem.id === item.id) updateSignalConfirmationUI();
   toast(`⛔ AUTO ${label} cancelada: llegó tarde después de ${SIGNAL_AUTO_POST58_MAX_SEC.toFixed(1)}s`, 2200);
   return true;
@@ -15029,6 +15148,8 @@ function signalHasProtectedTrade(item) {
   if (item?.signalAutoEntry?.contract_id) return true;
   const autoStatus = String(item?.signalAutoEntry?.status || "").toLowerCase();
   if (item?.signalAutoEntry?.attempted && ["sending", "sent"].includes(autoStatus)) return true;
+  const recoveryStatus = String(item?.lateEntryRecovery?.status || "").toLowerCase();
+  if (["sending", "sent"].includes(recoveryStatus)) return true;
   return false;
 }
 function hasSignalTradeAssociated(item) {
@@ -15173,6 +15294,87 @@ function assertSignalSNREntryGateAt57(side = null, item = modalCurrentItem) {
   });
 }
 
+function isLateEntryRecoverySending(item) {
+  return String(item?.lateEntryRecovery?.status || "") === "sending";
+}
+function isLateEntryRecoveryFailureEligible(item) {
+  if (!item || !shouldUseAutoHighLowExecution() || item?.trade?.contract_id || item?.signalAutoEntry?.contract_id) return false;
+  if (isSignalAnchorReturnBlocked(item)) return false;
+  const auto = item?.signalAutoEntry;
+  if (!auto?.attempted || !["error", "cancelled"].includes(String(auto.status || "").toLowerCase())) return false;
+  const side = normalizeSignalConfirmationSide(auto.side || item.direction);
+  if (!side) return false;
+  const enabledAt = getSignalSideEnabledAtMs(item, side);
+  if (!Number.isFinite(enabledAt) || enabledAt > SIGNAL_LATE_RECOVERY_START_MS) return false;
+
+  const code = String(auto?.timing_diagnosis?.code || "").toUpperCase();
+  const text = `${auto?.reason || ""} ${auto?.error || ""} ${auto?.timing_diagnosis?.message || ""}`.toLowerCase();
+  const safeCodes = new Set([
+    "FINAL_PROPOSAL_NOT_READY",
+    "FINAL_PROPOSAL_REFRESH_ERROR",
+    "CONFIRMATION_TOO_LATE",
+    "CONFIRMATION_LATE_NO_FRESH_PLAN",
+    "TIMER_DELAYED_AND_FINAL_PROPOSAL_MISSING",
+    "AUTO_TRIGGER_AFTER_LIMIT",
+    "MARKET_MOVED_REPRICE_TOO_LATE",
+    "MARKET_MOVED_REPRICE_READY_TOO_LATE",
+    "MARKET_MOVED_REPRICE_OUT_OF_RANGE",
+  ]);
+  if (safeCodes.has(code)) return true;
+  return /post-58|proposal final|proposal.*58|no se obtuvo proposal|cotizaci[oó]n.*tarde|lleg[oó] tarde|ventana post|sin tiempo seguro para recotizar|recotizaci[oó]n lleg[oó] despu[eé]s/.test(text);
+}
+function armLateEntryRecovery(item, reason = "auto58_timing_or_proposal_failure") {
+  if (!isLateEntryRecoveryFailureEligible(item)) return false;
+  if (item?.lateEntryRecovery && !["expired", "blocked", "error"].includes(String(item.lateEntryRecovery.status || ""))) return true;
+  const side = normalizeSignalConfirmationSide(item?.signalAutoEntry?.side || item?.direction);
+  if (!side) return false;
+  item.lateEntryRecovery = {
+    enabled: true,
+    status: "armed",
+    side,
+    reason: String(reason || "auto58_timing_or_proposal_failure"),
+    armed_at: Date.now(),
+    armed_elapsed_ms: Math.round(getSignalElapsedMsRaw(item)),
+    start_ms: SIGNAL_LATE_RECOVERY_START_MS,
+    end_ms: SIGNAL_LATE_RECOVERY_END_MS,
+    reference_price: null,
+    reference_epoch_ms: null,
+    reference_source: "first_live_tick_at_or_after_s60",
+    favorable_rule: side === "CALL" ? "price<=s60_reference" : "price>=s60_reference",
+    trigger_price: null,
+    trigger_epoch_ms: null,
+    trigger_elapsed_ms: null,
+    contract_id: "",
+    app_version: APP_BUILD_VERSION,
+  };
+  try { saveHistory(history); } catch {}
+  if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
+    try { toast(`🕒 Rescate ${side === "CALL" ? "COMPRA" : "VENTA"} armado hasta s65`, 1800); } catch {}
+  }
+  return true;
+}
+function getLateRecoveryReferencePrice(item) {
+  const stored = Number(item?.lateEntryRecovery?.reference_price);
+  return Number.isFinite(stored) ? stored : NaN;
+}
+function isLateRecoveryPriceFavorable(side, currentPrice, referencePrice) {
+  const q = Number(currentPrice);
+  const ref = Number(referencePrice);
+  if (!Number.isFinite(q) || !Number.isFinite(ref)) return false;
+  return String(side || "CALL").toUpperCase() === "PUT"
+    ? q >= ref - SIGNAL_LATE_RECOVERY_PRICE_EPS
+    : q <= ref + SIGNAL_LATE_RECOVERY_PRICE_EPS;
+}
+function expireLateEntryRecovery(item, elapsedMs, reason = "s65_expired") {
+  if (!item?.lateEntryRecovery || ["sent", "expired", "blocked"].includes(String(item.lateEntryRecovery.status || ""))) return false;
+  item.lateEntryRecovery.status = "expired";
+  item.lateEntryRecovery.expired_at = Date.now();
+  item.lateEntryRecovery.expired_elapsed_ms = Math.round(Number(elapsedMs || 0));
+  item.lateEntryRecovery.expire_reason = String(reason || "s65_expired");
+  try { saveHistory(history); } catch {}
+  return true;
+}
+
 function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
   const item = itemOverride || modalCurrentItem;
   if (!item || isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item) || !isTradeEntryOpen(item)) return false;
@@ -15266,6 +15468,7 @@ function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
       item.signalAutoEntry.error = e?.message || String(e);
       item.signalAutoEntry.error_at = Date.now();
       if (shouldUseAutoHighLowExecution()) item.signalAutoEntry.highlow_prepare_debug_after = getHighLowEntryDiagnostics(item, side);
+      armLateEntryRecovery(item, "auto58_error_timing_or_proposal");
       saveHistory(history);
       toast(`⚠️ AUTO ${label} falló: ${e?.message || e}`, 2600);
     })
@@ -15278,6 +15481,119 @@ function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
     });
 
   return true;
+}
+
+function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
+  if (!shouldUseAutoHighLowExecution() || !Array.isArray(history) || !history.length) return false;
+  const sym = String(symbol || "");
+  const ep = Number(epochMs);
+  const q = Number(quote);
+  if (!sym || !Number.isFinite(ep) || !Number.isFinite(q)) return false;
+
+  const candidates = history.slice(-40).filter((it) => it && String(it.symbol || "") === sym && isFloatingSignalItem(it));
+  for (const item of candidates) {
+    if (item?.trade?.contract_id || item?.signalAutoEntry?.contract_id) continue;
+    if (!item?.lateEntryRecovery && isLateEntryRecoveryFailureEligible(item)) armLateEntryRecovery(item, "scan_detected_auto58_failure");
+    const state = item?.lateEntryRecovery;
+    if (!state?.enabled || ["sent", "expired", "blocked", "error", "sending"].includes(String(state.status || ""))) continue;
+
+    const anchor = Number(item.signalAnchorEpochMs || 0);
+    if (!Number.isFinite(anchor) || anchor <= 0) continue;
+    const elapsed = ep - anchor;
+    if (elapsed < SIGNAL_LATE_RECOVERY_START_MS) continue;
+    if (elapsed > SIGNAL_LATE_RECOVERY_END_MS) {
+      expireLateEntryRecovery(item, elapsed, "s65_without_favorable_entry");
+      continue;
+    }
+    if (isSignalAnchorReturnBlocked(item)) {
+      state.status = "blocked";
+      state.blocked_at = Date.now();
+      state.block_reason = "anchor_return";
+      try { saveHistory(history); } catch {}
+      continue;
+    }
+
+    const side = normalizeSignalConfirmationSide(state.side || item.direction);
+    if (!side || getSignalEnabledTradeSide(item) !== side) {
+      state.status = "blocked";
+      state.blocked_at = Date.now();
+      state.block_reason = "pgp_not_authorized_anymore";
+      try { saveHistory(history); } catch {}
+      continue;
+    }
+
+    if (!Number.isFinite(Number(state.reference_price))) {
+      state.reference_price = q;
+      state.reference_epoch_ms = ep;
+      state.reference_elapsed_ms = Math.round(elapsed);
+      state.reference_source = "first_live_tick_at_or_after_s60";
+      state.status = "waiting_price";
+      try { saveHistory(history); } catch {}
+    }
+
+    const ref = Number(state.reference_price);
+    state.last_price = q;
+    state.last_elapsed_ms = Math.round(elapsed);
+    state.last_favorable = isLateRecoveryPriceFavorable(side, q, ref);
+    if (!state.last_favorable || tradeInFlight) continue;
+    if (SIGNAL_LATE_RECOVERY_END_MS - elapsed < SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS) {
+      expireLateEntryRecovery(item, elapsed, "insufficient_time_to_send_before_s65");
+      continue;
+    }
+
+    state.status = "sending";
+    state.trigger_price = q;
+    state.trigger_epoch_ms = ep;
+    state.trigger_elapsed_ms = Math.round(elapsed);
+    state.trigger_reference_price = ref;
+    state.trigger_condition = side === "CALL" ? "current<=reference" : "current>=reference";
+    state.send_started_at = Date.now();
+    try { saveHistory(history); } catch {}
+    if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
+      try { toast(`♻️ Rescate ${side === "CALL" ? "COMPRA" : "VENTA"}: precio favorable, enviando…`, 1600); } catch {}
+    }
+
+    Promise.race([
+      buyOneClick(side, null, item),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout rescate tardío")), 12000)),
+    ]).then((res) => {
+      const cid = res?.buy?.contract_id ? String(res.buy.contract_id) : "";
+      state.status = "sent";
+      state.contract_id = cid;
+      state.sent_at = Date.now();
+      state.sent_elapsed_ms = Math.round(getSignalElapsedMsRaw(item));
+      try { saveHistory(history); } catch {}
+      try { toast(`✅ Rescate ${side === "CALL" ? "COMPRA" : "VENTA"} enviado${cid ? " · ID " + cid : ""}`, 2000); } catch {}
+    }).catch((e) => {
+      const msg = e?.message || String(e);
+      const elapsedNow = getSignalElapsedMsRaw(item);
+      // Si el precio dejó de ser favorable mientras llegaba la proposal, no damos
+      // por perdido el rescate: volvemos a esperar otra oportunidad hasta s65.
+      if (/dejó de ser favorable/.test(String(msg)) && elapsedNow < SIGNAL_LATE_RECOVERY_END_MS) {
+        state.status = "waiting_price";
+        state.deferred_count = Number(state.deferred_count || 0) + 1;
+        state.last_deferred_reason = String(msg);
+        state.last_deferred_at = Date.now();
+        state.last_deferred_elapsed_ms = Math.round(elapsedNow);
+        try { saveHistory(history); } catch {}
+        return;
+      }
+      state.status = "error";
+      state.error = msg;
+      state.error_at = Date.now();
+      state.error_elapsed_ms = Math.round(elapsedNow);
+      try { saveHistory(history); } catch {}
+      try { toast(`⚠️ Rescate tardío falló: ${state.error}`, 2400); } catch {}
+    }).finally(() => {
+      updateDisciplineLockUI(false);
+      if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
+        updateSignalConfirmationUI();
+        requestModalDraw(true);
+      }
+    });
+    return true;
+  }
+  return false;
 }
 
 function scanSignalAutoEntriesAt57() {
@@ -19213,6 +19529,11 @@ function assertCanTrade() {
   }
 }
 function assertEntryWindowOpen(item = modalCurrentItem) {
+  if (item && isLateEntryRecoverySending(item)) {
+    const elapsed = getSignalElapsedMsRaw(item);
+    if (elapsed >= SIGNAL_LATE_RECOVERY_START_MS && elapsed <= SIGNAL_LATE_RECOVERY_END_MS) return;
+    throw new Error(`Rescate tardío fuera de ventana (${(elapsed / 1000).toFixed(2)}s).`);
+  }
   if (item && !isTradeEntryOpen(item)) {
     throw new Error("La vela ya cerró");
   }
@@ -19220,6 +19541,7 @@ function assertEntryWindowOpen(item = modalCurrentItem) {
 
 async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, itemOverride = null) {
   const itemCtx = itemOverride || modalCurrentItem;
+  const lateRecoveryExecution = isLateEntryRecoverySending(itemCtx);
   if (isInicioInamovibleStudyOnlySignal(itemCtx)) throw new Error("Esta señal histórica es solo de estudio y no puede operar.");
   const inicioOperable = !!(itemCtx?.giroPolaridad?.inicioInamovibleMode || String(itemCtx?.mode_version || "").includes("INICIO_INAMOVIBLE"));
   assertCanTrade();
@@ -19236,8 +19558,8 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
 
   try {
     const isAutoSignalExecution = !!(
-      itemCtx?.signalAutoEntry?.attempted &&
-      itemCtx?.signalAutoEntry?.status === "sending"
+      lateRecoveryExecution ||
+      (itemCtx?.signalAutoEntry?.attempted && itemCtx?.signalAutoEntry?.status === "sending")
     );
     const isAutoCloseExecution = !!(
       isAutoSignalExecution &&
@@ -19284,18 +19606,22 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
 
       // Al salir la señal consulta HIGHER/LOWER y busca la barrera más cercana a 130% de ganancia neta (230% de pago total).
       // Al operar pide una proposal nueva con esa barrera y compra inmediatamente.
-      const highLowBuy = await buyFreshHighLowLikeWindows(itemCtx || { symbol }, side, stake);
+      const highLowBuy = lateRecoveryExecution
+        ? await buyLateRecoveryHighLow(itemCtx || { symbol }, side, stake)
+        : await buyFreshHighLowLikeWindows(itemCtx || { symbol }, side, stake);
       const plan = highLowBuy.plan;
       res = highLowBuy.res;
       contractLabel = plan.contractType || hlName;
 
       tradeExtra = {
         ...tradeExtra,
-        exec_mode: highLowBuy.repriceUsed
-          ? "HIGHLOW_TARGET_PROFIT_130_MARKET_MOVED_REPRICE_BUY"
-          : highLowBuy.usedFinalPreproposal
-            ? "HIGHLOW_TARGET_PROFIT_130_PRE58_PROPOSAL_BUY"
-            : "HIGHLOW_TARGET_PROFIT_130_SIGNAL_SEARCH_FRESH_BUY",
+        exec_mode: highLowBuy.lateRecoveryUsed
+          ? "HIGHLOW_TARGET_PROFIT_130_LATE_RECOVERY_S60_65"
+          : highLowBuy.repriceUsed
+            ? "HIGHLOW_TARGET_PROFIT_130_MARKET_MOVED_REPRICE_BUY"
+            : highLowBuy.usedFinalPreproposal
+              ? "HIGHLOW_TARGET_PROFIT_130_PRE58_PROPOSAL_BUY"
+              : "HIGHLOW_TARGET_PROFIT_130_SIGNAL_SEARCH_FRESH_BUY",
         contract_type: contractLabel,
         api_contract_type: plan.apiContractType || getHighLowPrimaryApiContractType(side),
         api_symbol_field: isNewPatApiMode() ? "underlying_symbol" : "symbol",
@@ -19323,6 +19649,11 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         expiry_mode: String(plan.expiryMode || "fixed_s60_absolute"),
         planned_expiry_time: Number(plan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(itemCtx) || 0) || null,
         planned_duration_if_bought_at_58_sec: 62,
+        late_entry_recovery: !!highLowBuy.lateRecoveryUsed,
+        late_entry_recovery_window_ms: highLowBuy.lateRecoveryUsed ? [SIGNAL_LATE_RECOVERY_START_MS, SIGNAL_LATE_RECOVERY_END_MS] : null,
+        late_entry_reference_price: highLowBuy.lateRecoveryUsed ? Number(highLowBuy.lateRecoveryReferencePrice) : null,
+        late_entry_trigger_price: highLowBuy.lateRecoveryUsed ? Number(highLowBuy.lateRecoveryTriggerPrice) : null,
+        late_entry_trigger_elapsed_ms: highLowBuy.lateRecoveryUsed ? Number(highLowBuy.lateRecoveryTriggerElapsedMs) : null,
         ic2_enabled: isC100Active(),
         ic2_level: c100State?.level || null,
         ic2_step: c100State?.compoundStep || 0,
@@ -20260,6 +20591,9 @@ function onTick(tick) {
   lastQuoteBySymbol[symbol] = tick.quote;
   rememberConstructiveRollingTick(symbol, epochMs, tick.quote);
   updateConstructiveFloatingSignalsOnTick(symbol, epochMs, tick.quote);
+  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && !areSignalsPaused()) {
+    scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, tick.quote);
+  }
 
   if (lastMinuteSeenBySymbol[symbol] !== minute) {
     lastMinuteSeenBySymbol[symbol] = minute;
@@ -28811,7 +29145,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II18 — Inicio Inamovible con barrera +130% prearmada en la dirección de giro.
+// V113.33-II20 — II19 + recuperación tardía favorable entre s60 y s65 para Higher/Lower.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -28910,21 +29244,6 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const centralMin = Math.max(alignedRange * 0.16, tol * 2.40, Math.abs(open) * 0.00000010, 1e-9);
       if (moves[0] < lateralMin || moves[2] < lateralMin || moves[1] < centralMin) continue;
 
-      // II18 — Debilidad visual del tercer movimiento (regla heredada de II16).
-      // En el gráfico tiempo/precio, comparar el ángulo equivale a comparar la pendiente
-      // (desplazamiento / duración) usando la misma escala. El último P/M debe llegar
-      // claramente menos inclinado que el G central. Para esta prueba usamos <= 85%.
-      const firstDurationMs = Math.max(1, Number(first.durationMs || (Number(first.endMs || 0) - Number(first.startMs || 0)) || 1));
-      const centralDurationMs = Math.max(1, Number(central.durationMs || (Number(central.endMs || 0) - Number(central.startMs || 0)) || 1));
-      const lastDurationMs = Math.max(1, Number(last.durationMs || (Number(last.endMs || 0) - Number(last.startMs || 0)) || 1));
-      const firstSpeed = moves[0] / firstDurationMs;
-      const centralSpeed = moves[1] / centralDurationMs;
-      const thirdSpeed = moves[2] / lastDurationMs;
-      const thirdWeaknessMaxRatio = 0.85;
-      const thirdVsCentralSpeedRatio = thirdSpeed / Math.max(centralSpeed, 1e-12);
-      const thirdVsFirstSpeedRatio = thirdSpeed / Math.max(firstSpeed, 1e-12);
-      if (!Number.isFinite(thirdVsCentralSpeedRatio) || thirdVsCentralSpeedRatio > thirdWeaknessMaxRatio) continue;
-
       const correctionRuns = [...sepOne.corrections, ...sepTwo.corrections];
       const correctionMoves = correctionRuns.map((r) => Number(r.move || 0));
       const cutOne = correctionMoves.length ? correctionMoves.slice(0, sepOne.corrections.length) : [];
@@ -28988,7 +29307,6 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const centerShare = moves[1] / Math.max(primarySum, 1e-9);
       const score = 66
         + Math.min(18, (centralRatio - 1) * 20)
-        + Math.min(6, Math.max(0, (thirdWeaknessMaxRatio - thirdVsCentralSpeedRatio) / thirdWeaknessMaxRatio) * 10)
         + Math.min(10, efficiency * 12)
         + Math.min(10, dominanceRatio * 11)
         + Math.min(8, displacementRatio * 10)
@@ -29002,8 +29320,6 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         efficiency, dominanceRatio, displacementRatio, realDisplacement,
         centralRatio, centerShare, netAdvance, correctionSum, terminalCorrectionMove, score,
         lateralVisualRatioMin, lateralToCentralRatios, sepOne, sepTwo,
-        firstDurationMs, centralDurationMs, lastDurationMs, firstSpeed, centralSpeed, thirdSpeed,
-        thirdWeaknessMaxRatio, thirdVsCentralSpeedRatio, thirdVsFirstSpeedRatio,
       });
     }
   }
@@ -29027,12 +29343,11 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `tercer movimiento completo, cerrado por retroceso ${turnSideText}`,
     `G central único; laterales ${best.labels[0]}/${best.labels[2]} menores y visuales`,
     `cada lateral mide al menos ${(best.lateralVisualRatioMin * 100).toFixed(0)}% del G y tiene corte real`,
-    `último ${best.labels[2]} debilitado: pendiente ${(best.thirdVsCentralSpeedRatio * 100).toFixed(0)}% de la pendiente del G (máx. ${(best.thirdWeaknessMaxRatio * 100).toFixed(0)}%)`,
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II18: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Además, el tercer lateral debe mostrar debilidad angular clara: su pendiente normalizada (desplazamiento/duración) debe ser como máximo 85% de la pendiente del G central. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra.`;
+  const logicText = `Motor experimental V113.33-II20: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120.`;
 
   return {
     direction,
@@ -29091,14 +29406,6 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         centralDominanceRatio: best.centralRatio,
         lateralVisualRatioMin: best.lateralVisualRatioMin,
         lateralToCentralRatios: best.lateralToCentralRatios,
-        thirdAngleWeaknessPassed: true,
-        thirdWeaknessMaxRatio: best.thirdWeaknessMaxRatio,
-        firstSpeed: best.firstSpeed,
-        centralSpeed: best.centralSpeed,
-        thirdSpeed: best.thirdSpeed,
-        thirdVsCentralSpeedRatio: best.thirdVsCentralSpeedRatio,
-        thirdVsFirstSpeedRatio: best.thirdVsFirstSpeedRatio,
-        movementDurationsMs: [best.firstDurationMs, best.centralDurationMs, best.lastDurationMs],
         realSeparators: [!!best.sepOne?.realSeparator, !!best.sepTwo?.realSeparator],
         directionalEfficiency: best.efficiency,
         primaryDominanceRatio: best.dominanceRatio,
