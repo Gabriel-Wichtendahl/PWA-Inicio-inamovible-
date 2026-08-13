@@ -1,4 +1,6 @@
-// v113.33-II17: mantiene II16 y fija también Higher/Lower al vencimiento absoluto s60.
+// v113.33-II18: mantiene II17 y prearma la barrera Higher/Lower de +130% solo en la dirección de giro,
+// sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
+// granularidad real de la barrera deja el payout apenas fuera del rango 125–135% neto.
 // La pendiente/velocidad del tercer P/M debe ser <= 85% de la pendiente del G central.
 // La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
 // El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
@@ -126,7 +128,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II17";
+const APP_BUILD_VERSION = "v113.33-II18";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1534,7 +1536,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_DEBILIDAD_TERCER_85_V113_33_II17_20260812";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_DEBILIDAD_TERCER_85_V113_33_II18_20260813";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2451,9 +2453,16 @@ const SIGNAL_AUTO_PREPROPOSAL_TTL_MS = 20000;
 // hace microajustes del mismo lado del spot: CALL siempre + y PUT siempre -.
 // Nunca cruza por cero durante la preparación final. Si Deriv informa que el
 // mercado se movió, conserva una única recotización y segundo buy antes de 58.9s.
-const SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS = 57250;
-const SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS = 57950;
-const SIGNAL_HIGHLOW_FINAL_PLAN_MAX_AGE_MS = 900;
+// II18: la barrera de entrada se recalibra ANTES de la autorización manual. La dirección
+// ya se conoce por la señal de giro, así que no hay motivo para esperar al 2/2 ni buscar ambos lados.
+const SIGNAL_HIGHLOW_BARRIER_LOCK_START_MS = 50000;
+const SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS = 56000;
+const SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS = 57900;
+const SIGNAL_HIGHLOW_FINAL_PLAN_MAX_AGE_MS = 2200;
+const SIGNAL_HIGHLOW_FINAL_REFRESH_MAX_ATTEMPTS = 6;
+// Rescate solo al final: si la grilla real del símbolo salta sobre el rango 225–235,
+// aceptamos el candidato más cercano hasta ±6 puntos del objetivo 230 (124–136% neto).
+const SIGNAL_HIGHLOW_FINAL_NEAREST_MAX_DISTANCE_PCT = 6.0;
 const SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS = 58900;
 const SIGNAL_HIGHLOW_LATE_CONFIRMATION_MAX_MS = 58300;
 const SIGNAL_HIGHLOW_LATE_PLAN_MAX_AGE_MS = 750;
@@ -4516,7 +4525,7 @@ function applyEntryTimingModeUI() {
   entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
   btn.textContent = getEntryTimingModeLabel();
   btn.classList.add("active");
-  btn.title = "II17: Rise/Fall y Higher/Lower vencen exactamente en el segundo 60 objetivo. Higher/Lower ya no usa 1 minuto desde la compra en s58.";
+  btn.title = "II18: cierre s60 en Rise/Fall y Higher/Lower; la barrera +130% se prearma antes de s58 solo en la dirección de giro.";
 }
 function ensureEntryTimingModeButton() {
   let btn = pickEl("entryTimingModeBtn");
@@ -4915,6 +4924,13 @@ function isHighLowPlanAtTarget(plan, tolerance = HIGHLOW_TARGET_TOLERANCE_PCT) {
 function isHighLowPlanAcceptable(plan) {
   const pct = Number(plan?.payoutTotalPct);
   return !!plan && Number.isFinite(pct) && pct >= HIGHLOW_TARGET_ACCEPT_MIN_PCT && pct <= HIGHLOW_TARGET_ACCEPT_MAX_PCT;
+}
+function isHighLowFinalEntryPlanAcceptable(plan) {
+  if (isHighLowPlanAcceptable(plan)) return true;
+  const pct = Number(plan?.payoutTotalPct);
+  const distance = getHighLowTargetDistance(plan);
+  return !!plan && Number.isFinite(pct) && pct > 0 && Number.isFinite(distance)
+    && distance <= SIGNAL_HIGHLOW_FINAL_NEAREST_MAX_DISTANCE_PCT;
 }
 function getHighLowAcceptableRangeText() {
   const minProfit = HIGHLOW_TARGET_ACCEPT_MIN_PCT - 100;
@@ -5812,7 +5828,7 @@ function getHighLowFinalEntryPlan(item, side, stake, maxAgeMs = SIGNAL_HIGHLOW_F
   const key = side === "CALL" ? "finalEntryCall" : "finalEntryPut";
   const persistedKey = side === "CALL" ? "finalEntryCall" : "finalEntryPut";
   let plan = cache?.[key] || item?.autoHighLow?.[persistedKey] || null;
-  if (!plan || !isHighLowPlanAcceptable(plan) || !plan.proposalId || !isHighLowBarrierOnRequiredSide(plan, side)) return null;
+  if (!plan || !isHighLowFinalEntryPlanAcceptable(plan) || !plan.proposalId || !isHighLowBarrierOnRequiredSide(plan, side)) return null;
   if (!isHighLowPlanExpiryAligned(plan, item)) return null;
   const ask = Number(plan.askPrice);
   if (!Number.isFinite(ask) || ask <= 0 || Math.abs(ask - Number(stake)) > 0.02) return null;
@@ -5827,12 +5843,17 @@ function saveHighLowFinalEntryPlan(item, side, plan, reason = "pre58_final_refre
   const cache = getOrCreateExecutionPlan(item);
   const finalPlan = {
     ...plan,
-    source: "pre58_final_target_profit_130",
+    source: isHighLowPlanAcceptable(plan) ? "pre58_final_target_profit_130" : "pre58_final_nearest_grid_rescue",
     finalPreparedAt: Date.now(),
     finalPreparedMs: Math.round(getSignalConfirmationMs(item)),
     finalRefreshReason: String(reason || "pre58_final_refresh"),
     searchAcceptable: true,
+    finalRangeRescue: !isHighLowPlanAcceptable(plan),
+    finalTargetDistancePct: getHighLowTargetDistance(plan),
   };
+  // II18: el último nivel que funcionó cerca de la entrada se vuelve la mejor semilla
+  // para la siguiente señal del mismo símbolo y dirección.
+  try { rememberExecutionBarrierHint(item?.symbol, side, finalPlan, finalPlan.precision || 0); } catch {}
   if (side === "CALL") cache.finalEntryCall = finalPlan;
   else cache.finalEntryPut = finalPlan;
   cache.finalRefreshStatus = {
@@ -5855,10 +5876,13 @@ function saveHighLowFinalEntryPlan(item, side, plan, reason = "pre58_final_refre
 async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_final_refresh") {
   const safeSide = normalizeSignalConfirmationSide(side);
   if (!shouldUseAutoHighLowExecution() || !item?.id || !safeSide) return false;
-  if (!isTradeEntryOpen(item) || item?.trade?.badge || item?.signalAutoEntry?.attempted) return false;
+  if (!isTradeEntryOpen(item) || isSignalAnchorReturnBlocked(item) || item?.trade?.badge || item?.signalAutoEntry?.attempted) return false;
   const ms = getSignalConfirmationMs(item);
   if (ms < SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS - 250 || ms > SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS) return false;
-  if (getSignalEnabledTradeSide(item) !== safeSide) return false;
+  const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
+  // II18: preparar NO autoriza una compra. Solo precalcula la dirección que ya marca
+  // el detector. La compra sigue exigiendo el flujo PGP 2/2 en trySignalAutoEntryAt57().
+  if (safeSide !== signalSide) return false;
 
   const cache = getOrCreateExecutionPlan(item);
   const stake = Number(getEffectiveTradeStake().toFixed(2));
@@ -5880,6 +5904,13 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
   cache.finalRefreshRunning = (async () => {
     try {
       await ensureAuthorized();
+      // Si la recalibración de s50 todavía está terminando, esperamos un instante y
+      // reutilizamos su barrera; nunca lanzamos dos tandas de proposals a la vez.
+      if (cache.barrierLockRunning) {
+        try {
+          await Promise.race([cache.barrierLockRunning, new Promise((resolve) => setTimeout(resolve, 700))]);
+        } catch {}
+      }
       if (cache.running) {
         try {
           await Promise.race([cache.running, new Promise((resolve) => setTimeout(resolve, 250))]);
@@ -5901,8 +5932,9 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
       let closest = null;
       const tried = new Set();
       // Primera consulta: misma distancia relativa aceptada, recalculada con el spot actual.
-      // Luego se permiten hasta dos microajustes del mismo lado; nunca una búsqueda amplia.
-      for (let attempt = 1; attempt <= 3; attempt++) {
+      // II18 permite varios microajustes porque empieza antes; sigue siendo un solo lado y
+      // una zona local alrededor de la barrera ya aprendida, no una búsqueda amplia.
+      for (let attempt = 1; attempt <= SIGNAL_HIGHLOW_FINAL_REFRESH_MAX_ATTEMPTS; attempt++) {
         const nowMs = getSignalConfirmationMs(item);
         if (nowMs > SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS + 250) break;
         if (!candidate?.barrier || tried.has(String(candidate.barrier))) break;
@@ -5937,11 +5969,35 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
         candidate = adjusted;
       }
 
+      // Si la precisión real del índice hace imposible caer dentro de 225–235 (por ejemplo,
+      // un salto 235.4 → 209.x), no dejamos perder la operación por unas décimas: usamos el
+      // candidato más cercano solo dentro del rescate final acotado.
+      if (closest && isHighLowFinalEntryPlanAcceptable(closest)) {
+        const finalPlan = saveHighLowFinalEntryPlan(item, safeSide, closest, "pre58_nearest_grid_rescue");
+        finalPlan.signLocked = true;
+        finalPlan.finalRefreshAttempt = SIGNAL_HIGHLOW_FINAL_REFRESH_MAX_ATTEMPTS;
+        const regularCache = getOrCreateExecutionPlan(item);
+        if (safeSide === "CALL") regularCache.call = finalPlan;
+        else regularCache.put = finalPlan;
+        regularCache.updatedAt = Date.now();
+        regularCache.finalRefreshStatus = {
+          ...(regularCache.finalRefreshStatus || {}),
+          status: "ready_nearest_grid",
+          sign_lock: safeSide === "CALL" ? "+" : "-",
+          nearest_grid_rescue: true,
+          target_distance_pct: getHighLowTargetDistance(finalPlan),
+        };
+        item.autoHighLow ||= {};
+        item.autoHighLow[safeSide === "CALL" ? "finalEntryCall" : "finalEntryPut"] = { ...finalPlan };
+        item.autoHighLow.finalRefreshStatus = { ...regularCache.finalRefreshStatus };
+        return true;
+      }
+
       const pctTxt = Number.isFinite(Number(closest?.payoutTotalPct))
         ? `; mejor ${Number(closest.payoutTotalPct).toFixed(1)}% total`
         : "";
       const barrierTxt = closest?.barrier ? ` con barrera ${closest.barrier}` : "";
-      throw new Error(`No se obtuvo proposal final dentro del rango antes de 58s sin cruzar el spot${pctTxt}${barrierTxt}.`);
+      throw new Error(`No se obtuvo proposal final suficientemente cerca de 130% antes de 58s${pctTxt}${barrierTxt}.`);
     } catch (e) {
       cache.finalRefreshStatus = {
         status: "error",
@@ -5964,28 +6020,114 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
 }
 
 
+async function prepareHighLowBarrierLock(item, side, reason = "pre58_barrier_lock") {
+  const safeSide = normalizeSignalConfirmationSide(side);
+  if (!shouldUseAutoHighLowExecution() || !item?.id || !safeSide) return false;
+  if (!isTradeEntryOpen(item) || isSignalAnchorReturnBlocked(item) || item?.trade?.badge || item?.signalAutoEntry?.attempted) return false;
+  const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
+  if (safeSide !== signalSide) return false;
+  const cache = getOrCreateExecutionPlan(item);
+  if (cache.barrierLockRunning) return cache.barrierLockRunning;
+  const stake = Number(getEffectiveTradeStake().toFixed(2));
+  cache.barrierLockStatus = {
+    status: "preparing",
+    side: safeSide,
+    reason: String(reason || "pre58_barrier_lock"),
+    started_at: Date.now(),
+    started_ms: Math.round(getSignalConfirmationMs(item)),
+  };
+  item.autoHighLow ||= {};
+  item.autoHighLow.barrierLockStatus = { ...cache.barrierLockStatus };
+
+  cache.barrierLockRunning = (async () => {
+    try {
+      await ensureAuthorized();
+      const plan = await findHighLowPlanNear130(item, safeSide, {
+        fast: false,
+        maxQuotes: 7,
+        timeoutMs: 1800,
+        stake,
+      });
+      if (plan && makeHighLowCandidateFromPlan(plan, safeSide)) {
+        if (safeSide === "CALL") cache.callCandidate = { ...plan };
+        else cache.putCandidate = { ...plan };
+        if (isHighLowPlanAcceptable(plan)) {
+          if (safeSide === "CALL") cache.call = { ...plan };
+          else cache.put = { ...plan };
+          rememberExecutionBarrierHint(item.symbol, safeSide, plan, plan.precision || 0);
+        }
+        cache.updatedAt = Date.now();
+        item.autoHighLow[safeSide === "CALL" ? "callCandidate" : "putCandidate"] = { ...plan };
+        if (isHighLowPlanAcceptable(plan)) item.autoHighLow[safeSide === "CALL" ? "call" : "put"] = { ...plan };
+        item.autoHighLow.updatedAt = cache.updatedAt;
+        cache.barrierLockStatus = {
+          status: isHighLowPlanAcceptable(plan) ? "ready" : "candidate",
+          side: safeSide,
+          reason: String(reason || "pre58_barrier_lock"),
+          prepared_at: Date.now(),
+          prepared_ms: Math.round(getSignalConfirmationMs(item)),
+          barrier: String(plan.barrier || ""),
+          payout_total_pct: Number(plan.payoutTotalPct || 0),
+          target_distance_pct: getHighLowTargetDistance(plan),
+        };
+      } else {
+        cache.barrierLockStatus = {
+          status: "no_candidate",
+          side: safeSide,
+          reason: String(reason || "pre58_barrier_lock"),
+          at: Date.now(),
+          ms: Math.round(getSignalConfirmationMs(item)),
+        };
+      }
+    } catch (e) {
+      cache.barrierLockStatus = {
+        status: "error",
+        side: safeSide,
+        reason: String(reason || "pre58_barrier_lock"),
+        error: e?.message || String(e),
+        at: Date.now(),
+        ms: Math.round(getSignalConfirmationMs(item)),
+      };
+    } finally {
+      item.autoHighLow ||= {};
+      item.autoHighLow.barrierLockStatus = { ...cache.barrierLockStatus };
+      try { saveHistory(history); } catch {}
+      cache.barrierLockRunning = null;
+    }
+    return true;
+  })();
+  return cache.barrierLockRunning;
+}
+
 function scheduleHighLowFinalEntryTimers(item) {
   if (isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item)) return false;
   if (!shouldUseAutoHighLowExecution() || !item?.id || !isTradeEntryOpen(item) || item?.signalAutoEntry?.attempted) return;
   const cache = getOrCreateExecutionPlan(item);
   const ms = getSignalConfirmationMs(item);
 
+  const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
+
+  // II18 fase 1: alrededor de s50 recalibra únicamente la barrera de GIRO.
+  // No depende del flujograma ni autoriza operaciones.
+  if (!cache.barrierLockTimer && ms <= SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS) {
+    const lockDelay = Math.max(0, SIGNAL_HIGHLOW_BARRIER_LOCK_START_MS - ms);
+    cache.barrierLockTimer = setTimeout(() => {
+      cache.barrierLockTimer = null;
+      const current = findHistoryItemById(item.id) || item;
+      const side = String(current?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
+      void prepareHighLowBarrierLock(current, side, "exact_timer_50_barrier_lock");
+    }, lockDelay);
+  }
+
+  // II18 fase 2: antes de s58 obtiene la proposal final aunque el usuario todavía
+  // no haya completado 2/2. A s58 solo se compra si PGP ya autorizó esa misma dirección.
   if (!cache.finalRefreshTimer && ms <= SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS) {
     const delay = Math.max(0, SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS - ms);
     cache.finalRefreshTimer = setTimeout(() => {
       cache.finalRefreshTimer = null;
       const current = findHistoryItemById(item.id) || item;
-      const side = normalizeSignalConfirmationSide(getSignalEnabledTradeSide(current));
-      if (side) void prepareHighLowFinalEntryProposal(current, side, "exact_timer_57_25");
-      else {
-        cache.finalRefreshStatus = {
-          status: "waiting_points",
-          side: "",
-          reason: "exact_timer_57_25",
-          at: Date.now(),
-          ms: Math.round(getSignalConfirmationMs(current)),
-        };
-      }
+      const side = String(current?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
+      void prepareHighLowFinalEntryProposal(current, side, "exact_timer_56_prearmed_giro");
     }, delay);
   }
 
@@ -6011,7 +6153,7 @@ function promoteFreshHighLowPlanForLateConfirmation(item, side, stake) {
     ? [cache?.call, cache?.callCandidate, item?.autoHighLow?.call, item?.autoHighLow?.callCandidate]
     : [cache?.put, cache?.putCandidate, item?.autoHighLow?.put, item?.autoHighLow?.putCandidate];
   const usable = candidates
-    .filter((plan) => plan && isHighLowPlanAcceptable(plan) && plan.proposalId && isHighLowBarrierOnRequiredSide(plan, side))
+    .filter((plan) => plan && isHighLowFinalEntryPlanAcceptable(plan) && plan.proposalId && isHighLowBarrierOnRequiredSide(plan, side))
     .map((plan) => {
       const preparedAt = Number(plan.updatedAt || 0);
       const age = Date.now() - preparedAt;
@@ -6151,6 +6293,7 @@ function getHighLowEntryDiagnostics(item, side) {
     best_candidate: summarize(candidate),
     recent_proposal_attempts: readHighLowProposalAttemptAudit(item?.symbol, side),
     final_entry_plan: summarize(side === "CALL" ? (cache?.finalEntryCall || item?.autoHighLow?.finalEntryCall) : (cache?.finalEntryPut || item?.autoHighLow?.finalEntryPut)),
+    barrier_lock_status: cache?.barrierLockStatus || item?.autoHighLow?.barrierLockStatus || null,
     final_refresh_status: cache?.finalRefreshStatus || item?.autoHighLow?.finalRefreshStatus || null,
     points_enabled_at_ms: getSignalSideEnabledAtMs(item, side),
     cache_error: String(cache?.error || ""),
@@ -6335,7 +6478,7 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
     }
 
     const retryReadyMs = getSignalConfirmationMs(item);
-    if (!retryPlan || !isHighLowPlanAcceptable(retryPlan)) {
+    if (!retryPlan || !isHighLowFinalEntryPlanAcceptable(retryPlan)) {
       const retryPct = Number(retryPlan?.payoutTotalPct);
       const pctTxt = Number.isFinite(retryPct) ? `${retryPct.toFixed(1)}% total` : "sin pago válido";
       saveDiagnosis({
@@ -6732,6 +6875,9 @@ function getOrCreateExecutionPlan(item) {
       callCandidate: savedCall ? { ...savedCall } : (item?.autoHighLow?.callCandidate ? { ...item.autoHighLow.callCandidate } : null),
       putCandidate: savedPut ? { ...savedPut } : (item?.autoHighLow?.putCandidate ? { ...item.autoHighLow.putCandidate } : null),
       precalcAttempts: 0,
+      barrierLockTimer: null,
+      barrierLockRunning: null,
+      barrierLockStatus: item?.autoHighLow?.barrierLockStatus ? { ...item.autoHighLow.barrierLockStatus } : null,
       finalRefreshTimer: null,
       autoEntryTimer: null,
       finalRefreshRunning: null,
@@ -6755,10 +6901,13 @@ function stopExecutionPlanLoop(itemId) {
 }
 function clearHighLowFinalEntryTimers(cache) {
   if (!cache) return;
+  if (cache.barrierLockTimer) clearTimeout(cache.barrierLockTimer);
   if (cache.finalRefreshTimer) clearTimeout(cache.finalRefreshTimer);
   if (cache.autoEntryTimer) clearTimeout(cache.autoEntryTimer);
+  cache.barrierLockTimer = null;
   cache.finalRefreshTimer = null;
   cache.autoEntryTimer = null;
+  cache.barrierLockRunning = null;
   cache.finalRefreshRunning = null;
 }
 function stopAllExecutionPlanLoops() {
@@ -28662,7 +28811,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II17 — Inicio Inamovible con debilidad obligatoria del tercer lateral.
+// V113.33-II18 — Inicio Inamovible con barrera +130% prearmada en la dirección de giro.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -28761,7 +28910,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const centralMin = Math.max(alignedRange * 0.16, tol * 2.40, Math.abs(open) * 0.00000010, 1e-9);
       if (moves[0] < lateralMin || moves[2] < lateralMin || moves[1] < centralMin) continue;
 
-      // II17 — Debilidad visual del tercer movimiento.
+      // II18 — Debilidad visual del tercer movimiento (regla heredada de II16).
       // En el gráfico tiempo/precio, comparar el ángulo equivale a comparar la pendiente
       // (desplazamiento / duración) usando la misma escala. El último P/M debe llegar
       // claramente menos inclinado que el G central. Para esta prueba usamos <= 85%.
@@ -28883,7 +29032,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II17: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Además, el tercer lateral debe mostrar debilidad angular clara: su pendiente normalizada (desplazamiento/duración) debe ser como máximo 85% de la pendiente del G central. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58.`;
+  const logicText = `Motor experimental V113.33-II18: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Además, el tercer lateral debe mostrar debilidad angular clara: su pendiente normalizada (desplazamiento/duración) debe ser como máximo 85% de la pendiente del G central. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra.`;
 
   return {
     direction,
