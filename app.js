@@ -1,4 +1,4 @@
-// v113.33-II20: mantiene II19 y agrega recuperación de entrada tardía s60→s65.
+// v113.33-II21: corrige referencia s60 del rescate y prioriza barrera relativa fresca al disparar.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II20";
+const APP_BUILD_VERSION = "v113.33-II21";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1537,7 +1537,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_RECOVERY_S65_V113_33_II20_20260813";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_RECOVERY_S65_REF_S60_RELATIVE_FRESH_V113_33_II21_20260814";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2470,7 +2470,7 @@ const SIGNAL_HIGHLOW_LATE_PLAN_MAX_AGE_MS = 750;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_MAX_MS = 58550;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_DISTANCE_PCT = 1.5;
 const SIGNAL_AUTO_TIMER_DELAY_WARN_MS = 350;
-// II20: recuperación tardía favorable. Solo Higher/Lower, solo después de un fallo seguro
+// II21: recuperación tardía favorable. Corrige referencia s60 y usa barrera relativa fresca en el rescate
 // de AUTO58 por timing/proposal y únicamente si el PGP 2/2 ya estaba autorizado.
 const SIGNAL_LATE_RECOVERY_START_MS = 60000;
 const SIGNAL_LATE_RECOVERY_END_MS = 65000;
@@ -4984,7 +4984,7 @@ function buildHighLowAbsoluteBarrier(relativeBarrier, spotHint) {
   return absolute.toFixed(getHighLowAbsoluteBarrierDecimals(spotHint));
 }
 
-async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, allowLegacy = true, preferredUnderlyingSymbol = "", spotHint = NaN, item = null) {
+async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, allowLegacy = true, preferredUnderlyingSymbol = "", spotHint = NaN, item = null, preferRelativeBarrier = false) {
   const allErrors = [];
   const auditRows = [];
   const safeSymbol = String(symbol || "").trim();
@@ -5028,28 +5028,11 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
           continue;
         }
 
-        // La API nueva documenta barreras relativas y, para índices sintéticos,
-        // también absolutas. Probamos ambas con el contrato Higher/Lower real.
-        if (absoluteBarrier) {
-          attempts.push({
-            req: {
-              proposal: 1,
-              amount: Number(stake),
-              basis: "stake",
-              contract_type: primaryType,
-              currency: DEFAULT_CURRENCY,
-              duration: Number(DEFAULT_DURATION) || 1,
-              duration_unit: DEFAULT_DURATION_UNIT || "m",
-              underlying_symbol: underlyingSymbol,
-              barrier: absoluteBarrier,
-            },
-            apiContractType: primaryType,
-            underlyingSymbol,
-            payloadMode: "new_underlying_symbol_highlow_absolute_barrier",
-            barrierMode: "absolute",
-          });
-        }
-        attempts.push({
+        // II21: en el rescate tardío priorizamos la barrera RELATIVA (+/- distancia).
+        // Así Deriv ajusta la barrera respecto del entry spot y un salto entre proposal y buy
+        // no deja una barrera absoluta vieja demasiado lejos. Fuera del rescate se conserva
+        // el orden anterior (absoluta primero) para no alterar la operativa normal.
+        const relativePrimaryAttempt = {
           req: {
             proposal: 1,
             amount: Number(stake),
@@ -5065,10 +5048,53 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
           underlyingSymbol,
           payloadMode: "new_underlying_symbol_highlow_relative_barrier",
           barrierMode: "relative",
-        });
+        };
+        const absolutePrimaryAttempt = absoluteBarrier ? {
+          req: {
+            proposal: 1,
+            amount: Number(stake),
+            basis: "stake",
+            contract_type: primaryType,
+            currency: DEFAULT_CURRENCY,
+            duration: Number(DEFAULT_DURATION) || 1,
+            duration_unit: DEFAULT_DURATION_UNIT || "m",
+            underlying_symbol: underlyingSymbol,
+            barrier: absoluteBarrier,
+          },
+          apiContractType: primaryType,
+          underlyingSymbol,
+          payloadMode: "new_underlying_symbol_highlow_absolute_barrier",
+          barrierMode: "absolute",
+        } : null;
+        if (preferRelativeBarrier) {
+          // En rescate tardío NO hacemos fallback a barrera absoluta: si el mercado
+          // se mueve entre proposal y entrada, queremos que la distancia +/- siga
+          // referida al entry spot y no a un precio absoluto viejo.
+          attempts.push(relativePrimaryAttempt);
+        } else {
+          if (absolutePrimaryAttempt) attempts.push(absolutePrimaryAttempt);
+          attempts.push(relativePrimaryAttempt);
+        }
 
         if (allowLegacy) {
-          if (absoluteBarrier) {
+          const relativeLegacyAttempt = {
+            req: {
+              proposal: 1,
+              amount: Number(stake),
+              basis: "stake",
+              contract_type: legacyType,
+              currency: DEFAULT_CURRENCY,
+              duration: Number(DEFAULT_DURATION) || 1,
+              duration_unit: DEFAULT_DURATION_UNIT || "m",
+              underlying_symbol: underlyingSymbol,
+              barrier: safeBarrier,
+            },
+            apiContractType: legacyType,
+            underlyingSymbol,
+            payloadMode: "new_underlying_symbol_callput_relative_barrier",
+            barrierMode: "relative",
+          };
+          if (!preferRelativeBarrier && absoluteBarrier) {
             attempts.push({
               req: {
                 proposal: 1,
@@ -5087,23 +5113,7 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
               barrierMode: "absolute",
             });
           }
-          attempts.push({
-            req: {
-              proposal: 1,
-              amount: Number(stake),
-              basis: "stake",
-              contract_type: legacyType,
-              currency: DEFAULT_CURRENCY,
-              duration: Number(DEFAULT_DURATION) || 1,
-              duration_unit: DEFAULT_DURATION_UNIT || "m",
-              underlying_symbol: underlyingSymbol,
-              barrier: safeBarrier,
-            },
-            apiContractType: legacyType,
-            underlyingSymbol,
-            payloadMode: "new_underlying_symbol_callput_relative_barrier",
-            barrierMode: "relative",
-          });
+          attempts.push(relativeLegacyAttempt);
         }
       }
     } else {
@@ -5290,13 +5300,13 @@ async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = A
   }
   return isHighLowPlanWithinPayoutCap(plan) ? plan : null;
 }
-async function getHighLowProposalQuote(symbol, side, barrierCandidate, precisionIgnored, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, preferredUnderlyingSymbol = "", spotHint = NaN, item = null) {
+async function getHighLowProposalQuote(symbol, side, barrierCandidate, precisionIgnored, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, preferredUnderlyingSymbol = "", spotHint = NaN, item = null, preferRelativeBarrier = false) {
   const candidate = typeof barrierCandidate === "object" && barrierCandidate
     ? barrierCandidate
     : makeBarrierCandidateFromAbsolute(side, Math.abs(Number(barrierCandidate || 0)));
   if (!candidate?.barrier) return null;
   const normalizedBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol);
-  const raw = await requestHighLowProposalRaw(symbol, side, stake, normalizedBarrier, timeoutMs, true, preferredUnderlyingSymbol, spotHint, item);
+  const raw = await requestHighLowProposalRaw(symbol, side, stake, normalizedBarrier, timeoutMs, true, preferredUnderlyingSymbol, spotHint, item, preferRelativeBarrier);
   const effectiveBarrier = String(raw?.barrier || normalizedBarrier);
   const normalizedParsed = parseRelativeBarrierString(effectiveBarrier);
   const plan = parseProposalToExecution({
@@ -5674,7 +5684,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   return null;
 }
 
-async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPlan, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, item = null) {
+async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPlan, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, item = null, preferRelativeBarrier = false) {
   // Las recotizaciones de entrada siempre respetan el lado del contrato:
   // HIGHER/CALL usa barrera positiva y LOWER/PUT usa barrera negativa.
   const candidate = makeHighLowSameSideCandidate(barrierPlan, side, symbol);
@@ -5688,7 +5698,8 @@ async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPla
     timeoutMs,
     String(barrierPlan?.underlyingSymbol || ""),
     Number(lastQuoteBySymbol?.[symbol]) || getLatestSignalQuoteForBarrier(item || { symbol }),
-    item
+    item,
+    preferRelativeBarrier
   );
   if (!plan?.proposalId || !Number.isFinite(Number(plan.askPrice))) {
     throw new Error(`${side === "CALL" ? "HIGHER" : "LOWER"}: Deriv no devolvió una proposal válida.`);
@@ -6341,18 +6352,25 @@ async function buyLateRecoveryHighLow(item, side, stake) {
 
     try {
       const timeout = Math.max(250, Math.min(850, left));
-      const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, timeout, item);
+      const quoteAtRequest = Number(lastQuoteBySymbol?.[symbol]);
+      state.quote_at_request = Number.isFinite(quoteAtRequest) ? quoteAtRequest : null;
+      state.quote_request_elapsed_ms = Math.round(elapsedBeforeQuote);
+      const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, timeout, item, true);
       if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
       if (plan && isHighLowFinalEntryPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
         const elapsedBeforeBuy = getSignalElapsedMsRaw(item);
         if (elapsedBeforeBuy > SIGNAL_LATE_RECOVERY_END_MS) throw new Error("La proposal del rescate llegó después de s65.");
         const current = Number(lastQuoteBySymbol?.[symbol]);
-        const ref = Number(state.reference_price);
+        const ref = getLateRecoveryReferencePrice(item);
         if (!isLateRecoveryPriceFavorable(safeSide, current, ref)) {
           throw new Error("El precio dejó de ser favorable mientras se refrescaba la proposal.");
         }
 
         state.barrier = String(plan.barrier || "");
+        state.proposal_barrier_mode = String(plan.barrierMode || "");
+        state.proposal_api_barrier = String(plan.apiBarrier || "");
+        state.proposal_quote_price = Number.isFinite(quoteAtRequest) ? quoteAtRequest : null;
+        state.proposal_live_price_before_buy = Number.isFinite(current) ? current : null;
         state.payout_total_pct = Number(plan.payoutTotalPct || 0);
         state.proposal_id = String(plan.proposalId || "");
         state.proposal_attempt = attempt;
@@ -15354,7 +15372,9 @@ function armLateEntryRecovery(item, reason = "auto58_timing_or_proposal_failure"
   return true;
 }
 function getLateRecoveryReferencePrice(item) {
-  const stored = Number(item?.lateEntryRecovery?.reference_price);
+  const raw = item?.lateEntryRecovery?.reference_price;
+  if (raw === null || raw === undefined || raw === "") return NaN;
+  const stored = Number(raw);
   return Number.isFinite(stored) ? stored : NaN;
 }
 function isLateRecoveryPriceFavorable(side, currentPrice, referencePrice) {
@@ -15522,7 +15542,7 @@ function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
       continue;
     }
 
-    if (!Number.isFinite(Number(state.reference_price))) {
+    if (!Number.isFinite(getLateRecoveryReferencePrice(item))) {
       state.reference_price = q;
       state.reference_epoch_ms = ep;
       state.reference_elapsed_ms = Math.round(elapsed);
@@ -15531,7 +15551,7 @@ function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
       try { saveHistory(history); } catch {}
     }
 
-    const ref = Number(state.reference_price);
+    const ref = getLateRecoveryReferencePrice(item);
     state.last_price = q;
     state.last_elapsed_ms = Math.round(elapsed);
     state.last_favorable = isLateRecoveryPriceFavorable(side, q, ref);
@@ -29145,7 +29165,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II20 — II19 + recuperación tardía favorable entre s60 y s65 para Higher/Lower.
+// V113.33-II21 — II20 + referencia s60 real y barrera relativa fresca en rescate Higher/Lower.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29347,7 +29367,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II20: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120.`;
+  const logicText = `Motor experimental V113.33-II21: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate.`;
 
   return {
     direction,
@@ -29491,9 +29511,9 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       secondReductionRetraceRatio: null,
       secondReductionOppositeSteps: 0,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: "v113_33_ii17_inicio_inamovible_lateral_visual_22_corte_real_debilidad_tercer_85",
+      movementFilter: "v113_33_ii21_inicio_inamovible_lateral_visual_22_corte_real_sin_filtro_angular",
       priority: "STUDY_ONLY",
-      stage: "inicio_inamovible_giro_lateral_visual_corte_real_debilidad_tercer_85_s15_30",
+      stage: "inicio_inamovible_giro_lateral_visual_corte_real_sin_filtro_angular_s15_30",
       logic: logicText,
       status,
     },
