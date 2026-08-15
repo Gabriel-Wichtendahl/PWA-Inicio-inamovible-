@@ -1,4 +1,4 @@
-// v113.33-II22: AUTO58 Higher/Lower recotiza barrera relativa fresca al disparar y congela búsquedas paralelas.
+// v113.33-II23: corrige precisión fina de barrera por símbolo y agrega fallback rápido de semilla en AUTO58.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II22";
+const APP_BUILD_VERSION = "v113.33-II23";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -263,7 +263,7 @@ const AUTO_PRECALC_REFRESH_MS = 10000;
 const AUTO_PRECALC_STALE_MS = 120000;
 const HIGHLOW_PRECALC_MAX_ATTEMPTS = 1;
 const HIGHLOW_BARRIER_CACHE_KEY = "highLowBarrierCache_v13_profit130_fixed_s60";
-const HIGHLOW_BARRIER_PRECISION_CACHE_KEY = "highLowBarrierPrecisionBySymbol_v3_real_symbol_precision";
+const HIGHLOW_BARRIER_PRECISION_CACHE_KEY = "highLowBarrierPrecisionBySymbol_v4_explicit_errors_only";
 const HIGHLOW_API_MAX_BARRIER_DECIMALS = 4;
 const HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL = {
   R_10: 3,
@@ -1537,7 +1537,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_AUTO58_RELATIVE_FRESH_RECOVERY_S65_V113_33_II22_20260815";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FINE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_V113_33_II23_20260815";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -4740,6 +4740,51 @@ function makeHighLowFixedBarrierCandidate(symbol, side) {
     source: "fixed_by_symbol",
   };
 }
+
+// II23: si s50/s56 no consiguieron dejar una proposal final, AUTO58 no cancela
+// inmediatamente. Construye una semilla RELATIVA de emergencia con precisión real
+// del símbolo y deja que el mismo bucle de cotización fresca de AUTO58 la afine.
+function makeHighLowAuto58EmergencySeed(item, side, stake) {
+  const symbol = String(item?.symbol || "");
+  if (!symbol) return null;
+  const requiredSign = getHighLowRequiredBarrierSign(side);
+  const precision = getHighLowBarrierMaxDecimals(symbol);
+  const minStep = Math.pow(10, -Math.max(0, precision));
+
+  const fixed = makeHighLowFixedBarrierCandidate(symbol, side);
+  const hint = getExecutionBarrierHint(symbol, side);
+  const hintAbs = Math.abs(Number(hint?.barrierNum || hint?.barrierAbs || 0));
+  const fixedAbs = Math.abs(Number(fixed?.barrierNum || 0));
+  const latest = Number(getLatestSignalQuoteForBarrier(item));
+
+  // Prioridad: semilla específica del símbolo; luego hint aceptado reciente; luego
+  // una escala mínima del spot. Nunca se redondea a entero salvo que el símbolo
+  // realmente tenga precisión 0.
+  let abs = Number.isFinite(fixedAbs) && fixedAbs > 0 ? fixedAbs : NaN;
+  if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(hintAbs) && hintAbs > 0) abs = hintAbs;
+  if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(latest) && latest > 0) abs = latest * 0.000145;
+  if (!Number.isFinite(abs) || abs <= 0) return null;
+  abs = Math.max(abs, Number.isFinite(minStep) && minStep > 0 ? minStep : HIGHLOW_API_MIN_RELATIVE_BARRIER);
+
+  const candidate = makeBarrierCandidateFromSignedValue(requiredSign * abs, precision);
+  if (!candidate?.barrier) return null;
+  return {
+    ...candidate,
+    proposalId: "",
+    askPrice: Number(stake),
+    payoutTotalPct: null,
+    profitPct: null,
+    source: "auto58_emergency_seed_no_preplan",
+    targetSearch: true,
+    targetPayoutTotalPct: HIGHLOW_TARGET_PAYOUT_TOTAL_PCT,
+    fixedExpiryEpochSec: getHighLowFixedExpiryEpochSec(item),
+    expiryMode: "fixed_s60_absolute",
+    finalPreparedAt: Date.now(),
+    finalPreparedMs: Math.round(getSignalConfirmationMs(item)),
+    emergencySeedOnly: true,
+    searchAcceptable: false,
+  };
+}
 function dedupeBarrierCandidates(candidates) {
   const out = [];
   const seen = new Set();
@@ -5182,7 +5227,9 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
 
         if (proposalId && complete && legacyBarrierProven) {
           const parsedBarrier = safeBarrier ? parseRelativeBarrierString(safeBarrier) : null;
-          if (parsedBarrier && barrierMode === "relative") rememberHighLowBarrierMaxDecimals(safeSymbol, parsedBarrier.precision);
+          // II23: una proposal exitosa con una barrera gruesa (p. ej. +1) NO demuestra
+          // que el símbolo solo admita 0 decimales. La precisión máxima se reduce
+          // únicamente cuando Deriv devuelve un error explícito de decimales.
           auditRows.push({ ...auditBase, status: "ok", proposal_id: proposalId, ask_price: askPrice, payout });
           saveHighLowProposalAttemptAudit(safeSymbol, safeSide, auditRows);
           window.DerivDebug?.log?.("HIGHLOW_PROPOSAL_OK", {
@@ -5480,8 +5527,10 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   const defaultCandidate = makeHighLowCandidateFromPlan(defaultPlan, side);
   const latestQuote = getLatestSignalQuoteForBarrier(item);
   const baseOptions = [
-    Math.abs(Number(hint?.barrierNum || hint?.barrierAbs || 0)),
+    // II23: la semilla por símbolo tiene prioridad para abrir la horquilla. Un hint
+    // viejo puede haber quedado lejos tras un cambio brusco de mercado.
     fixedRaw,
+    Math.abs(Number(hint?.barrierNum || hint?.barrierAbs || 0)),
     Math.abs(Number(defaultCandidate?.barrierNum || 0)),
     Number.isFinite(latestQuote) && latestQuote > 0 ? Math.abs(latestQuote * 0.000145) : 0,
     Number.isFinite(latestQuote) && latestQuote > 0 ? Math.abs(latestQuote * 0.00010) : 0,
@@ -6486,6 +6535,25 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
 
     if (finalPlan && !isHighLowPlanExpiryAligned(finalPlan, item)) finalPlan = null;
 
+    // II23 fallback rápido: si la preparación previa no encontró una proposal dentro
+    // del rango, todavía podemos usar una distancia semilla con la precisión real
+    // del símbolo y hacer la búsqueda fina RELATIVA directamente en AUTO58. No compra
+    // esta semilla; el bucle de abajo siempre exige una proposal fresca y aceptable.
+    if (!finalPlan && triggerMs <= SIGNAL_AUTO_POST58_MAX_MS) {
+      const emergencySeed = makeHighLowAuto58EmergencySeed(item, side, stake);
+      if (emergencySeed) {
+        finalPlan = emergencySeed;
+        item.signalAutoEntry.auto58_emergency_seed = {
+          used: true,
+          barrier: String(emergencySeed.barrier || ""),
+          precision: Number(emergencySeed.precision || 0),
+          source: String(emergencySeed.source || ""),
+          at_ms: Math.round(getSignalConfirmationMs(item)),
+        };
+        try { saveHistory(history); } catch {}
+      }
+    }
+
     if (!finalPlan) {
       const diagnosis = classifyHighLowAutoTimingFailure(item, side);
       item.signalAutoEntry.timing_diagnosis = diagnosis;
@@ -6515,7 +6583,9 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
       seed_plan_age_ms: Math.round(finalPlan.finalPlanAgeMs || 0),
       seed_barrier: String(finalPlan.barrier || ""),
       seed_payout_total_pct: Number(finalPlan.payoutTotalPct || 0),
-      entry_quote_mode: "relative_fresh_at_auto58",
+      entry_quote_mode: finalPlan?.emergencySeedOnly ? "relative_fine_fallback_at_auto58" : "relative_fresh_at_auto58",
+      emergency_seed_used: !!finalPlan?.emergencySeedOnly,
+      seed_precision: Number(finalPlan?.precision || 0),
     };
     const saveDiagnosis = (patch) => {
       item.signalAutoEntry.timing_diagnosis = { ...diagnosisBase, ...(patch || {}) };
@@ -6535,7 +6605,9 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
     let freshPlan = null;
     let firstQuoteError = "";
     const tried = new Set();
-    const maxFreshQuotes = 3;
+    // Con semilla de emergencia permitimos hasta 4 puntos finos; el límite temporal
+    // SIGNAL_AUTO_POST58_MAX_MS sigue mandando y corta el bucle antes de comprar tarde.
+    const maxFreshQuotes = finalPlan?.emergencySeedOnly ? 4 : 3;
 
     for (let attempt = 1; attempt <= maxFreshQuotes; attempt++) {
       const beforeQuoteMs = getSignalConfirmationMs(item);
@@ -29239,7 +29311,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II22 — II21 + AUTO58 Higher/Lower con barrera relativa fresca y sin búsquedas paralelas al buy.
+// V113.33-II23 — II22 + precisión fina por símbolo y fallback relativo rápido en AUTO58.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29441,7 +29513,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II22: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal hace lo mismo: usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene las búsquedas de barrera en segundo plano para que no compitan con la entrada.`;
+  const logicText = `Motor experimental V113.33-II23: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar.`;
 
   return {
     direction,
