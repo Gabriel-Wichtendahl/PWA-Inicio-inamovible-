@@ -1,4 +1,4 @@
-// v113.33-II21: corrige referencia s60 del rescate y prioriza barrera relativa fresca al disparar.
+// v113.33-II22: AUTO58 Higher/Lower recotiza barrera relativa fresca al disparar y congela búsquedas paralelas.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II21";
+const APP_BUILD_VERSION = "v113.33-II22";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1537,7 +1537,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_RECOVERY_S65_REF_S60_RELATIVE_FRESH_V113_33_II21_20260814";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_AUTO58_RELATIVE_FRESH_RECOVERY_S65_V113_33_II22_20260815";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -5413,6 +5413,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   let quotesUsed = 0;
   let best = null;
   let lastError = "";
+  const shouldAbortForEntry = () => !!opts.abortOnEntryBuy && isHighLowEntryBuyActive(item);
 
   const remember = (plan, candidate = null) => {
     if (!plan) return null;
@@ -5433,6 +5434,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   };
 
   const quoteCandidate = async (candidate) => {
+    if (shouldAbortForEntry()) return { kind: "aborted", candidate };
     if (!candidate?.barrier || quotesUsed >= maxQuotes || isHighLowProposalCooldownActive()) return { kind: "skip", candidate };
     const apiBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol);
     if (!apiBarrier || seen.has(apiBarrier)) return { kind: "skip", candidate };
@@ -5444,6 +5446,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     quotesUsed++;
     try {
       const plan = await getHighLowProposalQuote(symbol, side, effectiveCandidate, effectiveCandidate.precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
+      if (shouldAbortForEntry()) return { kind: "aborted", candidate: effectiveCandidate };
       return { kind: "plan", plan: remember(plan, effectiveCandidate), candidate: effectiveCandidate };
     } catch (e) {
       const msg = e?.message || String(e || "");
@@ -5460,7 +5463,9 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   // Deriv exponga una barrera reproducible y ya quede dentro de 125–135% de ganancia neta (225–235% total).
   let defaultPlan = null;
   try {
+    if (shouldAbortForEntry()) return null;
     defaultPlan = await getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs, item);
+    if (shouldAbortForEntry()) return null;
     if (defaultPlan) remember(defaultPlan, null);
     if (defaultPlan && isHighLowPlanAcceptable(defaultPlan) && makeHighLowCandidateFromPlan(defaultPlan, side)) {
       rememberExecutionBarrierHint(symbol, side, defaultPlan, defaultPlan.precision || 0);
@@ -5503,7 +5508,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
 
   // 1) Busca el límite difícil con el signo tradicional: LOWER abajo / HIGHER arriba.
   let hardProbeU = -baseAbs;
-  while (quotesUsed < maxQuotes && hardU === null && !isHighLowProposalCooldownActive()) {
+  while (quotesUsed < maxQuotes && hardU === null && !isHighLowProposalCooldownActive() && !shouldAbortForEntry()) {
     const r = await quoteU(hardProbeU);
     if (r.kind === "plan" && r.plan) {
       if (isHighLowPlanAcceptable(r.plan)) {
@@ -5530,7 +5535,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   // 2) Busca el límite fácil. “No return” es un dato útil: la barrera ya pasó
   // del objetivo y permite cerrar la horquilla sin probar formatos alternativos.
   let easyProbeU = baseAbs;
-  while (quotesUsed < maxQuotes && easyU === null && !isHighLowProposalCooldownActive()) {
+  while (quotesUsed < maxQuotes && easyU === null && !isHighLowProposalCooldownActive() && !shouldAbortForEntry()) {
     const r = await quoteU(easyProbeU);
     if (r.kind === "no_return") {
       easyU = easyProbeU;
@@ -5571,6 +5576,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     easyU !== null &&
     easyU > hardU &&
     !isHighLowProposalCooldownActive() &&
+    !shouldAbortForEntry() &&
     bisectionIterations < bisectionIterationLimit
   ) {
     bisectionIterations++;
@@ -5637,6 +5643,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   // redondeo de la barrera, usa pasos reales del símbolo. Ejemplo R_50:
   // -0.0100 puede dar 224.4%; ahora también prueba -0.0101/-0.0102 en vez de
   // abandonar por una diferencia de solo décimas.
+  if (shouldAbortForEntry()) return null;
   if (best && quotesUsed < maxQuotes) {
     const bestPct = Number(best.payoutTotalPct);
     const bestCandidate = makeHighLowCandidateFromPlan(best, side);
@@ -5904,6 +5911,7 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
   if (safeSide !== signalSide) return false;
 
   const cache = getOrCreateExecutionPlan(item);
+  if (cache.entryBuyActive) return false;
   const stake = Number(getEffectiveTradeStake().toFixed(2));
   const existing = getHighLowFinalEntryPlan(item, safeSide, stake);
   if (existing) return true;
@@ -5954,6 +5962,7 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
       // II18 permite varios microajustes porque empieza antes; sigue siendo un solo lado y
       // una zona local alrededor de la barrera ya aprendida, no una búsqueda amplia.
       for (let attempt = 1; attempt <= SIGNAL_HIGHLOW_FINAL_REFRESH_MAX_ATTEMPTS; attempt++) {
+        if (cache.entryBuyActive) return false;
         const nowMs = getSignalConfirmationMs(item);
         if (nowMs > SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS + 250) break;
         if (!candidate?.barrier || tried.has(String(candidate.barrier))) break;
@@ -5961,6 +5970,7 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
 
         const remaining = Math.max(300, Math.min(800, SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS + 250 - nowMs + 120));
         const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, remaining, item);
+        if (cache.entryBuyActive) return false;
         if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
         if (plan && isHighLowPlanAcceptable(plan)) {
           const finalPlan = saveHighLowFinalEntryPlan(item, safeSide, plan, reason);
@@ -6046,6 +6056,7 @@ async function prepareHighLowBarrierLock(item, side, reason = "pre58_barrier_loc
   const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
   if (safeSide !== signalSide) return false;
   const cache = getOrCreateExecutionPlan(item);
+  if (cache.entryBuyActive) return false;
   if (cache.barrierLockRunning) return cache.barrierLockRunning;
   const stake = Number(getEffectiveTradeStake().toFixed(2));
   cache.barrierLockStatus = {
@@ -6066,7 +6077,12 @@ async function prepareHighLowBarrierLock(item, side, reason = "pre58_barrier_loc
         maxQuotes: 7,
         timeoutMs: 1800,
         stake,
+        abortOnEntryBuy: true,
       });
+      if (cache.entryBuyActive) {
+        cache.barrierLockStatus = { status: "stopped_for_entry", side: safeSide, reason: "auto58_buy_started", at: Date.now(), ms: Math.round(getSignalConfirmationMs(item)) };
+        return false;
+      }
       if (plan && makeHighLowCandidateFromPlan(plan, safeSide)) {
         if (safeSide === "CALL") cache.callCandidate = { ...plan };
         else cache.putCandidate = { ...plan };
@@ -6490,200 +6506,222 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
       throw new Error(`AUTO ${side === "CALL" ? "HIGHER" : "LOWER"} cancelado: ${diagnosis.message}`);
     }
 
+    const entryCache = beginHighLowEntryBuy(item, side, "auto58_relative_fresh");
     const diagnosisBase = {
       points_enabled_at_ms: getSignalSideEnabledAtMs(item, side),
       auto_trigger_ms: Math.round(triggerMs),
       auto_trigger_delay_ms: Math.max(0, Math.round(triggerMs - SIGNAL_AUTO_ENTRY_MS)),
-      final_plan_prepared_ms: Number(finalPlan.finalPreparedMs || null),
-      final_plan_age_ms: Math.round(finalPlan.finalPlanAgeMs || 0),
-      barrier: String(finalPlan.barrier || ""),
-      payout_total_pct: Number(finalPlan.payoutTotalPct || 0),
+      seed_plan_prepared_ms: Number(finalPlan.finalPreparedMs || null),
+      seed_plan_age_ms: Math.round(finalPlan.finalPlanAgeMs || 0),
+      seed_barrier: String(finalPlan.barrier || ""),
+      seed_payout_total_pct: Number(finalPlan.payoutTotalPct || 0),
+      entry_quote_mode: "relative_fresh_at_auto58",
     };
     const saveDiagnosis = (patch) => {
       item.signalAutoEntry.timing_diagnosis = { ...diagnosisBase, ...(patch || {}) };
       try { saveHistory(history); } catch {}
     };
 
-    const firstBuyPayload = { buy: String(finalPlan.proposalId), price: Number(finalPlan.askPrice) };
-    const latePromotedPlan = !!finalPlan.promotedAfterLateConfirmation;
-    saveDiagnosis({
-      code: latePromotedPlan
-        ? "LATE_CONFIRMATION_FRESH_PLAN_BUY_SENT"
-        : (triggerMs - SIGNAL_AUTO_ENTRY_MS > SIGNAL_AUTO_TIMER_DELAY_WARN_MS ? "TIMER_DELAYED_PREPARED_BUY_SENT" : "PREPARED_BUY_SENT"),
-      message: latePromotedPlan
-        ? "Confirmación tardía recuperada con una proposal válida y fresca ya disponible."
-        : "Buy enviado con la proposal final preparada cerca del segundo 58; esperando aceptación de Deriv.",
-      first_proposal_id: String(finalPlan.proposalId || ""),
-    });
-    window.DerivDebug?.log?.("HIGHLOW_PRE58_PREPARED_BUY_ATTEMPT", {
-      proposal_id: firstBuyPayload.buy,
-      price: firstBuyPayload.price,
-      side,
-      symbol,
-      barrier: finalPlan.barrier,
-      payoutTotalPct: finalPlan.payoutTotalPct,
-      triggerMs,
-      finalPlanAgeMs: finalPlan.finalPlanAgeMs,
-    });
+    // II22: la proposal de s56 NO se compra. Solo aporta la distancia +/- que suele
+    // dar ~130%. En AUTO58 recotizamos esa misma distancia como barrera RELATIVA,
+    // para que Deriv la calcule contra el spot vivo del instante de entrada.
+    let candidate = makeHighLowSameSideCandidate(finalPlan, side, symbol);
+    if (!candidate?.barrier) {
+      saveDiagnosis({ code: "AUTO58_RELATIVE_SEED_MISSING", message: "La proposal prearmada no dejó una distancia relativa utilizable." });
+      throw new Error(`AUTO ${side === "CALL" ? "HIGHER" : "LOWER"} cancelado: sin distancia relativa preparada.`);
+    }
 
-    const firstRes = await wsRequest(firstBuyPayload, 20000);
-    if (firstRes?.buy?.contract_id) {
+    let closest = null;
+    let freshPlan = null;
+    let firstQuoteError = "";
+    const tried = new Set();
+    const maxFreshQuotes = 3;
+
+    for (let attempt = 1; attempt <= maxFreshQuotes; attempt++) {
+      const beforeQuoteMs = getSignalConfirmationMs(item);
+      if (beforeQuoteMs > SIGNAL_AUTO_POST58_MAX_MS) break;
+      if (!candidate?.barrier || tried.has(String(candidate.barrier))) break;
+      tried.add(String(candidate.barrier));
+      const liveBeforeQuote = Number(lastQuoteBySymbol?.[symbol]);
       saveDiagnosis({
-        code: latePromotedPlan ? "LATE_CONFIRMATION_FRESH_PLAN_BUY_ACCEPTED" : "PREPARED_BUY_ACCEPTED",
-        message: latePromotedPlan
-          ? "Deriv aceptó la compra recuperada después de una confirmación tardía, usando una proposal fresca."
-          : "Deriv aceptó la compra con la proposal final fresca preparada antes del segundo 58.",
+        code: attempt === 1 ? "AUTO58_RELATIVE_FRESH_QUOTE_STARTED" : "AUTO58_RELATIVE_MICROADJUST_QUOTE_STARTED",
+        message: attempt === 1
+          ? "AUTO58: recotizando la distancia prearmada como barrera relativa con el spot vivo."
+          : "AUTO58: microajuste local de barrera relativa para acercar el payout a 130%.",
+        fresh_quote_attempt: attempt,
+        live_price_before_quote: Number.isFinite(liveBeforeQuote) ? liveBeforeQuote : null,
+        requested_relative_barrier: String(candidate.barrier || ""),
+        quote_started_ms: Math.round(beforeQuoteMs),
+      });
+      try {
+        const remaining = Math.max(300, Math.min(850, SIGNAL_AUTO_POST58_MAX_MS - beforeQuoteMs + 120));
+        const plan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, candidate, remaining, item, true);
+        if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
+        if (plan && isHighLowFinalEntryPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
+          freshPlan = plan;
+          freshPlan.source = "auto58_relative_fresh_target_profit_130";
+          freshPlan.auto58RelativeFresh = true;
+          freshPlan.auto58FreshAttempt = attempt;
+          freshPlan.seedBarrier = String(finalPlan.barrier || "");
+          freshPlan.seedProposalId = String(finalPlan.proposalId || "");
+          freshPlan.seedPlanAgeMs = Math.round(finalPlan.finalPlanAgeMs || 0);
+          break;
+        }
+        if (!plan) break;
+        const adjusted = adjustHighLowBarrierSameSideTowardTarget(plan, side, symbol);
+        if (!adjusted?.barrier || tried.has(String(adjusted.barrier))) break;
+        candidate = adjusted;
+      } catch (e) {
+        firstQuoteError = e?.message || String(e || "Error recotizando AUTO58");
+        break;
+      }
+    }
+
+    if (!freshPlan) {
+      const pct = Number(closest?.payoutTotalPct);
+      const pctTxt = Number.isFinite(pct) ? `${pct.toFixed(1)}% total` : "sin proposal válida";
+      saveDiagnosis({
+        code: "AUTO58_RELATIVE_FRESH_NOT_READY",
+        message: firstQuoteError || `No se obtuvo barrera relativa fresca suficientemente cerca de 130% (${pctTxt}).`,
+        best_fresh_payout_total_pct: Number.isFinite(pct) ? pct : null,
+        best_fresh_barrier: String(closest?.barrier || ""),
+      });
+      throw new Error(`AUTO ${side === "CALL" ? "HIGHER" : "LOWER"} cancelado: ${firstQuoteError || `barrera fresca ${pctTxt}`}.`);
+    }
+
+    const readyMs = getSignalConfirmationMs(item);
+    if (readyMs > SIGNAL_AUTO_POST58_MAX_MS) {
+      saveDiagnosis({
+        code: "AUTO58_RELATIVE_FRESH_READY_TOO_LATE",
+        message: `La proposal relativa fresca llegó a ${(readyMs / 1000).toFixed(2)}s.`,
+        fresh_proposal_id: String(freshPlan.proposalId || ""),
+        fresh_barrier: String(freshPlan.barrier || ""),
+        fresh_payout_total_pct: Number(freshPlan.payoutTotalPct || 0),
+      });
+      throw new Error("La proposal relativa fresca llegó fuera de la ventana segura de entrada.");
+    }
+
+    const buyOnce = async (plan, attemptNo, priorError = "") => {
+      const buySentMs = getSignalConfirmationMs(item);
+      const liveBeforeBuy = Number(lastQuoteBySymbol?.[symbol]);
+      saveDiagnosis({
+        code: attemptNo === 1 ? "AUTO58_RELATIVE_FRESH_BUY_SENT" : "AUTO58_RELATIVE_REQUOTE_BUY_SENT",
+        message: attemptNo === 1
+          ? "Buy enviado con proposal relativa fresca generada en AUTO58."
+          : "Segundo buy enviado con una nueva proposal relativa después de movimiento de mercado.",
+        fresh_proposal_id: String(plan.proposalId || ""),
+        fresh_barrier: String(plan.barrier || ""),
+        fresh_api_barrier: String(plan.apiBarrier || ""),
+        fresh_barrier_mode: String(plan.barrierMode || ""),
+        fresh_payout_total_pct: Number(plan.payoutTotalPct || 0),
+        live_price_before_buy: Number.isFinite(liveBeforeBuy) ? liveBeforeBuy : null,
+        buy_sent_ms: Math.round(buySentMs),
+        prior_buy_error: priorError || "",
+      });
+      window.DerivDebug?.log?.("HIGHLOW_AUTO58_RELATIVE_FRESH_BUY_ATTEMPT", {
+        proposal_id: String(plan.proposalId || ""),
+        price: Number(plan.askPrice),
+        side,
+        symbol,
+        relativeBarrier: String(plan.barrier || ""),
+        apiBarrier: String(plan.apiBarrier || ""),
+        barrierMode: String(plan.barrierMode || ""),
+        payoutTotalPct: Number(plan.payoutTotalPct || 0),
+        livePriceBeforeBuy: Number.isFinite(liveBeforeBuy) ? liveBeforeBuy : null,
+        buySentMs,
+        attemptNo,
+      });
+      const res = await wsRequest({ buy: String(plan.proposalId), price: Number(plan.askPrice) }, 20000);
+      return { res, buySentMs, liveBeforeBuy };
+    };
+
+    const first = await buyOnce(freshPlan, 1);
+    if (first.res?.buy?.contract_id) {
+      saveDiagnosis({
+        code: "AUTO58_RELATIVE_FRESH_BUY_ACCEPTED",
+        message: "Deriv aceptó la compra con barrera relativa fresca de AUTO58.",
         accepted_at_ms: Math.round(getSignalConfirmationMs(item)),
-        first_proposal_id: String(finalPlan.proposalId || ""),
       });
       return {
-        res: firstRes,
-        plan: finalPlan,
+        res: first.res,
+        plan: freshPlan,
         attempt: 1,
         preparedPlan: finalPlan,
-        usedFinalPreproposal: true,
+        usedFinalPreproposal: false,
         repriceUsed: false,
         finalPlanAgeMs: Math.round(finalPlan.finalPlanAgeMs || 0),
+        auto58RelativeFreshUsed: true,
       };
     }
 
-    const firstError = String(firstRes?.error?.message || "Deriv no confirmó la compra con la proposal final pre-58.");
+    const firstError = String(first.res?.error?.message || "Deriv no confirmó el buy con la proposal relativa fresca.");
     const marketMoved = /underlying market has moved too much|contract payout has changed/i.test(firstError);
     if (!marketMoved) {
-      saveDiagnosis({
-        code: "PREPARED_BUY_REJECTED",
-        message: firstError,
-        first_proposal_id: String(finalPlan.proposalId || ""),
-      });
+      saveDiagnosis({ code: "AUTO58_RELATIVE_FRESH_BUY_REJECTED", message: firstError, first_error: firstError });
       throw new Error(firstError);
     }
 
-    const afterFirstBuyMs = getSignalConfirmationMs(item);
-    if (afterFirstBuyMs > SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS) {
+    const afterRejectMs = getSignalConfirmationMs(item);
+    if (afterRejectMs > SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS) {
       saveDiagnosis({
-        code: "MARKET_MOVED_REPRICE_TOO_LATE",
-        message: `Deriv rechazó la proposal porque cambió el mercado y ya eran ${(afterFirstBuyMs / 1000).toFixed(2)}s; no se reintentó tarde.`,
+        code: "AUTO58_RELATIVE_REQUOTE_TOO_LATE",
+        message: `El mercado se movió y el rechazo llegó a ${(afterRejectMs / 1000).toFixed(2)}s; no hay tiempo seguro para otra proposal.`,
         first_error: firstError,
-        first_proposal_id: String(finalPlan.proposalId || ""),
-        first_reject_ms: Math.round(afterFirstBuyMs),
+        first_reject_ms: Math.round(afterRejectMs),
       });
       throw new Error(`Compra rechazada por movimiento del mercado y sin tiempo seguro para recotizar: ${firstError}`);
     }
 
-    saveDiagnosis({
-      code: "MARKET_MOVED_REPRICE_STARTED",
-      message: "Deriv rechazó la proposal por movimiento del mercado; recotizando una vez con el spot actual.",
-      first_error: firstError,
-      first_proposal_id: String(finalPlan.proposalId || ""),
-      first_reject_ms: Math.round(afterFirstBuyMs),
-    });
-
     let retryPlan = null;
     try {
-      const remaining = Math.max(350, Math.min(850, SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS - afterFirstBuyMs + 120));
-      retryPlan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, finalPlan, remaining, item);
+      const remaining = Math.max(300, Math.min(700, SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS - afterRejectMs + 100));
+      retryPlan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, freshPlan, remaining, item, true);
       if (retryPlan) {
-        retryPlan.source = "market_moved_reprice_profit_130";
-        retryPlan.repricedFromProposalId = String(finalPlan.proposalId || "");
-        retryPlan.repricedAtMs = Math.round(getSignalConfirmationMs(item));
+        retryPlan.source = "auto58_relative_fresh_market_moved_requote";
+        retryPlan.auto58RelativeFresh = true;
+        retryPlan.repricedFromProposalId = String(freshPlan.proposalId || "");
       }
     } catch (e) {
       const msg = e?.message || String(e);
-      saveDiagnosis({
-        code: "MARKET_MOVED_REPRICE_PROPOSAL_ERROR",
-        message: msg,
-        first_error: firstError,
-        first_proposal_id: String(finalPlan.proposalId || ""),
-        reprice_error_at_ms: Math.round(getSignalConfirmationMs(item)),
-      });
-      throw new Error(`No se pudo recotizar después del movimiento del mercado: ${msg}`);
+      saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_ERROR", message: msg, first_error: firstError });
+      throw new Error(`No se pudo recotizar la barrera relativa después del movimiento del mercado: ${msg}`);
     }
 
     const retryReadyMs = getSignalConfirmationMs(item);
-    if (!retryPlan || !isHighLowFinalEntryPlanAcceptable(retryPlan)) {
-      const retryPct = Number(retryPlan?.payoutTotalPct);
-      const pctTxt = Number.isFinite(retryPct) ? `${retryPct.toFixed(1)}% total` : "sin pago válido";
-      saveDiagnosis({
-        code: "MARKET_MOVED_REPRICE_OUT_OF_RANGE",
-        message: `La recotización quedó fuera del rango: ${pctTxt}.`,
-        first_error: firstError,
-        first_proposal_id: String(finalPlan.proposalId || ""),
-        retry_proposal_id: String(retryPlan?.proposalId || ""),
-        retry_payout_total_pct: Number.isFinite(retryPct) ? retryPct : null,
-        retry_ready_ms: Math.round(retryReadyMs),
-      });
-      throw new Error(`Recotización fuera del rango ${getHighLowAcceptableRangeText()}: ${pctTxt}.`);
+    if (!retryPlan || !isHighLowFinalEntryPlanAcceptable(retryPlan) || !isHighLowPlanExpiryAligned(retryPlan, item)) {
+      const pct = Number(retryPlan?.payoutTotalPct);
+      const pctTxt = Number.isFinite(pct) ? `${pct.toFixed(1)}% total` : "sin pago válido";
+      saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_OUT_OF_RANGE", message: `Recotización fuera de rango: ${pctTxt}.`, first_error: firstError });
+      throw new Error(`Recotización relativa fuera de rango: ${pctTxt}.`);
     }
     if (retryReadyMs > SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS) {
-      saveDiagnosis({
-        code: "MARKET_MOVED_REPRICE_READY_TOO_LATE",
-        message: `La recotización válida llegó a ${(retryReadyMs / 1000).toFixed(2)}s; no se envió un buy tardío.`,
-        first_error: firstError,
-        first_proposal_id: String(finalPlan.proposalId || ""),
-        retry_proposal_id: String(retryPlan.proposalId || ""),
-        retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
-        retry_ready_ms: Math.round(retryReadyMs),
-      });
-      throw new Error("La recotización llegó después del límite seguro de 58.9s.");
+      saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_READY_TOO_LATE", message: `La recotización llegó a ${(retryReadyMs / 1000).toFixed(2)}s.` });
+      throw new Error("La recotización relativa llegó después del límite seguro de 58.9s.");
     }
 
-    const retryBuyPayload = { buy: String(retryPlan.proposalId), price: Number(retryPlan.askPrice) };
-    saveDiagnosis({
-      code: "MARKET_MOVED_REPRICE_BUY_SENT",
-      message: "Recotización válida; segundo buy enviado antes de 58.9s.",
-      first_error: firstError,
-      first_proposal_id: String(finalPlan.proposalId || ""),
-      retry_proposal_id: String(retryPlan.proposalId || ""),
-      retry_barrier: String(retryPlan.barrier || ""),
-      retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
-      retry_buy_sent_ms: Math.round(retryReadyMs),
-    });
-    window.DerivDebug?.log?.("HIGHLOW_MARKET_MOVED_REPRICE_BUY_ATTEMPT", {
-      proposal_id: retryBuyPayload.buy,
-      price: retryBuyPayload.price,
-      side,
-      symbol,
-      barrier: retryPlan.barrier,
-      payoutTotalPct: retryPlan.payoutTotalPct,
-      retryReadyMs,
-      firstError,
-    });
-
-    const retryRes = await wsRequest(retryBuyPayload, 20000);
-    if (retryRes?.buy?.contract_id) {
+    const second = await buyOnce(retryPlan, 2, firstError);
+    if (second.res?.buy?.contract_id) {
       saveDiagnosis({
-        code: "MARKET_MOVED_REPRICE_BUY_ACCEPTED",
-        message: "Deriv aceptó la compra después de una recotización inmediata con el spot actual.",
-        first_error: firstError,
-        first_proposal_id: String(finalPlan.proposalId || ""),
-        retry_proposal_id: String(retryPlan.proposalId || ""),
-        retry_barrier: String(retryPlan.barrier || ""),
-        retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
-        retry_buy_sent_ms: Math.round(retryReadyMs),
+        code: "AUTO58_RELATIVE_REQUOTE_BUY_ACCEPTED",
+        message: "Deriv aceptó el segundo buy con una nueva barrera relativa fresca.",
         accepted_at_ms: Math.round(getSignalConfirmationMs(item)),
+        first_error: firstError,
       });
       return {
-        res: retryRes,
+        res: second.res,
         plan: retryPlan,
         attempt: 2,
         preparedPlan: finalPlan,
-        usedFinalPreproposal: true,
+        usedFinalPreproposal: false,
         repriceUsed: true,
         firstBuyError: firstError,
         finalPlanAgeMs: Math.round(finalPlan.finalPlanAgeMs || 0),
+        auto58RelativeFreshUsed: true,
       };
     }
 
-    const retryError = String(retryRes?.error?.message || "Deriv no confirmó el segundo buy.");
-    saveDiagnosis({
-      code: "MARKET_MOVED_REPRICE_BUY_REJECTED",
-      message: retryError,
-      first_error: firstError,
-      first_proposal_id: String(finalPlan.proposalId || ""),
-      retry_proposal_id: String(retryPlan.proposalId || ""),
-      retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
-      retry_buy_sent_ms: Math.round(retryReadyMs),
-    });
+    const retryError = String(second.res?.error?.message || "Deriv no confirmó el segundo buy relativo.");
+    saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_BUY_REJECTED", message: retryError, first_error: firstError });
     throw new Error(retryError);
   }
 
@@ -7006,12 +7044,39 @@ function getOrCreateExecutionPlan(item) {
       finalEntryCall: item?.autoHighLow?.finalEntryCall ? { ...item.autoHighLow.finalEntryCall } : null,
       finalEntryPut: item?.autoHighLow?.finalEntryPut ? { ...item.autoHighLow.finalEntryPut } : null,
       finalRefreshStatus: item?.autoHighLow?.finalRefreshStatus ? { ...item.autoHighLow.finalRefreshStatus } : null,
+      entryBuyActive: false,
     };
     executionPlanCache.set(item.id, cache);
   }
   cache.item = item;
   if (typeof cache.prioritySide !== "string") cache.prioritySide = "";
+  if (typeof cache.entryBuyActive !== "boolean") cache.entryBuyActive = false;
   return cache;
+}
+
+function beginHighLowEntryBuy(item, side, reason = "auto58_relative_fresh") {
+  if (!item?.id) return null;
+  const cache = getOrCreateExecutionPlan(item);
+  cache.entryBuyActive = true;
+  cache.entryBuySide = normalizeSignalConfirmationSide(side) || "";
+  cache.entryBuyReason = String(reason || "auto58_relative_fresh");
+  cache.entryBuyStartedAt = Date.now();
+  cache.entryBuyStartedMs = Math.round(getSignalConfirmationMs(item));
+  for (const key of ["barrierLockTimer", "finalRefreshTimer"]) {
+    if (cache[key]) {
+      try { clearTimeout(cache[key]); } catch {}
+      cache[key] = null;
+    }
+  }
+  // No podemos abortar una request WS que ya salió, pero los loops de preparación
+  // consultan entryBuyActive y dejan de lanzar nuevas proposals en cuanto empieza el buy.
+  return cache;
+}
+
+function isHighLowEntryBuyActive(item) {
+  if (!item?.id) return false;
+  const cache = executionPlanCache.get(String(item.id));
+  return !!cache?.entryBuyActive;
 }
 function stopExecutionPlanLoop(itemId) {
   const cache = executionPlanCache.get(String(itemId || ""));
@@ -7094,6 +7159,7 @@ async function refreshExecutionPlanForSignal(item, force = false, requestedSide 
       const errors = [];
 
       for (const side of sides) {
+        if (cache.entryBuyActive) break;
         const current = side === "CALL" ? cache.call : cache.put;
         if (isHighLowPlanAcceptable(current)) continue;
 
@@ -7107,6 +7173,7 @@ async function refreshExecutionPlanForSignal(item, force = false, requestedSide 
             fast: false,
             maxQuotes: HIGHLOW_TARGET_MAX_SEARCH_QUOTES,
             timeoutMs: AUTO_FULL_PROPOSAL_TIMEOUT_MS,
+            abortOnEntryBuy: true,
           });
         }
 
@@ -19637,11 +19704,15 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         ...tradeExtra,
         exec_mode: highLowBuy.lateRecoveryUsed
           ? "HIGHLOW_TARGET_PROFIT_130_LATE_RECOVERY_S60_65"
-          : highLowBuy.repriceUsed
-            ? "HIGHLOW_TARGET_PROFIT_130_MARKET_MOVED_REPRICE_BUY"
-            : highLowBuy.usedFinalPreproposal
-              ? "HIGHLOW_TARGET_PROFIT_130_PRE58_PROPOSAL_BUY"
-              : "HIGHLOW_TARGET_PROFIT_130_SIGNAL_SEARCH_FRESH_BUY",
+          : highLowBuy.auto58RelativeFreshUsed
+            ? (highLowBuy.repriceUsed
+                ? "HIGHLOW_TARGET_PROFIT_130_AUTO58_RELATIVE_FRESH_REQUOTE_BUY"
+                : "HIGHLOW_TARGET_PROFIT_130_AUTO58_RELATIVE_FRESH_BUY")
+            : highLowBuy.repriceUsed
+              ? "HIGHLOW_TARGET_PROFIT_130_MARKET_MOVED_REPRICE_BUY"
+              : highLowBuy.usedFinalPreproposal
+                ? "HIGHLOW_TARGET_PROFIT_130_PRE58_PROPOSAL_BUY"
+                : "HIGHLOW_TARGET_PROFIT_130_SIGNAL_SEARCH_FRESH_BUY",
         contract_type: contractLabel,
         api_contract_type: plan.apiContractType || getHighLowPrimaryApiContractType(side),
         api_symbol_field: isNewPatApiMode() ? "underlying_symbol" : "symbol",
@@ -19654,6 +19725,9 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         target_payout_total_pct: HIGHLOW_TARGET_PAYOUT_TOTAL_PCT,
         target_distance_pct: Number(plan.targetDistancePct || getHighLowTargetDistance(plan)),
         proposal_fresh: true,
+        auto58_relative_fresh: !!highLowBuy.auto58RelativeFreshUsed,
+        proposal_barrier_mode: String(plan.barrierMode || ""),
+        proposal_api_barrier: String(plan.apiBarrier || ""),
         entry_preproposal_used: !!highLowBuy.usedFinalPreproposal,
         entry_preproposal_prepared_ms: Number(plan.finalPreparedMs || null),
         entry_preproposal_age_ms: Number(highLowBuy.finalPlanAgeMs ?? null),
@@ -29165,7 +29239,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II21 — II20 + referencia s60 real y barrera relativa fresca en rescate Higher/Lower.
+// V113.33-II22 — II21 + AUTO58 Higher/Lower con barrera relativa fresca y sin búsquedas paralelas al buy.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29367,7 +29441,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II21: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate.`;
+  const logicText = `Motor experimental V113.33-II22: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal hace lo mismo: usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene las búsquedas de barrera en segundo plano para que no compitan con la entrada.`;
 
   return {
     direction,
