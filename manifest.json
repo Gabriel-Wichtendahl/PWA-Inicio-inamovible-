@@ -22,5 +22,5 @@
       "purpose": "any maskable"
     }
   ],
-  "description": "PWA experimental Deriv Inicio Inamovible: giro PGP, doble confirmación, bloqueo por retorno al ancla, cierre s60 en Rise/Fall y Higher/Lower y barrera Higher/Lower +130% prearmada, AUTO58 con recotización relativa fresca, precisión fina por símbolo, fallback rápido de barrera, prioridad exclusiva de preparación final desde s56 y rescate tardío favorable s60–s65 también ante fallos de barrera/proposal, con vencimiento fijo s120."
+  "description": "PWA experimental Deriv Inicio Inamovible: giro PGP, doble confirmación, bloqueo por retorno al ancla, cierre s60 en Rise/Fall y Higher/Lower y barrera Higher/Lower +130% prearmada, AUTO58 con recotización relativa fresca, precisión fina por símbolo, fallback rápido de barrera, prioridad exclusiva de preparación final desde s56 y rescate tardío favorable s60–s65 también ante fallos de barrera/proposal, con vencimiento fijo s120, y Auto Replay X2 anclado a la señal que acelera hasta alcanzar LIVE y continúa a 1x."
 }

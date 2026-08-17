@@ -1,4 +1,4 @@
-// v113.33-II24: prioridad exclusiva de búsqueda final desde s56 y rescate s60-s65 para fallos de barrera/proposal en AUTO58.
+// v113.33-II25: II24 + AUTO REPLAY X2 anclado a la señal: reproduce desde ms=0, alcanza el vivo y continúa LIVE a 1x.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II24";
+const APP_BUILD_VERSION = "v113.33-II25";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1537,7 +1537,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FINE_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_V113_33_II24_20260815";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FINE_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_V113_33_II25_20260817";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2866,7 +2866,19 @@ let modalLive = false;
 let modalDrawRaf = null;
 let modalLastDrawAt = 0;
 let modalChartView = "line"; // "line" | "candles1m"
-let modalReplayState = { open: false, playing: false, speed: 1, currentMs: 0, lastFrameTs: 0, raf: null };
+let modalReplayState = {
+  open: false,
+  playing: false,
+  speed: 1,
+  currentMs: 0,
+  lastFrameTs: 0,
+  raf: null,
+  source: "manual",
+  autoCatchUp: false,
+  liveFollow: false,
+  itemId: "",
+  liveToastShown: false,
+};
 const MODAL_DRAW_MIN_INTERVAL_MS = 120;
 
 let liveReplaySymbol = loadLiveReplaySymbol();
@@ -7688,8 +7700,8 @@ function applyAutoReplayX2UI() {
   btn.textContent = autoReplayX2OnSignal ? "🎬 Auto Replay X2 ON" : "🎬 Auto Replay X2 OFF";
   btn.classList.toggle("active", !!autoReplayX2OnSignal);
   btn.title = autoReplayX2OnSignal
-    ? "Si el modal de una señal sigue abierto, al segundo 28 cambia solo a Replay y reproduce en X2. Si cerrás el modal, se cancela."
-    : "No cambia automáticamente a Replay X2";
+    ? "Alrededor de s28 abre el mismo Replay anclado de la señal, reproduce desde el ancla en X2 hasta alcanzar el vivo y luego continúa LIVE a 1x."
+    : "No activa automáticamente el Replay anclado X2→LIVE";
 }
 function ensureAutoReplayX2Button() {
   let btn = pickEl("autoReplayX2Btn");
@@ -7769,7 +7781,7 @@ function runModalAutoReplayX2(token, reason = "timer") {
 
   if (modalChartView !== "candles1m") setModalChartView("candles1m");
   openModalReplay({ speed: AUTO_REPLAY_X2_SPEED, source: "auto_x2" });
-  toast("🎬 Replay X2 automático", 900);
+  toast("🎬 Replay desde ancla · X2 hasta LIVE", 1100);
 }
 
 /* =========================
@@ -16507,16 +16519,40 @@ function drawDerivLikeOneMinuteCandles(canvas, item, ticks = []) {
 ========================= */
 function getModalReplayTicks(item = modalCurrentItem) {
   if (!item) return [];
+
+  // II25: una señal flotante tiene un eje propio que nace exactamente en
+  // signalAnchorEpochMs. El Replay manual ya era correcto porque usa item.ticks;
+  // el AUTO REPLAY X2 fallaba al estar LIVE porque podía reemplazar esa serie por
+  // minuteData, cuyos ms pertenecen al minuto calendario. Para señales flotantes
+  // JAMÁS mezclamos ambas fuentes: item.ticks se sigue completando en vivo desde
+  // updateConstructiveFloatingSignalsOnTick() y conserva ms=0 en el ancla real.
+  const isFloating = isFloatingSignalItem(item);
   let ticks = Array.isArray(item.ticks) ? item.ticks.slice() : [];
-  if (modalLive && isItemLiveMinute(item)) {
+  if (!isFloating && modalLive && isItemLiveMinute(item)) {
     const liveTicks = minuteData?.[item.minute]?.[item.symbol];
     if (Array.isArray(liveTicks) && liveTicks.length >= ticks.length) ticks = liveTicks.slice();
   }
+
   return ticks
     .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
     .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote))
     .map((p) => ({ ms: Math.max(0, Math.min(60000, p.ms)), quote: p.quote }))
     .sort((a, b) => a.ms - b.ms);
+}
+function getModalReplayLiveTargetMs(item = modalCurrentItem) {
+  if (!item) return 0;
+  const ticks = getModalReplayTicks(item);
+  const lastTickMs = ticks.length ? Number(ticks[ticks.length - 1]?.ms) : 0;
+  if (!Number.isFinite(lastTickMs)) return 0;
+  // En señales flotantes el último tick guardado es el precio vivo canónico de
+  // esa ventana. No usamos ms del minuto calendario ni otro símbolo.
+  return Math.max(0, Math.min(60000, lastTickMs));
+}
+function disableModalReplayAutoFollow(source = "manual_override") {
+  modalReplayState.autoCatchUp = false;
+  modalReplayState.liveFollow = false;
+  modalReplayState.source = source;
+  modalReplayState.liveToastShown = false;
 }
 function ensureModalReplayBox() {
   let box = document.getElementById("modalReplayBox");
@@ -16548,6 +16584,7 @@ function ensureModalReplayBox() {
   if (closeBtn) closeBtn.onclick = (e) => { e.stopPropagation(); closeModalReplay(); };
   if (playBtn) playBtn.onclick = (e) => {
     e.stopPropagation();
+    disableModalReplayAutoFollow("manual_play");
     modalReplayState.playing = !modalReplayState.playing;
     modalReplayState.lastFrameTs = 0;
     if (modalReplayState.playing && modalReplayState.currentMs >= 60000) modalReplayState.currentMs = 0;
@@ -16556,6 +16593,7 @@ function ensureModalReplayBox() {
   };
   if (resetBtn) resetBtn.onclick = (e) => {
     e.stopPropagation();
+    disableModalReplayAutoFollow("manual_reset");
     modalReplayState.currentMs = 0;
     modalReplayState.lastFrameTs = 0;
     modalReplayState.playing = true;
@@ -16564,6 +16602,7 @@ function ensureModalReplayBox() {
   };
   if (speedBtn) speedBtn.onclick = (e) => {
     e.stopPropagation();
+    disableModalReplayAutoFollow("manual_speed");
     const speeds = [1, 2, 4];
     const idx = speeds.indexOf(Number(modalReplayState.speed || 1));
     modalReplayState.speed = speeds[(idx + 1) % speeds.length];
@@ -16571,6 +16610,7 @@ function ensureModalReplayBox() {
   };
   if (seek) seek.oninput = (e) => {
     e.stopPropagation();
+    disableModalReplayAutoFollow("manual_seek");
     modalReplayState.currentMs = Math.max(0, Math.min(60000, Number(seek.value) || 0));
     modalReplayState.lastFrameTs = 0;
     drawModalReplayFrame();
@@ -16588,7 +16628,7 @@ function updateModalReplayControlsUI() {
     playBtn.textContent = modalReplayState.playing ? "⏸️" : "▶️";
     playBtn.classList.toggle("active", !!modalReplayState.playing);
   }
-  if (speedBtn) speedBtn.textContent = `${Number(modalReplayState.speed || 1)}x`;
+  if (speedBtn) speedBtn.textContent = modalReplayState.liveFollow ? "LIVE 1x" : `${Number(modalReplayState.speed || 1)}x`;
   if (seek) seek.value = String(Math.max(0, Math.min(60000, Number(modalReplayState.currentMs || 0))));
 }
 function openModalReplay(options = {}) {
@@ -16600,12 +16640,19 @@ function openModalReplay(options = {}) {
   }
   const box = ensureModalReplayBox();
   if (!box) return;
+  const source = String(options.source || "manual");
+  const autoCatchUp = source === "auto_x2";
   box.classList.remove("hidden");
   modalReplayState.open = true;
   modalReplayState.playing = true;
   modalReplayState.speed = [1, 2, 4].includes(Number(options.speed)) ? Number(options.speed) : 1;
   modalReplayState.currentMs = Math.max(0, Math.min(60000, Number(options.currentMs || 0)));
   modalReplayState.lastFrameTs = 0;
+  modalReplayState.source = source;
+  modalReplayState.autoCatchUp = autoCatchUp;
+  modalReplayState.liveFollow = false;
+  modalReplayState.itemId = String(modalCurrentItem.id || "");
+  modalReplayState.liveToastShown = false;
   updateModalReplayControlsUI();
   startModalReplayLoop();
 }
@@ -16613,6 +16660,11 @@ function closeModalReplay() {
   modalReplayState.open = false;
   modalReplayState.playing = false;
   modalReplayState.lastFrameTs = 0;
+  modalReplayState.autoCatchUp = false;
+  modalReplayState.liveFollow = false;
+  modalReplayState.source = "manual";
+  modalReplayState.itemId = "";
+  modalReplayState.liveToastShown = false;
   if (modalReplayState.raf) cancelAnimationFrame(modalReplayState.raf);
   modalReplayState.raf = null;
   const box = document.getElementById("modalReplayBox");
@@ -16625,14 +16677,52 @@ function startModalReplayLoop() {
 }
 function modalReplayLoop(ts) {
   if (!modalReplayState.open) return;
-  if (modalReplayState.playing) {
+  if (!modalCurrentItem || (modalReplayState.itemId && String(modalCurrentItem.id || "") !== modalReplayState.itemId)) {
+    closeModalReplay();
+    return;
+  }
+
+  if (modalReplayState.liveFollow) {
+    // II25: una vez alcanzado el vivo no seguimos con un cronómetro independiente.
+    // Seguimos el ms real de la ventana anclada; así cada nuevo tick aparece a 1x
+    // y nunca hay deriva entre Replay y mercado.
+    modalReplayState.speed = 1;
+    modalReplayState.playing = true;
+    modalReplayState.lastFrameTs = ts;
+    const liveTargetMs = getModalReplayLiveTargetMs(modalCurrentItem);
+    modalReplayState.currentMs = Math.max(0, Math.min(60000, liveTargetMs));
+    if (!isItemLiveMinute(modalCurrentItem) && liveTargetMs >= 60000) {
+      modalReplayState.currentMs = 60000;
+      modalReplayState.playing = false;
+      modalReplayState.liveFollow = false;
+    }
+  } else if (modalReplayState.playing) {
     if (!modalReplayState.lastFrameTs) modalReplayState.lastFrameTs = ts;
     const dt = Math.max(0, ts - modalReplayState.lastFrameTs);
     modalReplayState.lastFrameTs = ts;
     modalReplayState.currentMs = Math.min(60000, Number(modalReplayState.currentMs || 0) + dt * Number(modalReplayState.speed || 1));
-    if (modalReplayState.currentMs >= 60000) {
+
+    if (modalReplayState.autoCatchUp) {
+      const liveTargetMs = getModalReplayLiveTargetMs(modalCurrentItem);
+      // Un pequeño margen evita oscilar por diferencias de un frame. Al alcanzar
+      // el último precio realmente recibido, pasamos a seguir el vivo a 1x.
+      if (liveTargetMs > 0 && Number(modalReplayState.currentMs || 0) >= liveTargetMs - 80) {
+        modalReplayState.currentMs = liveTargetMs;
+        modalReplayState.speed = 1;
+        modalReplayState.autoCatchUp = false;
+        modalReplayState.liveFollow = true;
+        modalReplayState.lastFrameTs = ts;
+        if (!modalReplayState.liveToastShown) {
+          modalReplayState.liveToastShown = true;
+          toast("📡 Replay alcanzó LIVE · 1x", 900);
+        }
+      }
+    }
+
+    if (!modalReplayState.liveFollow && modalReplayState.currentMs >= 60000) {
       modalReplayState.currentMs = 60000;
       modalReplayState.playing = false;
+      modalReplayState.autoCatchUp = false;
     }
   } else {
     modalReplayState.lastFrameTs = 0;
@@ -29367,7 +29457,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II24 — II23 + búsqueda final exclusiva desde s56 y rescate ampliado para fallos de barrera/proposal.
+// V113.33-II25 — II24 + AUTO REPLAY X2 corregido: mismo eje flotante del Replay manual, catch-up al vivo y continuidad 1x.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29569,7 +29659,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II24: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65.`;
+  const logicText = `Motor experimental V113.33-II25: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario.`;
 
   return {
     direction,
