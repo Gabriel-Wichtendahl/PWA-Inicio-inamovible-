@@ -1,4 +1,4 @@
-// v113.33-II28: II27 + AUTO REPLAY X2 inmediato al abrirse la señal.
+// v113.33-II29: II27 + AUTO REPLAY X2 inmediato al abrirse la señal.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II28";
+const APP_BUILD_VERSION = "v113.33-II29";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1538,7 +1538,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_V113_33_II28_20260818";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_V113_33_II29_20260818";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -4817,17 +4817,21 @@ function makeHighLowAuto58EmergencySeed(item, side, stake) {
   const precision = getHighLowBarrierMaxDecimals(symbol);
   const minStep = Math.pow(10, -Math.max(0, precision));
 
+  const currentSeed = getBestCurrentSignalHighLowSeedPlan(item, side);
+  const currentSeedCandidate = makeHighLowCandidateFromPlan(currentSeed, side);
+  const currentAbs = Math.abs(Number(currentSeedCandidate?.barrierNum || 0));
   const fixed = makeHighLowFixedBarrierCandidate(symbol, side);
   const hint = getExecutionBarrierHint(symbol, side);
   const hintAbs = Math.abs(Number(hint?.barrierNum || hint?.barrierAbs || 0));
   const fixedAbs = Math.abs(Number(fixed?.barrierNum || 0));
   const latest = Number(getLatestSignalQuoteForBarrier(item));
 
-  // Prioridad: semilla específica del símbolo; luego hint aceptado reciente; luego
-  // una escala mínima del spot. Nunca se redondea a entero salvo que el símbolo
-  // realmente tenga precisión 0.
-  let abs = Number.isFinite(fixedAbs) && fixedAbs > 0 ? fixedAbs : NaN;
+  // II29 prioridad: 1) distancia que YA dio payout válido en esta misma señal;
+  // 2) hint aprendido; 3) preset genérico del símbolo; 4) escala mínima del spot.
+  // La semilla solo guía una proposal fresca: nunca se compra directamente.
+  let abs = Number.isFinite(currentAbs) && currentAbs > 0 ? currentAbs : NaN;
   if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(hintAbs) && hintAbs > 0) abs = hintAbs;
+  if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(fixedAbs) && fixedAbs > 0) abs = fixedAbs;
   if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(latest) && latest > 0) abs = latest * 0.000145;
   if (!Number.isFinite(abs) || abs <= 0) return null;
   abs = Math.max(abs, Number.isFinite(minStep) && minStep > 0 ? minStep : HIGHLOW_API_MIN_RELATIVE_BARRIER);
@@ -4840,7 +4844,9 @@ function makeHighLowAuto58EmergencySeed(item, side, stake) {
     askPrice: Number(stake),
     payoutTotalPct: null,
     profitPct: null,
-    source: "auto58_emergency_seed_no_preplan",
+    source: Number.isFinite(currentAbs) && currentAbs > 0
+      ? "auto58_emergency_seed_current_signal"
+      : "auto58_emergency_seed_no_preplan",
     targetSearch: true,
     targetPayoutTotalPct: HIGHLOW_TARGET_PAYOUT_TOTAL_PCT,
     fixedExpiryEpochSec: getHighLowFixedExpiryEpochSec(item),
@@ -5846,9 +5852,52 @@ async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPla
 }
 
 
+// II29: para recotizar en s56/AUTO58/rescate, una proposal vieja aceptable
+// del MISMO signal sigue siendo una excelente semilla de DISTANCIA aunque su
+// proposalId ya no sea comprable. Priorizamos la distancia que realmente estuvo
+// dentro de 225–235% en esta señal antes que presets genéricos del símbolo.
+function getBestCurrentSignalHighLowSeedPlan(item, side) {
+  if (!item?.id) return null;
+  const safeSide = normalizeSignalConfirmationSide(side);
+  if (!safeSide) return null;
+  const cache = executionPlanCache.get(String(item.id)) || null;
+  const candidates = safeSide === "CALL"
+    ? [cache?.finalEntryCall, item?.autoHighLow?.finalEntryCall, cache?.call, item?.autoHighLow?.call, cache?.callCandidate, item?.autoHighLow?.callCandidate]
+    : [cache?.finalEntryPut, item?.autoHighLow?.finalEntryPut, cache?.put, item?.autoHighLow?.put, cache?.putCandidate, item?.autoHighLow?.putCandidate];
+
+  const usable = candidates
+    .filter((plan) => plan && makeHighLowCandidateFromPlan(plan, safeSide) && isHighLowBarrierOnRequiredSide(plan, safeSide))
+    .map((plan) => ({
+      plan,
+      acceptable: isHighLowPlanAcceptable(plan),
+      distance: getHighLowTargetDistance(plan),
+      updatedAt: Number(plan.updatedAt || plan.finalPreparedAt || 0) || 0,
+    }))
+    .sort((a, b) =>
+      Number(b.acceptable) - Number(a.acceptable) ||
+      a.distance - b.distance ||
+      b.updatedAt - a.updatedAt
+    );
+  if (!usable.length) return null;
+  const picked = usable[0];
+  return {
+    ...picked.plan,
+    source: picked.acceptable ? "current_signal_best_accepted_seed" : "current_signal_best_candidate_seed",
+    seedOnly: true,
+    seedWasAcceptable: !!picked.acceptable,
+    seedTargetDistancePct: Number.isFinite(picked.distance) ? picked.distance : null,
+  };
+}
+
 function getHighLowProvisionalBarrierPlan(item, side) {
   const symbol = String(item?.symbol || "");
   const cache = item?.id ? executionPlanCache.get(String(item.id)) : null;
+
+  const bestCurrentSeed = getBestCurrentSignalHighLowSeedPlan(item, side);
+  if (bestCurrentSeed && bestCurrentSeed.seedWasAcceptable) {
+    return { ...bestCurrentSeed, source: "entry_current_signal_accepted_seed" };
+  }
+
   const candidateFromCache = side === "CALL" ? cache?.callCandidate : cache?.putCandidate;
   if (candidateFromCache && makeHighLowCandidateFromPlan(candidateFromCache, side)) {
     return { ...candidateFromCache, source: candidateFromCache.source || "entry_best_candidate" };
@@ -6289,6 +6338,31 @@ function scheduleHighLowFinalEntryTimers(item) {
 
   const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
 
+  // II29 watchdog s56: si el timer programado se perdió/demoró pero seguimos dentro
+  // de la ventana final, arrancamos la preparación final inmediatamente. Esto evita
+  // finalRefreshStatus=null. Es idempotente porque prepareHighLowFinalEntryProposal
+  // bloquea duplicados con finalRefreshRunning/finalRefreshExclusive.
+  const existingFinalStatus = cache.finalRefreshStatus || item?.autoHighLow?.finalRefreshStatus || null;
+  const existingFinalPlan = signalSide === "CALL"
+    ? (cache.finalEntryCall || item?.autoHighLow?.finalEntryCall)
+    : (cache.finalEntryPut || item?.autoHighLow?.finalEntryPut);
+  if (
+    ms >= SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS &&
+    ms <= SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS &&
+    !cache.entryBuyActive &&
+    !cache.finalRefreshRunning &&
+    !existingFinalStatus &&
+    !existingFinalPlan
+  ) {
+    cache.finalRefreshPhaseScheduled = true;
+    cache.finalRefreshExclusive = true;
+    if (cache.barrierLockTimer) {
+      try { clearTimeout(cache.barrierLockTimer); } catch {}
+      cache.barrierLockTimer = null;
+    }
+    void prepareHighLowFinalEntryProposal(item, signalSide, "s56_watchdog_missing_status");
+  }
+
   // II24 fase s50: se programa UNA sola vez. Si la señal ya llegó a s56, esta fase
   // se omite por completo: la búsqueda final tiene prioridad absoluta.
   if (!cache.barrierLockPhaseScheduled && !cache.barrierLockTimer && ms < SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS) {
@@ -6508,7 +6582,9 @@ async function buyLateRecoveryHighLow(item, side, stake) {
   const rawSeeds = safeSide === "CALL"
     ? [cache?.finalEntryCall, item?.autoHighLow?.finalEntryCall, cache?.call, item?.autoHighLow?.call, cache?.callCandidate, item?.autoHighLow?.callCandidate]
     : [cache?.finalEntryPut, item?.autoHighLow?.finalEntryPut, cache?.put, item?.autoHighLow?.put, cache?.putCandidate, item?.autoHighLow?.putCandidate];
-  let prepared = rawSeeds.find((x) => x && makeHighLowCandidateFromPlan(x, safeSide)) || getHighLowProvisionalBarrierPlan(item, safeSide);
+  let prepared = getBestCurrentSignalHighLowSeedPlan(item, safeSide)
+    || rawSeeds.find((x) => x && makeHighLowCandidateFromPlan(x, safeSide))
+    || getHighLowProvisionalBarrierPlan(item, safeSide);
   if (!prepared || !makeHighLowCandidateFromPlan(prepared, safeSide)) throw new Error("Rescate sin barrera +130% preparada.");
 
   let closest = null;
@@ -6656,6 +6732,7 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
           barrier: String(emergencySeed.barrier || ""),
           precision: Number(emergencySeed.precision || 0),
           source: String(emergencySeed.source || ""),
+          preferred_current_signal_seed: String(getBestCurrentSignalHighLowSeedPlan(item, side)?.barrier || ""),
           at_ms: Math.round(getSignalConfirmationMs(item)),
         };
         try { saveHistory(history); } catch {}
@@ -29521,7 +29598,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II28 — II27 + AUTO REPLAY X2 inmediato al abrirse la señal.
+// V113.33-II29 — II27 + AUTO REPLAY X2 inmediato al abrirse la señal.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29723,7 +29800,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II28: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie.`;
+  const logicText = `Motor experimental V113.33-II29: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo.`;
 
   return {
     direction,
