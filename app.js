@@ -1,4 +1,4 @@
-// v113.33-II25: II24 + AUTO REPLAY X2 anclado a la señal: reproduce desde ms=0, alcanza el vivo y continúa LIVE a 1x.
+// v113.33-II27: II26 + corrección del handoff AUTO REPLAY X2→LIVE sin borrar la formación.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II25";
+const APP_BUILD_VERSION = "v113.33-II27";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1537,7 +1537,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FINE_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_V113_33_II25_20260817";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_HANDOFF_PRESERVE_V113_33_II27_20260818";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -4648,13 +4648,38 @@ function readHighLowBarrierPrecisionCache() {
     return raw && typeof raw === "object" ? raw : {};
   } catch { return {}; }
 }
+function getHighLowBarrierPresetMinDecimals(symbol) {
+  const key = normalizeHighLowSymbolKey(symbol);
+  const preset = Number(HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL[key]);
+  return Number.isFinite(preset)
+    ? Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(preset)))
+    : HIGHLOW_API_MAX_BARRIER_DECIMALS;
+}
 function getHighLowBarrierMaxDecimals(symbol) {
   const key = normalizeHighLowSymbolKey(symbol);
-  const cached = Number(readHighLowBarrierPrecisionCache()[key]);
-  if (Number.isFinite(cached)) return Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(cached)));
-  const preset = Number(HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL[key]);
-  if (Number.isFinite(preset)) return Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(preset)));
-  return HIGHLOW_API_MAX_BARRIER_DECIMALS;
+  const preset = getHighLowBarrierPresetMinDecimals(key);
+  const entry = readHighLowBarrierPrecisionCache()[key];
+
+  // II26: los valores numéricos viejos son cache legado. Algunas versiones podían
+  // guardar 0 al haber cotizado una barrera entera y luego R_100/R_10 quedaban
+  // atrapados en saltos -1/+1. Un cache legado nunca puede bajar el piso conocido
+  // del símbolo. Solo una entrada marcada explicit:true, proveniente de un error
+  // real de decimales devuelto por Deriv, puede reducir ese límite.
+  if (entry && typeof entry === "object") {
+    const cached = Number(entry.precision);
+    if (Number.isFinite(cached)) {
+      const safe = Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(cached)));
+      if (entry.explicit === true) return safe;
+      return Math.max(preset, safe);
+    }
+  }
+
+  const legacy = Number(entry);
+  if (Number.isFinite(legacy)) {
+    const safeLegacy = Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(legacy)));
+    return Math.max(preset, safeLegacy);
+  }
+  return preset;
 }
 function rememberHighLowBarrierMaxDecimals(symbol, precision) {
   const key = normalizeHighLowSymbolKey(symbol);
@@ -4662,12 +4687,40 @@ function rememberHighLowBarrierMaxDecimals(symbol, precision) {
   if (!key || !Number.isFinite(p)) return;
   try {
     const raw = readHighLowBarrierPrecisionCache();
-    const old = Number(raw[key]);
-    // Nunca volvemos a subir automáticamente un límite que Deriv ya rechazó.
-    raw[key] = Number.isFinite(old) ? Math.min(old, p) : p;
+    const prev = raw[key];
+    const prevExplicit = !!(prev && typeof prev === "object" && prev.explicit === true);
+    const prevPrecision = prevExplicit ? Number(prev.precision) : NaN;
+    // Esta función solo se llama después de un error explícito de cantidad de
+    // decimales de Deriv. Desde II26 lo guardamos con fuente para distinguirlo de
+    // los números legados defectuosos y respetarlo en futuras sesiones.
+    const next = prevExplicit && Number.isFinite(prevPrecision) ? Math.min(prevPrecision, p) : p;
+    raw[key] = {
+      precision: next,
+      explicit: true,
+      source: "deriv_decimal_limit_error",
+      updatedAt: Date.now(),
+    };
     localStorage.setItem(HIGHLOW_BARRIER_PRECISION_CACHE_KEY, JSON.stringify(raw));
   } catch {}
 }
+function repairHighLowBarrierPrecisionLegacyCache() {
+  try {
+    const raw = readHighLowBarrierPrecisionCache();
+    let changed = false;
+    for (const [key, presetRaw] of Object.entries(HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL || {})) {
+      const preset = Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(Number(presetRaw))));
+      const entry = raw[key];
+      if (entry && typeof entry === "object" && entry.explicit === true) continue;
+      const legacy = Number(entry);
+      if (!Number.isFinite(legacy) || legacy < preset) {
+        raw[key] = preset;
+        changed = true;
+      }
+    }
+    if (changed) localStorage.setItem(HIGHLOW_BARRIER_PRECISION_CACHE_KEY, JSON.stringify(raw));
+  } catch {}
+}
+repairHighLowBarrierPrecisionLegacyCache();
 function parseHighLowBarrierDecimalLimit(message) {
   const txt = String(message || "");
   const match = txt.match(/barrier[^.]*?up to\s+(\d+)\s+decimal place/i);
@@ -12446,6 +12499,9 @@ function buildExportPayloadTrades() {
       minuteComplete: !!it.minuteComplete,
       trade: it.trade || null,
       signalAutoEntry: it.signalAutoEntry || null,
+      // II26: exportamos el estado aunque el rescate no termine en trade. Así se
+      // distingue armado / esperando precio / enviando / expirado / bloqueado / error.
+      lateEntryRecovery: it.lateEntryRecovery || null,
       autoHighLow: it.autoHighLow || null,
       giroPolaridad: getSignalLevelMeta(it),
       snrLevel: getSignalLevelMeta(it),
@@ -16759,7 +16815,14 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   }
 
   const ms = Math.max(0, Math.min(60000, Number(replayMs || 0)));
-  let lastIdx = ticks.findIndex((p) => Number(p.ms) > ms) - 1;
+  // II27: si replayMs coincide exactamente con el último tick disponible,
+  // findIndex() devuelve -1 porque ya no existe un punto futuro. Antes se hacía
+  // -1 - 1 y luego se corregía a 0, dejando visible SOLO el primer tick justo
+  // en el handoff X2 → LIVE. Ahora -1 significa correctamente “mostrar toda
+  // la serie disponible”. Esto también mantiene la formación completa congelada
+  // al llegar a s60.
+  const firstFutureIdx = ticks.findIndex((p) => Number(p.ms) > ms);
+  let lastIdx = firstFutureIdx < 0 ? ticks.length - 1 : firstFutureIdx - 1;
   if (lastIdx < 0) lastIdx = 0;
   if (lastIdx >= ticks.length) lastIdx = ticks.length - 1;
   const seen = ticks.slice(0, lastIdx + 1);
@@ -29457,7 +29520,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II25 — II24 + AUTO REPLAY X2 corregido: mismo eje flotante del Replay manual, catch-up al vivo y continuidad 1x.
+// V113.33-II27 — II26 + handoff AUTO REPLAY X2→LIVE conservando toda la serie ya reproducida.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29659,7 +29722,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II25: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario.`;
+  const logicText = `Motor experimental V113.33-II27: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60.`;
 
   return {
     direction,
