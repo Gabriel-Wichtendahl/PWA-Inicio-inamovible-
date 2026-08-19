@@ -1,4 +1,4 @@
-// v113.33-II29: II27 + AUTO REPLAY X2 inmediato al abrirse la señal.
+// v113.33-II30: precisión efectiva de barrera forzada en cada ruta Higher/Lower.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II29";
+const APP_BUILD_VERSION = "v113.33-II30";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1538,7 +1538,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_V113_33_II29_20260818";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_V113_33_II30_20260818";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -4670,7 +4670,9 @@ function getHighLowBarrierMaxDecimals(symbol) {
     const cached = Number(entry.precision);
     if (Number.isFinite(cached)) {
       const safe = Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(cached)));
-      if (entry.explicit === true) return safe;
+      // II30: para los índices conocidos de esta PWA el piso por símbolo gana
+      // incluso sobre un cache explícito viejo. La precisión efectiva jamás puede
+      // degradarse por debajo de R_10/R_25=3, R_50/R_75=4, R_100=2.
       return Math.max(preset, safe);
     }
   }
@@ -4681,6 +4683,15 @@ function getHighLowBarrierMaxDecimals(symbol) {
     return Math.max(preset, safeLegacy);
   }
   return preset;
+}
+function getHighLowEffectiveBarrierPrecision(symbol, requestedPrecision = null) {
+  const floor = getHighLowBarrierPresetMinDecimals(symbol);
+  const cached = getHighLowBarrierMaxDecimals(symbol);
+  const requested = Number(requestedPrecision);
+  const safeRequested = Number.isFinite(requested)
+    ? Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(requested)))
+    : floor;
+  return Math.max(floor, cached, safeRequested);
 }
 function rememberHighLowBarrierMaxDecimals(symbol, precision) {
   const key = normalizeHighLowSymbolKey(symbol);
@@ -4751,9 +4762,10 @@ function normalizeHighLowBarrierForApi(rawBarrier, side = "CALL", symbol = "", f
   const abs = Math.abs(Number(parsed[2]));
   if (!Number.isFinite(abs) || abs <= 0) return "";
   const hasForcedPrecision = forcedPrecision !== null && forcedPrecision !== undefined && String(forcedPrecision).trim() !== "" && Number.isFinite(Number(forcedPrecision));
-  const maxPrecision = hasForcedPrecision
-    ? Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(Number(forcedPrecision))))
-    : getHighLowBarrierMaxDecimals(symbol);
+  const maxPrecision = getHighLowEffectiveBarrierPrecision(
+    symbol,
+    hasForcedPrecision ? forcedPrecision : getHighLowBarrierMaxDecimals(symbol)
+  );
   const formatted = formatBarrierAbsWithPrecision(abs, maxPrecision);
   if (!formatted) return "";
   return `${sign >= 0 ? "+" : "-"}${formatted}`;
@@ -5107,7 +5119,8 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
   const safeSymbol = String(symbol || "").trim();
   const safeSide = normalizeSignalConfirmationSide(side) || normalizeTradeDirection(side) || "CALL";
   const primaryType = getHighLowPrimaryApiContractType(safeSide);
-  let activePrecision = barrier ? getHighLowBarrierMaxDecimals(safeSymbol) : null;
+  const precisionFloor = getHighLowBarrierPresetMinDecimals(safeSymbol);
+  let activePrecision = barrier ? getHighLowEffectiveBarrierPrecision(safeSymbol, getHighLowBarrierMaxDecimals(safeSymbol)) : null;
   let precisionRetries = 0;
 
   while (true) {
@@ -5386,7 +5399,7 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
 
     saveHighLowProposalAttemptAudit(safeSymbol, safeSide, auditRows);
     allErrors.push(...roundErrors);
-    if (safeBarrier && Number.isFinite(Number(retryWithPrecision)) && retryWithPrecision >= 0 && retryWithPrecision < activePrecision && precisionRetries < HIGHLOW_API_MAX_BARRIER_DECIMALS) {
+    if (safeBarrier && Number.isFinite(Number(retryWithPrecision)) && retryWithPrecision >= precisionFloor && retryWithPrecision < activePrecision && precisionRetries < HIGHLOW_API_MAX_BARRIER_DECIMALS) {
       rememberHighLowBarrierMaxDecimals(safeSymbol, retryWithPrecision);
       window.DerivDebug?.log?.("HIGHLOW_BARRIER_PRECISION_RETRY", {
         symbol: safeSymbol,
@@ -5420,26 +5433,42 @@ async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = A
   return isHighLowPlanWithinPayoutCap(plan) ? plan : null;
 }
 async function getHighLowProposalQuote(symbol, side, barrierCandidate, precisionIgnored, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, preferredUnderlyingSymbol = "", spotHint = NaN, item = null, preferRelativeBarrier = false) {
-  const candidate = typeof barrierCandidate === "object" && barrierCandidate
+  const rawCandidate = typeof barrierCandidate === "object" && barrierCandidate
     ? barrierCandidate
     : makeBarrierCandidateFromAbsolute(side, Math.abs(Number(barrierCandidate || 0)));
+  if (!rawCandidate?.barrier) return null;
+  const effectivePrecision = getHighLowEffectiveBarrierPrecision(
+    symbol,
+    rawCandidate?.precision ?? precisionIgnored
+  );
+  const candidate = makeBarrierCandidateFromSignedValue(
+    Number(rawCandidate.barrierNum || parseRelativeBarrierString(rawCandidate.barrier)?.barrierNum || 0),
+    effectivePrecision
+  ) || { ...rawCandidate, precision: effectivePrecision };
   if (!candidate?.barrier) return null;
-  const normalizedBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol);
+  const normalizedBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol, effectivePrecision);
   const raw = await requestHighLowProposalRaw(symbol, side, stake, normalizedBarrier, timeoutMs, true, preferredUnderlyingSymbol, spotHint, item, preferRelativeBarrier);
   const effectiveBarrier = String(raw?.barrier || normalizedBarrier);
   const normalizedParsed = parseRelativeBarrierString(effectiveBarrier);
+  const effectivePlanPrecision = getHighLowEffectiveBarrierPrecision(
+    symbol,
+    normalizedParsed?.precision ?? raw?.barrierPrecision ?? candidate.precision
+  );
   const plan = parseProposalToExecution({
     proposal: raw?.res?.proposal,
     barrierNum: normalizedParsed?.barrierNum ?? candidate.barrierNum,
-    precision: normalizedParsed?.precision ?? raw?.barrierPrecision ?? candidate.precision,
+    precision: effectivePlanPrecision,
     barrier: effectiveBarrier,
     apiContractType: raw?.apiContractType,
     underlyingSymbol: raw?.underlyingSymbol,
     payloadMode: raw?.payloadMode,
     barrierMode: raw?.barrierMode,
     apiBarrier: raw?.apiBarrier,
-  }, side, normalizedParsed?.precision ?? candidate.precision);
+  }, side, effectivePlanPrecision);
   if (plan) {
+    plan.precision = effectivePlanPrecision;
+    plan.effectiveBarrierPrecision = effectivePlanPrecision;
+    plan.precisionFloorApplied = effectivePlanPrecision > Number(normalizedParsed?.precision ?? candidate.precision ?? 0);
     plan.fixedExpiryEpochSec = Number(raw?.fixedExpiryEpochSec || 0) || null;
     plan.expiryMode = String(raw?.expiryMode || "fixed_s60_absolute");
   }
@@ -5447,14 +5476,22 @@ async function getHighLowProposalQuote(symbol, side, barrierCandidate, precision
 }
 
 
-function makeHighLowCandidateFromPlan(plan, side) {
+function makeHighLowCandidateFromPlan(plan, side, symbolHint = "") {
+  const symbol = String(
+    symbolHint || plan?.underlyingSymbol || plan?.apiUnderlyingSymbol || plan?.api_underlying_symbol || plan?.symbol || ""
+  );
   const parsed = parseRelativeBarrierString(plan?.barrier);
   if (parsed && Number.isFinite(Number(parsed.barrierNum)) && Math.abs(Number(parsed.barrierNum)) > 0) {
-    return makeBarrierCandidateFromSignedValue(Number(parsed.barrierNum), Number(parsed.precision || 0));
+    const precision = symbol
+      ? getHighLowEffectiveBarrierPrecision(symbol, plan?.precision ?? parsed.precision)
+      : Math.max(0, Number(plan?.precision ?? parsed.precision ?? 0));
+    return makeBarrierCandidateFromSignedValue(Number(parsed.barrierNum), precision);
   }
   const signed = Number(plan?.barrierNum || 0);
   if (!Number.isFinite(signed) || Math.abs(signed) <= 0) return null;
-  return makeBarrierCandidateFromSignedValue(signed, Number(plan?.precision || getBarrierPrecisionForAbs(Math.abs(signed))));
+  const requested = Number(plan?.precision ?? getBarrierPrecisionForAbs(Math.abs(signed)));
+  const precision = symbol ? getHighLowEffectiveBarrierPrecision(symbol, requested) : requested;
+  return makeBarrierCandidateFromSignedValue(signed, precision);
 }
 
 function getHighLowRequiredBarrierSign(side) {
@@ -5551,6 +5588,8 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     if (!plan.barrier && candidate?.barrier) plan.barrier = candidate.barrier;
     if (!Number.isFinite(Number(plan.barrierNum)) && candidate && Number.isFinite(Number(candidate.barrierNum))) plan.barrierNum = Number(candidate.barrierNum);
     if (!Number.isFinite(Number(plan.precision)) && candidate && Number.isFinite(Number(candidate.precision))) plan.precision = Number(candidate.precision);
+    plan.precision = getHighLowEffectiveBarrierPrecision(symbol, plan.precision ?? candidate?.precision);
+    plan.effectiveBarrierPrecision = plan.precision;
     samples.push(plan);
     // Solo una propuesta con barrera reproducible sirve como candidato de entrada.
     if (makeHighLowCandidateFromPlan(plan, side)) {
@@ -5567,8 +5606,13 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     seen.add(apiBarrier);
     const parsedApiBarrier = parseRelativeBarrierString(apiBarrier);
     const effectiveCandidate = parsedApiBarrier
-      ? { ...candidate, ...parsedApiBarrier, barrier: apiBarrier }
-      : candidate;
+      ? {
+          ...candidate,
+          ...parsedApiBarrier,
+          barrier: apiBarrier,
+          precision: getHighLowEffectiveBarrierPrecision(symbol, parsedApiBarrier.precision ?? candidate.precision),
+        }
+      : { ...candidate, precision: getHighLowEffectiveBarrierPrecision(symbol, candidate.precision) };
     quotesUsed++;
     try {
       const plan = await getHighLowProposalQuote(symbol, side, effectiveCandidate, effectiveCandidate.precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
@@ -5913,7 +5957,10 @@ function getHighLowProvisionalBarrierPlan(item, side) {
     const hintSigned = Number.isFinite(Number(hint.barrierNum)) && Math.abs(Number(hint.barrierNum)) > 0
       ? Number(hint.barrierNum)
       : (side === "CALL" ? 1 : -1) * Math.abs(Number(hint.barrierAbs));
-    const c = makeBarrierCandidateFromSignedValue(hintSigned, Number(hint.precision || 0));
+    const c = makeBarrierCandidateFromSignedValue(
+      hintSigned,
+      getHighLowEffectiveBarrierPrecision(symbol, hint.precision)
+    );
     if (c?.barrier) {
       return {
         ...c,
@@ -7184,8 +7231,8 @@ function getHighLowMirrorReferencePlan(item, side) {
     return {
       barrierNum: signed,
       barrierAbs: Math.abs(signed),
-      precision: Math.max(0, Number(hint.precision || 0)),
-      barrier: formatRelativeBarrier(signed, hint.precision || 0),
+      precision: getHighLowEffectiveBarrierPrecision(item?.symbol, hint.precision),
+      barrier: formatRelativeBarrier(signed, getHighLowEffectiveBarrierPrecision(item?.symbol, hint.precision)),
       mirroredFromSide: opposite,
     };
   }
@@ -7263,7 +7310,7 @@ function rememberExecutionBarrierHint(symbol, side, plan, precision = 3) {
     barrierAbs: abs,
     barrierNum: Number(plan.barrierNum || 0),
     barrier: String(plan.barrier || formatRelativeBarrier(plan.barrierNum, precision)),
-    precision: Math.max(0, Number(plan.precision ?? precision ?? 0)),
+    precision: getHighLowEffectiveBarrierPrecision(symbol, plan.precision ?? precision),
     payoutTotalPct: Number(plan.payoutTotalPct || 0),
     profitPct: Number(plan.profitPct || 0),
     updatedAt: Date.now(),
@@ -29598,7 +29645,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II29 — II27 + AUTO REPLAY X2 inmediato al abrirse la señal.
+// V113.33-II30 — piso efectivo de precisión en todas las rutas Higher/Lower.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29800,7 +29847,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II29: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo.`;
+  const logicText = `Motor experimental V113.33-II30: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste.`;
 
   return {
     direction,
