@@ -1,4 +1,5 @@
-// v113.33-II31: marca visual OTM por punto de entrada cuando la lectura de la señal fue correcta pero el trade terminó OTM.
+// v113.33-II32: extiende el análisis PGP hasta s65 y el rescate favorable hasta s70, siempre contra la referencia real de s60 y con vencimiento fijo s120.
+// Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II31";
+const APP_BUILD_VERSION = "v113.33-II32";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1538,7 +1539,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II31_20260819";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II32_20260819";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2473,10 +2474,11 @@ const SIGNAL_HIGHLOW_LATE_PLAN_MAX_AGE_MS = 750;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_MAX_MS = 58550;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_DISTANCE_PCT = 1.5;
 const SIGNAL_AUTO_TIMER_DELAY_WARN_MS = 350;
-// II21: recuperación tardía favorable. Corrige referencia s60 y usa barrera relativa fresca en el rescate
-// de AUTO58 por timing/proposal y únicamente si el PGP 2/2 ya estaba autorizado.
+// II21: recuperación tardía favorable. II32 permite terminar PGP hasta s65 y esperar entrada favorable hasta s70.
+// Usa referencia real s60 tanto para fallos AUTO58 como para autorización 2/2 posterior a s58.
+const SIGNAL_LATE_ANALYSIS_END_MS = 65000;
 const SIGNAL_LATE_RECOVERY_START_MS = 60000;
-const SIGNAL_LATE_RECOVERY_END_MS = 65000;
+const SIGNAL_LATE_RECOVERY_END_MS = 70000;
 const SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS = 220;
 const SIGNAL_LATE_RECOVERY_MAX_QUOTES = 4;
 const SIGNAL_LATE_RECOVERY_PRICE_EPS = 1e-12;
@@ -6657,7 +6659,7 @@ async function buyLateRecoveryHighLow(item, side, stake) {
       if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
       if (plan && isHighLowFinalEntryPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
         const elapsedBeforeBuy = getSignalElapsedMsRaw(item);
-        if (elapsedBeforeBuy > SIGNAL_LATE_RECOVERY_END_MS) throw new Error("La proposal del rescate llegó después de s65.");
+        if (elapsedBeforeBuy > SIGNAL_LATE_RECOVERY_END_MS) throw new Error("La proposal del rescate llegó después de s70.");
         const current = Number(lastQuoteBySymbol?.[symbol]);
         const ref = getLateRecoveryReferencePrice(item);
         if (!isLateRecoveryPriceFavorable(safeSide, current, ref)) {
@@ -14352,6 +14354,20 @@ function isTradeEntryOpen(item) {
   if (!item) return false;
   return isItemLiveMinute(item);
 }
+function isSignalPGPAnalysisOpen(item) {
+  if (!item) return false;
+  const isInicioFloating = !!item.signalFloatingWindow && (
+    String(item.mode_version || "").includes("INICIO_INAMOVIBLE") ||
+    String(item.mode || "").toUpperCase().includes("INICIO INAMOVIBLE")
+  );
+  if (!isInicioFloating) return isTradeEntryOpen(item);
+  const elapsed = getSignalElapsedMsRaw(item);
+  return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= SIGNAL_LATE_ANALYSIS_END_MS;
+}
+function getSignalLateAnalysisRemainingMs(item) {
+  if (!item) return 0;
+  return Math.max(0, SIGNAL_LATE_ANALYSIS_END_MS - getSignalElapsedMsRaw(item));
+}
 function ensureModalCandleStatusBar() {
   if (modalCandleStatusEl) return modalCandleStatusEl;
 
@@ -14627,7 +14643,7 @@ function evaluateSignalAnchorReturnOnTick(item, epochMs, quote) {
   const q = Number(quote);
   if (!Number.isFinite(anchorEpochMs) || anchorEpochMs <= 0 || !Number.isFinite(ep) || !Number.isFinite(q)) return false;
   const ms = ep - anchorEpochMs;
-  if (ms < 0 || ms > 60000) return false;
+  if (ms < 0 || ms > SIGNAL_LATE_RECOVERY_END_MS) return false;
   // El guard empieza después de creada la señal; no invalida el propio retroceso que cerró el tercer movimiento.
   if (Number.isFinite(detectedEpochMs) && detectedEpochMs > 0 && ep <= detectedEpochMs + 250) return false;
 
@@ -14796,7 +14812,7 @@ function getPGPFlowQuestion(flow) {
   return "Decisión PGP";
 }
 function applyPGPFlowChoice(value, label = "") {
-  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem)) return;
+  if (!modalCurrentItem || !isSignalPGPAnalysisOpen(modalCurrentItem)) return;
   if (isSignalAnchorReturnBlocked(modalCurrentItem)) {
     toast("⛔ Operativa bloqueada: el precio volvió al ancla", 1800);
     return;
@@ -14821,7 +14837,7 @@ function applyPGPFlowChoice(value, label = "") {
     value: String(value),
     label: String(label || value),
     at: Date.now(),
-    ms: getSignalConfirmationMs(modalCurrentItem),
+    ms: Math.min(SIGNAL_LATE_ANALYSIS_END_MS, Math.round(getSignalElapsedMsRaw(modalCurrentItem))),
   });
   modalCurrentItem.pgpDecision = state;
   const next = syncPGPDecisionSummary(modalCurrentItem);
@@ -14842,6 +14858,43 @@ function applyPGPFlowChoice(value, label = "") {
     return;
   }
   if (next?.result === "authorized" && next.authorizedSide) {
+    const authorizedMs = Number.isFinite(Number(next.authorizedAtMs))
+      ? Number(next.authorizedAtMs)
+      : getSignalElapsedMsRaw(modalCurrentItem);
+    if (authorizedMs > SIGNAL_AUTO_ENTRY_MS) {
+      if (!shouldUseAutoHighLowExecution()) {
+        toast(`⚠️ GIRO 2/2 en ${(authorizedMs / 1000).toFixed(1)}s · el rescate tardío s60→s70 requiere Higher/Lower`, 2400);
+        return;
+      }
+      modalCurrentItem.signalAutoEntry = {
+        type: "AUTO_58_REAL",
+        attempted: true,
+        status: "cancelled",
+        side: next.authorizedSide,
+        ms: Math.round(authorizedMs),
+        sec: Number((authorizedMs / 1000).toFixed(3)),
+        reason: "PGP_AUTHORIZED_AFTER_S58_RECOVERY_ONLY",
+        at: Date.now(),
+        confirmation_status: getSignalConfirmationStatusText(modalCurrentItem),
+        points_enabled_at_ms: Math.round(authorizedMs),
+        app_version: APP_BUILD_VERSION,
+        timing_diagnosis: {
+          code: "PGP_LATE_ANALYSIS_RECOVERY_ONLY",
+          message: `El 2/2 terminó después de s58 (${(authorizedMs / 1000).toFixed(2)}s); AUTO58 normal se omite y queda solo rescate favorable hasta s70.`,
+          points_enabled_at_ms: Math.round(authorizedMs),
+          analysis_deadline_ms: SIGNAL_LATE_ANALYSIS_END_MS,
+          recovery_deadline_ms: SIGNAL_LATE_RECOVERY_END_MS,
+        },
+      };
+      armLateEntryRecovery(modalCurrentItem, "pgp_authorized_after_s58", { allowLateAnalysis: true });
+      saveHistory(history);
+      updateSignalConfirmationUI();
+      updateModalCandleStatusUI();
+      toast(`🕒 GIRO 2/2 en ${(authorizedMs / 1000).toFixed(1)}s · rescate armado hasta s70`, 2200);
+      const q = Number(lastQuoteBySymbol?.[modalCurrentItem.symbol]);
+      if (Number.isFinite(q)) scanSignalLateEntryRecoveriesOnTick(modalCurrentItem.symbol, serverNowMs(), q);
+      return;
+    }
     if (shouldUseAutoHighLowExecution()) {
       void refreshExecutionPlanForSignal(modalCurrentItem, true, next.authorizedSide);
       scheduleHighLowFinalEntryTimers(modalCurrentItem);
@@ -14853,7 +14906,7 @@ function applyPGPFlowChoice(value, label = "") {
   }
 }
 function undoPGPFlowStep() {
-  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
+  if (!modalCurrentItem || !isSignalPGPAnalysisOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
   const state = normalizePGPDecisionState(modalCurrentItem);
   if (!state.answers.length || modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
   state.answers.pop();
@@ -14864,7 +14917,7 @@ function undoPGPFlowStep() {
   updateModalCandleStatusUI();
 }
 function resetPGPFlow() {
-  if (!modalCurrentItem || !isTradeEntryOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
+  if (!modalCurrentItem || !isSignalPGPAnalysisOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
   if (modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
   modalCurrentItem.pgpDecision = createDefaultPGPDecisionState();
   saveHistory(history);
@@ -15208,7 +15261,7 @@ function updateSignalConfirmationUI() {
   if (!signalConfirmPanelEl) return;
 
   const hasItem = !!modalCurrentItem;
-  const isOpen = hasItem && isTradeEntryOpen(modalCurrentItem);
+  const isOpen = hasItem && isSignalPGPAnalysisOpen(modalCurrentItem);
   if (hasItem) syncPGPDecisionSummary(modalCurrentItem);
   const flow = derivePGPDecisionFlow(modalCurrentItem);
   const anchorReturnBlocked = isSignalAnchorReturnBlocked(modalCurrentItem);
@@ -15257,7 +15310,7 @@ function updateSignalConfirmationUI() {
   if (signalConfirmHintEl) {
     signalConfirmHintEl.textContent = flow.result === "anchor_return_blocked"
       ? getSignalAnchorReturnBlockText(modalCurrentItem)
-      : `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s` : flow.result === "confirmation_1" ? " · falta 1 confirmación" : ""}`;
+      : `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? (Number(flow.authorizedAtMs) > SIGNAL_AUTO_ENTRY_MS ? " · RESCATE hasta s70" : ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`) : flow.result === "confirmation_1" ? " · falta 1 confirmación" : ""}${getSignalElapsedMsRaw(modalCurrentItem) >= 60000 && isOpen ? ` · análisis ${Math.ceil(getSignalLateAnalysisRemainingMs(modalCurrentItem) / 1000)}s` : ""}`;
     signalConfirmHintEl.style.color = flow.result === "anchor_return_blocked" || flow.result === "authorized" ? "#fecaca" : flow.result === "confirmation_1" ? "#fde68a" : "rgba(186,230,253,.86)";
   }
   if (signalFlowPathEl) {
@@ -15299,7 +15352,10 @@ function updateSignalConfirmationUI() {
         info.style.background = "rgba(127,29,29,.28)";
         info.style.border = "1px solid rgba(239,68,68,.48)";
       } else if (flow.result === "authorized") {
-        info.textContent = `${sideLabel} habilitada después de 2/2 confirmaciones. Se ejecutará en AUTO ${SIGNAL_AUTO_ENTRY_SEC}s si la entrada sigue abierta.`;
+        const authMs = Number(flow.authorizedAtMs);
+        info.textContent = Number.isFinite(authMs) && authMs > SIGNAL_AUTO_ENTRY_MS
+          ? `${sideLabel} habilitada después de s58. AUTO58 normal omitido; rescate favorable activo hasta s70 con referencia real de s60.`
+          : `${sideLabel} habilitada después de 2/2 confirmaciones. Se ejecutará en AUTO ${SIGNAL_AUTO_ENTRY_SEC}s si la entrada sigue abierta.`;
         info.style.color = "#fee2e2";
         info.style.background = "rgba(127,29,29,.22)";
         info.style.border = "1px solid rgba(239,68,68,.38)";
@@ -15731,23 +15787,59 @@ function isLateEntryRecoveryFailureEligible(item) {
   if (safeCodes.has(code)) return true;
   return /post-58|proposal final|proposal.*58|no se obtuvo proposal|barrera fresca|barrera relativa|sin distancia relativa|cotizaci[oó]n.*tarde|lleg[oó] tarde|ventana post|ventana segura de entrada|sin tiempo seguro para recotizar|recotizaci[oó]n lleg[oó] despu[eé]s/.test(text);
 }
-function armLateEntryRecovery(item, reason = "auto58_timing_or_proposal_failure") {
-  if (!isLateEntryRecoveryFailureEligible(item)) return false;
+function isLateEntryRecoveryLateAnalysisEligible(item) {
+  if (!item || !shouldUseAutoHighLowExecution() || item?.trade?.contract_id || item?.signalAutoEntry?.contract_id) return false;
+  if (isSignalAnchorReturnBlocked(item)) return false;
+  const side = normalizeSignalConfirmationSide(item?.direction);
+  if (!side || getSignalEnabledTradeSide(item) !== side) return false;
+  const enabledAt = getSignalSideEnabledAtMs(item, side);
+  return Number.isFinite(enabledAt) && enabledAt > SIGNAL_AUTO_ENTRY_MS && enabledAt <= SIGNAL_LATE_ANALYSIS_END_MS;
+}
+function getCanonicalSignalS60Reference(item) {
+  if (!item) return null;
+  try {
+    const result60 = ensureSignalResult60(item);
+    const q = Number(result60?.startQuote);
+    if (Number.isFinite(q)) return { price: q, epochMs: Number(result60?.startEpochMs || 0) || null, source: String(result60?.source || "signal_result60_start") };
+  } catch {}
+  const ticks = (Array.isArray(item?.ticks) ? item.ticks : [])
+    .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
+    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= SIGNAL_LATE_RECOVERY_START_MS)
+    .sort((a, b) => a.ms - b.ms);
+  if (ticks.length) {
+    const anchor = Number(item?.signalAnchorEpochMs || 0);
+    return {
+      price: ticks[0].quote,
+      epochMs: Number.isFinite(anchor) && anchor > 0 ? anchor + ticks[0].ms : null,
+      source: "saved_tick_at_or_after_s60",
+    };
+  }
+  return null;
+}
+function armLateEntryRecovery(item, reason = "auto58_timing_or_proposal_failure", options = {}) {
+  const allowLateAnalysis = !!options?.allowLateAnalysis;
+  const failureEligible = isLateEntryRecoveryFailureEligible(item);
+  const lateAnalysisEligible = allowLateAnalysis && isLateEntryRecoveryLateAnalysisEligible(item);
+  if (!failureEligible && !lateAnalysisEligible) return false;
   if (item?.lateEntryRecovery && !["expired", "blocked", "error"].includes(String(item.lateEntryRecovery.status || ""))) return true;
   const side = normalizeSignalConfirmationSide(item?.signalAutoEntry?.side || item?.direction);
   if (!side) return false;
+  const ref60 = getSignalElapsedMsRaw(item) >= SIGNAL_LATE_RECOVERY_START_MS ? getCanonicalSignalS60Reference(item) : null;
   item.lateEntryRecovery = {
     enabled: true,
-    status: "armed",
+    status: Number.isFinite(Number(ref60?.price)) ? "waiting_price" : "armed",
     side,
     reason: String(reason || "auto58_timing_or_proposal_failure"),
+    origin: lateAnalysisEligible ? "late_manual_pgp_after_s58" : "auto58_failure",
     armed_at: Date.now(),
     armed_elapsed_ms: Math.round(getSignalElapsedMsRaw(item)),
+    analysis_end_ms: SIGNAL_LATE_ANALYSIS_END_MS,
     start_ms: SIGNAL_LATE_RECOVERY_START_MS,
     end_ms: SIGNAL_LATE_RECOVERY_END_MS,
-    reference_price: null,
-    reference_epoch_ms: null,
-    reference_source: "first_live_tick_at_or_after_s60",
+    reference_price: Number.isFinite(Number(ref60?.price)) ? Number(ref60.price) : null,
+    reference_epoch_ms: Number.isFinite(Number(ref60?.epochMs)) ? Number(ref60.epochMs) : null,
+    reference_elapsed_ms: Number.isFinite(Number(ref60?.price)) ? SIGNAL_LATE_RECOVERY_START_MS : null,
+    reference_source: Number.isFinite(Number(ref60?.price)) ? String(ref60.source || "signal_s60_reference") : "first_live_tick_at_or_after_s60",
     favorable_rule: side === "CALL" ? "price<=s60_reference" : "price>=s60_reference",
     trigger_price: null,
     trigger_epoch_ms: null,
@@ -15757,7 +15849,7 @@ function armLateEntryRecovery(item, reason = "auto58_timing_or_proposal_failure"
   };
   try { saveHistory(history); } catch {}
   if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
-    try { toast(`🕒 Rescate ${side === "CALL" ? "COMPRA" : "VENTA"} armado hasta s65`, 1800); } catch {}
+    try { toast(`🕒 Rescate ${side === "CALL" ? "COMPRA" : "VENTA"} armado hasta s70`, 1800); } catch {}
   }
   return true;
 }
@@ -15775,12 +15867,12 @@ function isLateRecoveryPriceFavorable(side, currentPrice, referencePrice) {
     ? q >= ref - SIGNAL_LATE_RECOVERY_PRICE_EPS
     : q <= ref + SIGNAL_LATE_RECOVERY_PRICE_EPS;
 }
-function expireLateEntryRecovery(item, elapsedMs, reason = "s65_expired") {
+function expireLateEntryRecovery(item, elapsedMs, reason = "s70_expired") {
   if (!item?.lateEntryRecovery || ["sent", "expired", "blocked"].includes(String(item.lateEntryRecovery.status || ""))) return false;
   item.lateEntryRecovery.status = "expired";
   item.lateEntryRecovery.expired_at = Date.now();
   item.lateEntryRecovery.expired_elapsed_ms = Math.round(Number(elapsedMs || 0));
-  item.lateEntryRecovery.expire_reason = String(reason || "s65_expired");
+  item.lateEntryRecovery.expire_reason = String(reason || "s70_expired");
   try { saveHistory(history); } catch {}
   return true;
 }
@@ -15912,7 +16004,7 @@ function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
     const elapsed = ep - anchor;
     if (elapsed < SIGNAL_LATE_RECOVERY_START_MS) continue;
     if (elapsed > SIGNAL_LATE_RECOVERY_END_MS) {
-      expireLateEntryRecovery(item, elapsed, "s65_without_favorable_entry");
+      expireLateEntryRecovery(item, elapsed, "s70_without_favorable_entry");
       continue;
     }
     if (isSignalAnchorReturnBlocked(item)) {
@@ -15933,10 +16025,11 @@ function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
     }
 
     if (!Number.isFinite(getLateRecoveryReferencePrice(item))) {
-      state.reference_price = q;
-      state.reference_epoch_ms = ep;
-      state.reference_elapsed_ms = Math.round(elapsed);
-      state.reference_source = "first_live_tick_at_or_after_s60";
+      const canonical = getCanonicalSignalS60Reference(item);
+      state.reference_price = Number.isFinite(Number(canonical?.price)) ? Number(canonical.price) : q;
+      state.reference_epoch_ms = Number.isFinite(Number(canonical?.epochMs)) ? Number(canonical.epochMs) : ep;
+      state.reference_elapsed_ms = SIGNAL_LATE_RECOVERY_START_MS;
+      state.reference_source = Number.isFinite(Number(canonical?.price)) ? String(canonical.source || "signal_s60_reference") : "first_live_tick_at_or_after_s60";
       state.status = "waiting_price";
       try { saveHistory(history); } catch {}
     }
@@ -15947,7 +16040,7 @@ function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
     state.last_favorable = isLateRecoveryPriceFavorable(side, q, ref);
     if (!state.last_favorable || tradeInFlight) continue;
     if (SIGNAL_LATE_RECOVERY_END_MS - elapsed < SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS) {
-      expireLateEntryRecovery(item, elapsed, "insufficient_time_to_send_before_s65");
+      expireLateEntryRecovery(item, elapsed, "insufficient_time_to_send_before_s70");
       continue;
     }
 
@@ -15977,9 +16070,10 @@ function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
     }).catch((e) => {
       const msg = e?.message || String(e);
       const elapsedNow = getSignalElapsedMsRaw(item);
-      // Si el precio dejó de ser favorable mientras llegaba la proposal, no damos
-      // por perdido el rescate: volvemos a esperar otra oportunidad hasta s65.
-      if (/dejó de ser favorable/.test(String(msg)) && elapsedNow < SIGNAL_LATE_RECOVERY_END_MS) {
+      // II32: mientras quede ventana hasta s70, un cambio de precio o una cotización
+      // sin barrera aceptable no mata el rescate. Vuelve a esperar otro tick favorable.
+      const retryableRecoveryError = /dejó de ser favorable|sin barrera válida|sin barrera \+130|no se obtuvo.*barrera|proposal.*no.*válida|payout.*fuera|pago.*fuera/i.test(String(msg));
+      if (retryableRecoveryError && elapsedNow < SIGNAL_LATE_RECOVERY_END_MS) {
         state.status = "waiting_price";
         state.deferred_count = Number(state.deferred_count || 0) + 1;
         state.last_deferred_reason = String(msg);
@@ -16171,8 +16265,26 @@ function updateModalCandleStatusUI() {
     bar.style.borderColor = "rgba(34,197,94,.28)";
     bar.style.boxShadow = "0 0 0 1px rgba(34,197,94,.05) inset";
   } else {
+    const rawElapsed = getSignalElapsedMsRaw(modalCurrentItem);
+    const analysisStillOpen = isSignalPGPAnalysisOpen(modalCurrentItem);
+    const recovery = modalCurrentItem?.lateEntryRecovery;
+    const recoveryActive = recovery?.enabled && !["sent", "expired", "blocked", "error"].includes(String(recovery.status || ""));
     const result60 = isFloatingSignalItem(modalCurrentItem) ? ensureSignalResult60(modalCurrentItem) : null;
-    if (result60 && !isSignalResult60Resolved(modalCurrentItem)) {
+    if (recoveryActive && rawElapsed <= SIGNAL_LATE_RECOVERY_END_MS) {
+      const ref = getLateRecoveryReferencePrice(modalCurrentItem);
+      bar.textContent = `♻️ Rescate activo · hasta s70 · ${recovery.side === "PUT" ? "VENTA precio ≥" : "COMPRA precio ≤"} ${Number.isFinite(ref) ? ref.toFixed(6) : "ref s60"}`;
+      bar.style.color = "#fef3c7";
+      bar.style.background = "rgba(202,138,4,.16)";
+      bar.style.borderColor = "rgba(250,204,21,.34)";
+      bar.style.boxShadow = "0 0 0 1px rgba(250,204,21,.05) inset";
+    } else if (analysisStillOpen && rawElapsed >= 60000) {
+      const left = Math.ceil(getSignalLateAnalysisRemainingMs(modalCurrentItem) / 1000);
+      bar.textContent = `🕒 Análisis extendido · faltan ${left}s para cerrar en s65 · completá PGP 2/2`;
+      bar.style.color = "#e0f2fe";
+      bar.style.background = "rgba(8,47,73,.30)";
+      bar.style.borderColor = "rgba(56,189,248,.38)";
+      bar.style.boxShadow = "0 0 0 1px rgba(56,189,248,.05) inset";
+    } else if (result60 && !isSignalResult60Resolved(modalCurrentItem)) {
       const remain60 = getSignalResult60RemainingSec(modalCurrentItem);
       bar.textContent = `⏳ Próximos 60s · faltan ${remain60}s`;
       bar.style.color = "#fef3c7";
@@ -20213,7 +20325,7 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
       tradeExtra = {
         ...tradeExtra,
         exec_mode: highLowBuy.lateRecoveryUsed
-          ? "HIGHLOW_TARGET_PROFIT_130_LATE_RECOVERY_S60_65"
+          ? "HIGHLOW_TARGET_PROFIT_130_LATE_RECOVERY_S60_70"
           : highLowBuy.auto58RelativeFreshUsed
             ? (highLowBuy.repriceUsed
                 ? "HIGHLOW_TARGET_PROFIT_130_AUTO58_RELATIVE_FRESH_REQUOTE_BUY"
@@ -29749,7 +29861,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II31 — aviso OTM por punto de entrada + piso efectivo de precisión en Higher/Lower.
+// V113.33-II32 — análisis PGP hasta s65 + rescate favorable s60→s70 + OTM por punto de entrada.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29951,7 +30063,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II31: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio.`;
+  const logicText = `Motor experimental V113.33-II32: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120.`;
 
   return {
     direction,
