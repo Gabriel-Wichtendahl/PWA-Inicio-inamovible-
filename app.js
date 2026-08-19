@@ -1,4 +1,4 @@
-// v113.33-II30: precisión efectiva de barrera forzada en cada ruta Higher/Lower.
+// v113.33-II31: marca visual OTM por punto de entrada cuando la lectura de la señal fue correcta pero el trade terminó OTM.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
 // sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
@@ -129,7 +129,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II30";
+const APP_BUILD_VERSION = "v113.33-II31";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1538,7 +1538,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_V113_33_II30_20260818";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II31_20260819";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -2200,6 +2200,7 @@ function makeJournalIdFromSignal(it) {
 // guarda/actualiza snapshot de trade: PENDING entra inmediatamente; ITM/OTM actualizan resultado.
 function upsertTradeJournalFromSignal(it) {
   if (!it?.trade?.badge) return;
+  try { annotateTradeOtmEntryPoint(it); } catch {}
   const b = String(it.trade.badge || "").toUpperCase();
   if (b !== "PENDING" && b !== "ITM" && b !== "OTM") return;
 
@@ -2295,6 +2296,7 @@ function setTradeBadge(item, badge /* 'PENDING'|'ITM'|'OTM'|'' */, extra = {}) {
   item.trade ||= {};
   item.trade.badge = badge || "";
   if (extra && typeof extra === "object") Object.assign(item.trade, extra);
+  try { annotateTradeOtmEntryPoint(item); } catch {}
   saveHistory(history);
   updateRowTradeBadge(item);
 
@@ -18718,16 +18720,90 @@ function updateRowGiroPlusBadgeOnRow(row, item) {
     el.style.boxShadow = "none";
   }
 }
+function getTradeOtmEntryPointInfo(item) {
+  const trade = item?.trade || {};
+  const badge = String(trade.badge || "").toUpperCase();
+  if (badge !== "OTM") return { active: false, key: "", label: "", title: "" };
+
+  const side = String(trade.side || item?.direction || "").toUpperCase();
+  const outcome = String(getItemNextOutcomeValue(item) || item?.nextOutcome || "").toLowerCase();
+  const signalDirectionCorrect = (side === "CALL" && outcome === "up") || (side === "PUT" && outcome === "down");
+  if (!signalDirectionCorrect) return { active: false, key: "", label: "", title: "" };
+
+  const entry = Number(trade.entry_spot);
+  const exit = Number(trade.exit_spot);
+  const contractType = String(trade.contract_type || trade.api_contract_type || "").toUpperCase();
+  const barrierMode = String(trade.proposal_barrier_mode || trade.barrier_mode || "").toLowerCase();
+  const relBarrier = Number(String(trade.barrier ?? "").replace(",", "."));
+  const absBarrier = Number(trade.proposal_api_barrier ?? trade.apiBarrier);
+  let threshold = NaN;
+
+  if ((contractType === "HIGHER" || contractType === "LOWER") && Number.isFinite(entry)) {
+    if (barrierMode === "relative" && Number.isFinite(relBarrier)) threshold = entry + relBarrier;
+    else if (Number.isFinite(absBarrier)) threshold = absBarrier;
+  }
+
+  const fmt = (n) => Number.isFinite(Number(n)) ? Number(n).toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : "";
+  const dirTxt = side === "CALL" ? "CALL → alcista" : side === "PUT" ? "PUT → bajista" : "dirección correcta";
+  let title = `OTM por punto de entrada: la lectura de la señal terminó correcta (${dirTxt}), pero el contrato real quedó OTM.`;
+  if (Number.isFinite(entry) && Number.isFinite(exit)) {
+    title += ` Entrada ${fmt(entry)} · cierre ${fmt(exit)}.`;
+  }
+  if (Number.isFinite(threshold)) {
+    title += ` Nivel que debía superar: ${fmt(threshold)}.`;
+  }
+
+  return {
+    active: true,
+    key: "entry_point",
+    label: "📍 PUNTO ENTRADA",
+    title,
+    signal_direction_correct: true,
+    entry_spot: Number.isFinite(entry) ? entry : null,
+    exit_spot: Number.isFinite(exit) ? exit : null,
+    threshold: Number.isFinite(threshold) ? threshold : null,
+  };
+}
+
+function annotateTradeOtmEntryPoint(item) {
+  if (!item?.trade) return false;
+  const info = getTradeOtmEntryPointInfo(item);
+  if (info.active) {
+    item.trade.otm_entry_point = true;
+    item.trade.otm_reason = "entry_point";
+    item.trade.otm_entry_point_info = {
+      signal_direction_correct: true,
+      entry_spot: info.entry_spot,
+      exit_spot: info.exit_spot,
+      threshold: info.threshold,
+    };
+    return true;
+  }
+  if (String(item.trade.badge || "").toUpperCase() === "OTM") {
+    item.trade.otm_entry_point = false;
+    if (item.trade.otm_reason === "entry_point") item.trade.otm_reason = "";
+    if (item.trade.otm_entry_point_info) delete item.trade.otm_entry_point_info;
+  }
+  return false;
+}
+
 function updateRowTradeBadgeOnRow(row, item) {
   if (!row) return;
   const el = row.querySelector(".tradeBadge");
+  const entryPointEl = row.querySelector(".otmEntryPointBadge");
   if (!el) return;
 
   const badge = item?.trade?.badge || "";
+  const entryPointInfo = getTradeOtmEntryPointInfo(item);
   if (!badge) {
     el.classList.add("hidden");
     el.textContent = "";
     el.title = "";
+    if (entryPointEl) {
+      entryPointEl.classList.add("hidden");
+      entryPointEl.textContent = "";
+      entryPointEl.title = "";
+    }
     return;
   }
 
@@ -18738,7 +18814,7 @@ function updateRowTradeBadgeOnRow(row, item) {
     el.style.opacity = "1";
   } else if (badge === "OTM") {
     el.textContent = "💥 OTM";
-    el.title = "Trade perdida (OTM)";
+    el.title = entryPointInfo.active ? entryPointInfo.title : "Trade perdida (OTM)";
     el.style.opacity = "1";
   } else {
     el.textContent = "⏳ TRADE";
@@ -18753,6 +18829,30 @@ function updateRowTradeBadgeOnRow(row, item) {
   el.style.borderRadius = "999px";
   el.style.border = "1px solid rgba(255,255,255,.18)";
   el.style.background = "rgba(255,255,255,.06)";
+
+  if (entryPointEl) {
+    if (badge === "OTM" && entryPointInfo.active) {
+      entryPointEl.classList.remove("hidden");
+      entryPointEl.textContent = entryPointInfo.label;
+      entryPointEl.title = entryPointInfo.title;
+      entryPointEl.style.display = "inline-flex";
+      entryPointEl.style.alignItems = "center";
+      entryPointEl.style.justifyContent = "center";
+      entryPointEl.style.padding = "4px 7px";
+      entryPointEl.style.borderRadius = "999px";
+      entryPointEl.style.fontSize = "10px";
+      entryPointEl.style.fontWeight = "950";
+      entryPointEl.style.whiteSpace = "nowrap";
+      entryPointEl.style.border = "1px solid rgba(251,191,36,.48)";
+      entryPointEl.style.background = "rgba(251,191,36,.12)";
+      entryPointEl.style.color = "#fef3c7";
+    } else {
+      entryPointEl.classList.add("hidden");
+      entryPointEl.textContent = "";
+      entryPointEl.title = "";
+      entryPointEl.style.display = "none";
+    }
+  }
 }
 function updateRowNextArrowOnRow(row, item) {
   if (!row) return;
@@ -18793,9 +18893,11 @@ function setNextOutcome(item, outcome) {
   const prevOutcome = item.nextOutcome || "";
   item.nextOutcome = outcome;
   if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) { try { updateGiroPlusOutcome(item); } catch {} }
+  try { annotateTradeOtmEntryPoint(item); } catch {}
   saveHistory(history);
 
   updateRowNextArrow(item);
+  updateRowTradeBadge(item);
   updateCounter();
   if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
     modalCurrentItem.nextOutcome = outcome;
@@ -18969,6 +19071,7 @@ function getTradesJournalExportList() {
 
   for (const x of tradesJournal || []) {
     if (!x) continue;
+    try { annotateTradeOtmEntryPoint(x); } catch {}
     const key = String(x.journal_id || makeJournalIdFromSignal(x) || x.id || "");
     if (key && seen.has(key)) continue;
     if (key) seen.add(key);
@@ -19321,6 +19424,7 @@ function buildRow(item, opts = {}) {
         <span class="signalStageBadge" title=""></span>
         <span class="giroPlusBadge hidden" title=""></span>
         <span class="tradeBadge hidden" title=""></span>
+        <span class="otmEntryPointBadge hidden" title=""></span>
         <span class="nextArrow pending" title="Próxima vela: esperando…">⏳</span>
       </div>
     </div>
@@ -29645,7 +29749,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II30 — piso efectivo de precisión en todas las rutas Higher/Lower.
+// V113.33-II31 — aviso OTM por punto de entrada + piso efectivo de precisión en Higher/Lower.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -29847,7 +29951,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II30: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste.`;
+  const logicText = `Motor experimental V113.33-II31: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s65: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio.`;
 
   return {
     direction,
