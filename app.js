@@ -1,4 +1,4 @@
-// v113.33-II32: extiende el análisis PGP hasta s65 y el rescate favorable hasta s70, siempre contra la referencia real de s60 y con vencimiento fijo s120.
+// v113.33-II33: capturas de estudio optimizadas para impresión: fondo blanco, línea negra y bitácora A4 de dos formaciones por hoja con resultado opcional.
 // Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
@@ -130,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II32";
+const APP_BUILD_VERSION = "v113.33-II33";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -184,7 +184,9 @@ const TRADES_JOURNAL_MAX = 500;
 const STUDY_CAPTURE_DB_NAME = "derivStudyCaptures_v1";
 const STUDY_CAPTURE_STORE_NAME = "captures";
 const STUDY_CAPTURE_VERSION = 1;
-const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V112_2_ESTILO_DERIV_LINEA_BLANCA";
+const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V113_33_PRINT_BW";
+const STUDY_PRINT_SHOW_RESULT_KEY = "studyPrintShowResult_v1";
+const studyPrintSelectedKeys = new Set();
 
 /* =========================
    Trade account config
@@ -820,50 +822,64 @@ function getStudyPatternText(item, meta) {
   ).trim();
 }
 
-function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput = null) {
+function studyDrawMonoPill(ctx, x, y, w, h, text, fontSize = 14) {
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "#111827";
+  ctx.lineWidth = 1.4;
+  studyRoundRect(ctx, x, y, w, h, h / 2, true, true, "#111827");
+  ctx.fillStyle = "#111827";
+  ctx.font = `700 ${fontSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+  let label = String(text || "");
+  while (label.length > 3 && ctx.measureText(label).width > w - 18) label = label.slice(0, -2).trimEnd() + "…";
+  const tw = ctx.measureText(label).width;
+  ctx.fillText(label, x + (w - tw) / 2, y + h / 2 + fontSize * 0.34);
+}
+
+function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput = null, options = {}) {
   const ctx = canvas.getContext("2d");
   const W = canvas.width;
   const H = canvas.height;
   const timeline = timelineInput || getStudyCaptureTimeline(item);
+  const showResult = options?.showResult !== false;
   const dir = String(item?.direction || "PUT").toUpperCase() === "CALL" ? "CALL" : "PUT";
   const isCall = dir === "CALL";
   const tradeResult = getStudyCaptureTradeResult(item);
   const signal60Label = getStudySignal60Label(item);
-  const signal60Correctness = getStudySignal60Correctness(item);
   const hasRealContract = !!timeline.hasRealContract;
   const resultLabel = tradeResult || "PEND";
-  const allTicks = normalizeStudyExactTicks(item, exactTicks, timeline);
+  const allTicksRaw = normalizeStudyExactTicks(item, exactTicks, timeline);
   const meta = getStudyCaptureLevelMeta(item);
   const patternText = getStudyPatternText(item, meta);
-  const windowEndMs = Number(timeline.windowEndMs || 120000);
+  const baseWindowEndMs = Number(timeline.windowEndMs || 120000);
+  // II33: al ocultar resultado, la hoja no debe revelar la segunda ventana por la forma del gráfico.
+  const windowEndMs = showResult ? baseWindowEndMs : Math.min(60000, baseWindowEndMs);
+  const allTicks = allTicksRaw.filter((p) => Number(p?.ms) <= windowEndMs);
 
-  const bg = "#0f141d";
-  const panel = "#141b26";
-  const border = "rgba(255,255,255,.10)";
-  const grid = "rgba(255,255,255,.09)";
-  const line = "#f8fafc";
-  const softText = "rgba(235,241,255,.72)";
-  const mainText = "#eef4ff";
-  const accent = isCall ? "#22c55e" : "#ef4444";
-  const neutral = "#38bdf8";
-  const signalColor = signal60Correctness === "correct" ? "#22c55e" : signal60Correctness === "incorrect" ? "#ef4444" : "#f59e0b";
+  // II33: captura pensada para imprimir con consumo mínimo de tinta.
+  const bg = "#ffffff";
+  const panel = "#ffffff";
+  const border = "#c7cbd1";
+  const grid = "#e5e7eb";
+  const line = "#111111";
+  const softText = "#4b5563";
+  const mainText = "#111827";
+  const neutral = "#6b7280";
 
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // Encabezado mínimo estilo Deriv
+  // Encabezado monocromo.
   ctx.fillStyle = panel;
   studyRoundRect(ctx, 24, 20, W - 48, 72, 16, true, true, border);
   ctx.fillStyle = mainText;
   ctx.font = "700 24px system-ui, -apple-system, Segoe UI, sans-serif";
   ctx.fillText(`${item?.symbol || "—"} · ${isCall ? "COMPRA" : "VENTA"}`, 46, 50);
-  ctx.font = "500 14px system-ui, -apple-system, Segoe UI, sans-serif";
   const sub = `${String(patternText || meta?.visualReductionPattern || "Formación").trim() || "Formación"} · ancla ${studyFormatUtc(timeline.anchorEpochMs)}`;
-  studyDrawFittedText(ctx, sub, 46, 73, W - 360, "500 14px system-ui, -apple-system, Segoe UI, sans-serif", softText);
-  studyDrawPill(ctx, W - 250, 36, 92, 28, hasRealContract ? resultLabel : signal60Label, hasRealContract ? (tradeResult === "ITM" ? "#22c55e" : tradeResult === "OTM" ? "#ef4444" : "#f59e0b") : signalColor, "#f8fafc", 12);
-  studyDrawPill(ctx, W - 148, 36, 98, 28, isCall ? "CALL" : "PUT", accent, "#f8fafc", 12);
+  studyDrawFittedText(ctx, sub, 46, 73, showResult ? W - 360 : W - 250, "500 14px system-ui, -apple-system, Segoe UI, sans-serif", softText);
+  if (showResult) studyDrawMonoPill(ctx, W - 250, 36, 92, 28, hasRealContract ? resultLabel : signal60Label, 12);
+  studyDrawMonoPill(ctx, W - 148, 36, 98, 28, isCall ? "CALL" : "PUT", 12);
 
-  // Zona principal del gráfico
+  // Zona principal del gráfico.
   const x0 = 28, y0 = 108, x1 = W - 28, y1 = H - 112;
   ctx.fillStyle = panel;
   studyRoundRect(ctx, x0, y0, x1 - x0, y1 - y0, 16, true, true, border);
@@ -876,15 +892,10 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
   const cx0 = x0 + chartPad.l, cy0 = y0 + chartPad.t, cx1 = x1 - chartPad.r, cy1 = y1 - chartPad.b;
   const xOf = (ms) => cx0 + ((cx1 - cx0) * Math.max(0, Math.min(windowEndMs, Number(ms)))) / Math.max(windowEndMs, 1);
 
-  // Fondo del chart y sombreado suave por ventanas
-  ctx.fillStyle = "#171f2b";
+  ctx.fillStyle = "#ffffff";
   ctx.fillRect(cx0, cy0, cx1 - cx0, cy1 - cy0);
-  ctx.fillStyle = "rgba(255,255,255,.018)";
-  ctx.fillRect(xOf(0), cy0, Math.max(0, xOf(60000) - xOf(0)), cy1 - cy0);
-  ctx.fillStyle = "rgba(255,255,255,.028)";
-  ctx.fillRect(xOf(60000), cy0, Math.max(0, xOf(Math.min(windowEndMs, 120000)) - xOf(60000)), cy1 - cy0);
 
-  // Grillas
+  // Grilla tenue, apta para impresora.
   for (let i = 0; i <= 5; i++) {
     const y = cy0 + ((cy1 - cy0) * i) / 5;
     ctx.strokeStyle = grid;
@@ -894,7 +905,7 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
   const verticalMarks = [0, 15000, 30000, 45000, 60000, 90000, 120000].filter((ms) => ms <= windowEndMs);
   verticalMarks.forEach((ms) => {
     const x = xOf(ms);
-    ctx.strokeStyle = ms === 60000 ? "rgba(255,255,255,.16)" : grid;
+    ctx.strokeStyle = ms === 60000 ? "#b9bec6" : grid;
     ctx.lineWidth = ms === 60000 ? 1.6 : 1;
     ctx.beginPath(); ctx.moveTo(x, cy0); ctx.lineTo(x, cy1); ctx.stroke();
   });
@@ -902,18 +913,18 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
   if (allTicks.length >= 2) {
     const qs = allTicks.map((p) => Number(p.quote)).filter(Number.isFinite);
     const entryQuote = studyValidQuote(timeline.entryQuote, null);
-    const exitQuote = studyValidQuote(timeline.exitQuote, null);
-    if (Number.isFinite(entryQuote)) qs.push(entryQuote);
-    if (Number.isFinite(exitQuote)) qs.push(exitQuote);
+    const exitQuote = showResult ? studyValidQuote(timeline.exitQuote, null) : null;
+    if (Number.isFinite(entryQuote) && Number(timeline.entryMs) <= windowEndMs) qs.push(entryQuote);
+    if (Number.isFinite(exitQuote) && Number(timeline.exitMs) <= windowEndMs) qs.push(exitQuote);
     let min = Math.min(...qs), max = Math.max(...qs);
     let range = max - min;
     if (!Number.isFinite(range) || range < 1e-9) range = Math.max(Math.abs(max || 1) * 0.000001, 1);
     min -= range * 0.10; max += range * 0.10;
     const yOf = (q) => cy1 - ((Number(q) - min) / Math.max(max - min, 1e-9)) * (cy1 - cy0);
 
-    // Línea blanca limpia
+    // Línea negra limpia.
     ctx.strokeStyle = line;
-    ctx.lineWidth = 3.4;
+    ctx.lineWidth = 3.2;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.beginPath();
@@ -923,7 +934,6 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
     });
     ctx.stroke();
 
-    // Marcadores mínimos
     const startP = allTicks[0];
     const endP = allTicks[allTicks.length - 1];
     if (startP) {
@@ -935,46 +945,50 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
       ctx.beginPath(); ctx.arc(xOf(endP.ms), yOf(endP.quote), 4.5, 0, Math.PI * 2); ctx.fill();
     }
 
-    // Entrada/cierre contractual o ventana siguiente, con marcadores discretos
+    // Marcador de entrada. El cierre/resultado solo se imprime si el usuario lo habilita.
     if (hasRealContract && Number.isFinite(Number(timeline.entryMs))) {
       const entryMs = Math.max(0, Math.min(windowEndMs, Number(timeline.entryMs)));
-      const exitMs = Math.max(entryMs, Math.min(windowEndMs, Number(timeline.exitMs)));
       const eq = Number.isFinite(entryQuote) ? entryQuote : studyNearestQuoteAtMs(allTicks, entryMs, 3500);
-      const xq = Number.isFinite(exitQuote) ? exitQuote : studyNearestQuoteAtMs(allTicks, exitMs, 3500);
-      if (Number.isFinite(eq)) {
+      if (Number.isFinite(eq) && Number(timeline.entryMs) <= windowEndMs) {
         const ex = xOf(entryMs), ey = yOf(eq);
-        ctx.fillStyle = neutral;
-        ctx.beginPath(); ctx.arc(ex, ey, 7, 0, Math.PI * 2); ctx.fill();
-        studyDrawPill(ctx, Math.max(cx0 + 4, Math.min(ex - 34, cx1 - 68)), Math.max(cy0 + 8, ey - 34), 68, 24, "ENT", neutral, "#f8fafc", 11);
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = neutral;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(ex, ey, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        studyDrawMonoPill(ctx, Math.max(cx0 + 4, Math.min(ex - 34, cx1 - 68)), Math.max(cy0 + 8, ey - 34), 68, 24, "ENT", 11);
       }
-      if (Number.isFinite(xq)) {
-        const xx = xOf(exitMs), xy = yOf(xq);
-        const resColor = tradeResult === "ITM" ? "#22c55e" : tradeResult === "OTM" ? "#ef4444" : "#f59e0b";
-        ctx.fillStyle = resColor;
-        ctx.beginPath(); ctx.arc(xx, xy, 7, 0, Math.PI * 2); ctx.fill();
-        studyDrawPill(ctx, Math.max(cx0 + 4, Math.min(xx - 34, cx1 - 68)), Math.max(cy0 + 8, xy - 34), 68, 24, resultLabel, resColor, "#f8fafc", 11);
+      if (showResult && Number.isFinite(Number(timeline.exitMs)) && Number(timeline.exitMs) <= windowEndMs) {
+        const exitMs = Math.max(entryMs, Math.min(windowEndMs, Number(timeline.exitMs)));
+        const xq = Number.isFinite(exitQuote) ? exitQuote : studyNearestQuoteAtMs(allTicks, exitMs, 3500);
+        if (Number.isFinite(xq)) {
+          const xx = xOf(exitMs), xy = yOf(xq);
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = "#111827";
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(xx, xy, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          studyDrawMonoPill(ctx, Math.max(cx0 + 4, Math.min(xx - 34, cx1 - 68)), Math.max(cy0 + 8, xy - 34), 68, 24, resultLabel, 11);
+        }
       }
-    } else if (Number.isFinite(Number(timeline.signalStartMs)) && Number.isFinite(Number(timeline.signalEndMs))) {
+    } else if (showResult && Number.isFinite(Number(timeline.signalStartMs)) && Number.isFinite(Number(timeline.signalEndMs))) {
       const sMs = Math.max(0, Math.min(windowEndMs, Number(timeline.signalStartMs)));
       const eMs = Math.max(sMs, Math.min(windowEndMs, Number(timeline.signalEndMs)));
       const sq = studyValidQuote(timeline.signalStartQuote, null) ?? studyNearestQuoteAtMs(allTicks, sMs, 3500);
       const eq = studyValidQuote(timeline.signalEndQuote, null) ?? studyNearestQuoteAtMs(allTicks, eMs, 3500);
       if (Number.isFinite(sq)) {
         const sx = xOf(sMs), sy = yOf(sq);
-        ctx.fillStyle = neutral;
-        ctx.beginPath(); ctx.arc(sx, sy, 6.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#ffffff"; ctx.strokeStyle = neutral; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(sx, sy, 6.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
       if (Number.isFinite(eq)) {
         const ex = xOf(eMs), ey = yOf(eq);
-        ctx.fillStyle = signalColor;
-        ctx.beginPath(); ctx.arc(ex, ey, 6.5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#ffffff"; ctx.strokeStyle = "#111827"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(ex, ey, 6.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
     }
 
-    // Etiquetas de precio mínimas a la derecha
     const priceSteps = 4;
     ctx.font = "12px system-ui, -apple-system, Segoe UI, sans-serif";
-    ctx.fillStyle = "rgba(255,255,255,.52)";
+    ctx.fillStyle = "#6b7280";
     for (let i = 0; i <= priceSteps; i++) {
       const frac = i / priceSteps;
       const q = max - (max - min) * frac;
@@ -985,42 +999,45 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
     }
   }
 
-  // Etiquetas temporales
-  const timeLabels = [
-    [0, "0s"], [30000, "30s"], [60000, "60s"], [90000, "+30s"], [120000, "+60s"]
-  ].filter(([ms]) => ms <= windowEndMs);
+  const timeLabels = showResult
+    ? [[0, "0s"], [30000, "30s"], [60000, "60s"], [90000, "+30s"], [120000, "+60s"]]
+    : [[0, "0s"], [15000, "15s"], [30000, "30s"], [45000, "45s"], [60000, "60s"]];
   ctx.font = "12px system-ui, -apple-system, Segoe UI, sans-serif";
-  timeLabels.forEach(([ms, label]) => {
+  timeLabels.filter(([ms]) => ms <= windowEndMs).forEach(([ms, label]) => {
     const x = xOf(ms);
-    ctx.fillStyle = ms === 60000 ? "rgba(255,255,255,.88)" : "rgba(255,255,255,.58)";
+    ctx.fillStyle = ms === 60000 ? "#111827" : "#6b7280";
     const tw = ctx.measureText(label).width;
     ctx.fillText(label, Math.max(cx0, Math.min(cx1 - tw, x - tw / 2)), cy1 + 24);
   });
-  ctx.fillStyle = "rgba(255,255,255,.56)";
+  ctx.fillStyle = "#4b5563";
   ctx.font = "600 12px system-ui, -apple-system, Segoe UI, sans-serif";
   ctx.fillText("Formación", cx0 + 4, cy0 - 8);
-  if (windowEndMs >= 120000) {
+  if (showResult && windowEndMs >= 120000) {
     const t = "Próximos 60s";
-    const tw = ctx.measureText(t).width;
     ctx.fillText(t, Math.max(cx0 + 4, xOf(60000) + 6), cy0 - 8);
   }
 
   ctx.restore();
 
-  // Pie simple
+  // Pie monocromo. Con resultado oculto no se filtra ninguna pista del desenlace.
   const fy = H - 86;
   ctx.fillStyle = panel;
   studyRoundRect(ctx, 24, fy, W - 48, 50, 14, true, true, border);
-  ctx.fillStyle = mainText;
-  ctx.font = "600 13px system-ui, -apple-system, Segoe UI, sans-serif";
-  const foot1 = hasRealContract
-    ? `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Entrada ${studyFormatUtc(timeline.entryEpochMs)} · Cierre ${studyFormatUtc(timeline.exitEpochMs)}`
-    : `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Alarma ${studyFormatUtc(timeline.alarmEpochMs)} · Resultado ${signal60Label}`;
-  const foot2 = hasRealContract
-    ? `Resultado Deriv ${resultLabel} · Próximos 60s ${signal60Label}`
-    : `Ventana siguiente 60→120s · sin operación Deriv`;
-  studyDrawFittedText(ctx, foot1, 44, fy + 20, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
-  studyDrawFittedText(ctx, foot2, 44, fy + 38, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
+  if (showResult) {
+    const foot1 = hasRealContract
+      ? `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Entrada ${studyFormatUtc(timeline.entryEpochMs)} · Cierre ${studyFormatUtc(timeline.exitEpochMs)}`
+      : `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Alarma ${studyFormatUtc(timeline.alarmEpochMs)} · Resultado ${signal60Label}`;
+    const foot2 = hasRealContract
+      ? `Resultado Deriv ${resultLabel} · Próximos 60s ${signal60Label}`
+      : `Ventana siguiente 60→120s · sin operación Deriv`;
+    studyDrawFittedText(ctx, foot1, 44, fy + 20, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
+    studyDrawFittedText(ctx, foot2, 44, fy + 38, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
+  } else {
+    const foot = hasRealContract
+      ? `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Entrada ${studyFormatUtc(timeline.entryEpochMs)}`
+      : `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Alarma ${studyFormatUtc(timeline.alarmEpochMs)}`;
+    studyDrawFittedText(ctx, foot, 44, fy + 30, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
+  }
 }
 
 async function generateAndSaveStudyCaptureForSignal(item, { force = false } = {}) {
@@ -1111,6 +1128,207 @@ async function generateAndSaveStudyCaptureForSignal(item, { force = false } = {}
   return record;
 }
 
+
+function getStudyPrintShowResultPreference() {
+  try {
+    const raw = localStorage.getItem(STUDY_PRINT_SHOW_RESULT_KEY);
+    return raw === null ? true : raw === "1";
+  } catch {
+    return true;
+  }
+}
+function setStudyPrintShowResultPreference(value) {
+  try { localStorage.setItem(STUDY_PRINT_SHOW_RESULT_KEY, value ? "1" : "0"); } catch {}
+}
+function getStudyPrintSelectionKey(item, opts = {}) {
+  return String(opts?.journalId || item?.journal_id || makeJournalIdFromSignal(item) || item?.id || "");
+}
+function resolveStudyPrintSourceItem(item) {
+  if (!item) return null;
+  const liveItem = item?.id ? findHistoryItemById(String(item.id)) : null;
+  if (!liveItem) return item;
+  return {
+    ...item,
+    ...liveItem,
+    journal_id: item?.journal_id || liveItem?.journal_id || "",
+    trade: { ...(liveItem?.trade || {}), ...(item?.trade || {}) },
+    signalResult60: liveItem?.signalResult60 || item?.signalResult60 || null,
+  };
+}
+async function generateStudyPrintDataUrl(item, { showResult = true } = {}) {
+  let sourceItem = resolveStudyPrintSourceItem(item);
+  if (!sourceItem || !isStudyCaptureReadyItem(sourceItem)) return null;
+  if (isFloatingSignalItem(sourceItem)) {
+    const r = ensureSignalResult60(sourceItem);
+    if (showResult && r && serverNowMs() >= Number(r.deadlineEpochMs)) {
+      try { await hydrateSignalResult60FromDerivHistory(sourceItem, { force: true }); } catch {}
+      sourceItem = resolveStudyPrintSourceItem(sourceItem) || sourceItem;
+    }
+  }
+  const timeline = getStudyCaptureTimeline(sourceItem);
+  const exactTicks = await fetchStudyCaptureExactTicks(sourceItem, timeline);
+  const canvas = document.createElement("canvas");
+  canvas.width = 1600;
+  canvas.height = 960;
+  drawStudyCaptureToCanvas(canvas, sourceItem, exactTicks, timeline, { showResult: !!showResult });
+  return {
+    item: sourceItem,
+    dataUrl: canvas.toDataURL("image/png", 0.94),
+  };
+}
+function getStudyPrintItemFromSelectionKey(key) {
+  const k = String(key || "");
+  if (!k) return null;
+  const entry = (tradesJournal || []).find((x) => String(x?.journal_id || "") === k);
+  if (entry) return buildModalItemFromTradeEntry(entry) || entry;
+  const byId = findHistoryItemById(k);
+  if (byId) return byId;
+  return null;
+}
+function getSelectedStudyPrintItems() {
+  const out = [];
+  for (const key of studyPrintSelectedKeys) {
+    const item = getStudyPrintItemFromSelectionKey(key);
+    if (item) out.push(item);
+  }
+  return out;
+}
+function updateStudyPrintControlsUI() {
+  const btn = document.getElementById("studyPrintSelectedBtn");
+  const count = studyPrintSelectedKeys.size;
+  if (btn) {
+    btn.textContent = `🖨️ Imprimir seleccionadas (${count})`;
+    btn.disabled = count < 1;
+  }
+  const clear = document.getElementById("studyPrintClearSelectionBtn");
+  if (clear) clear.disabled = count < 1;
+  document.querySelectorAll(".studyPrintSelectBtn").forEach((el) => {
+    const key = String(el.dataset.printKey || "");
+    const selected = !!key && studyPrintSelectedKeys.has(key);
+    el.classList.toggle("selected", selected);
+    el.setAttribute("aria-pressed", selected ? "true" : "false");
+    el.title = selected ? "Quitar de impresión" : "Seleccionar para imprimir";
+    el.style.borderColor = selected ? "rgba(34,211,238,.9)" : "";
+    el.style.background = selected ? "rgba(34,211,238,.16)" : "";
+    el.style.boxShadow = selected ? "0 0 0 1px rgba(34,211,238,.18) inset" : "";
+  });
+}
+function ensureStudyPrintControls(actions = document.getElementById("tradesActions")) {
+  if (!actions) return null;
+  let wrap = document.getElementById("studyPrintControls");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.id = "studyPrintControls";
+    wrap.style.display = "flex";
+    wrap.style.flexWrap = "wrap";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "8px";
+    wrap.style.marginTop = "8px";
+    wrap.innerHTML = `
+      <button id="studyPrintSelectedBtn" class="btn btnGhost" type="button" disabled>🖨️ Imprimir seleccionadas (0)</button>
+      <label style="display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:850;color:rgba(255,255,255,.88);">
+        <input id="studyPrintShowResultToggle" type="checkbox"> Mostrar resultado
+      </label>
+      <button id="studyPrintClearSelectionBtn" class="btn btnGhost" type="button" disabled>Limpiar selección</button>
+    `;
+    actions.appendChild(wrap);
+    const toggle = wrap.querySelector("#studyPrintShowResultToggle");
+    if (toggle) {
+      toggle.checked = getStudyPrintShowResultPreference();
+      toggle.onchange = () => setStudyPrintShowResultPreference(toggle.checked);
+    }
+    const printBtn = wrap.querySelector("#studyPrintSelectedBtn");
+    if (printBtn) printBtn.onclick = () => {
+      const items = getSelectedStudyPrintItems();
+      if (!items.length) return toast("Seleccioná al menos una captura", 1500);
+      const showResult = !!wrap.querySelector("#studyPrintShowResultToggle")?.checked;
+      printStudyItems(items, { showResult });
+    };
+    const clearBtn = wrap.querySelector("#studyPrintClearSelectionBtn");
+    if (clearBtn) clearBtn.onclick = () => {
+      studyPrintSelectedKeys.clear();
+      updateStudyPrintControlsUI();
+    };
+  }
+  updateStudyPrintControlsUI();
+  return wrap;
+}
+function buildStudyPrintDocumentHtml(records, { showResult = true } = {}) {
+  const safeRecords = Array.isArray(records) ? records.filter((x) => x?.dataUrl) : [];
+  const cards = safeRecords.map((rec, idx) => {
+    return `
+      <section class="study-card">
+        <div class="question-title">¿Qué pregunta le da sentido a esta vela?</div>
+        <div class="answer-line"></div>
+        <img class="study-image" src="${rec.dataUrl}" alt="Formación ${idx + 1}">
+        <div class="notes-block">
+          <div class="notes-title">Puntos a favor</div>
+          <div class="write-line"></div><div class="write-line"></div><div class="write-line"></div>
+        </div>
+        <div class="notes-block against">
+          <div class="notes-title">Puntos en contra</div>
+          <div class="write-line"></div><div class="write-line"></div><div class="write-line"></div>
+        </div>
+      </section>`;
+  });
+  const sheets = [];
+  for (let i = 0; i < cards.length; i += 2) {
+    sheets.push(`<main class="sheet">${cards[i] || ""}${cards[i + 1] || ""}</main>`);
+  }
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Bitácora de estudio</title><style>
+    @page { size: A4 portrait; margin: 7mm; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; }
+    body { -webkit-print-color-adjust: economy; print-color-adjust: economy; }
+    .sheet { height: 283mm; display: flex; flex-direction: column; gap: 4mm; page-break-after: always; break-after: page; overflow: hidden; }
+    .sheet:last-child { page-break-after: auto; break-after: auto; }
+    .study-card { height: 139.5mm; flex: 0 0 139.5mm; overflow: hidden; break-inside: avoid; page-break-inside: avoid; padding: 1.5mm 2mm 1mm; border: .25mm solid #c9c9c9; border-radius: 2mm; }
+    .question-title { font-size: 10pt; line-height: 1.15; font-weight: 700; margin: 0 0 1.2mm; }
+    .answer-line { height: 5mm; border-bottom: .3mm solid #777; margin-bottom: 1.2mm; }
+    .study-image { display: block; width: 100%; height: 70mm; object-fit: contain; object-position: center; border: .2mm solid #d6d6d6; background: #fff; }
+    .notes-block { margin-top: 1.5mm; }
+    .notes-title { font-size: 8.5pt; font-weight: 700; line-height: 4mm; }
+    .write-line { height: 5.2mm; border-bottom: .22mm solid #999; }
+    .against { margin-top: 1.2mm; }
+    @media screen { body { max-width: 210mm; margin: 0 auto; padding: 7mm; } .sheet { border-bottom: 1px dashed #aaa; } }
+  </style></head><body data-show-result="${showResult ? "1" : "0"}">${sheets.join("")}</body></html>`;
+}
+async function printStudyItems(items, { showResult = getStudyPrintShowResultPreference() } = {}) {
+  const list = (Array.isArray(items) ? items : [items]).filter(Boolean);
+  if (!list.length) return false;
+  const printWin = window.open("", "_blank");
+  if (!printWin) {
+    toast("⚠️ El navegador bloqueó la ventana de impresión", 2200);
+    return false;
+  }
+  try {
+    printWin.document.open();
+    printWin.document.write('<!doctype html><html><body style="font-family:Arial;padding:24px">Preparando bitácora de estudio…</body></html>');
+    printWin.document.close();
+    const records = [];
+    for (let i = 0; i < list.length; i++) {
+      const rec = await generateStudyPrintDataUrl(list[i], { showResult: !!showResult });
+      if (rec?.dataUrl) records.push(rec);
+      if (i < list.length - 1) await sleep(80);
+    }
+    if (!records.length) throw new Error("Sin capturas listas");
+    const html = buildStudyPrintDocumentHtml(records, { showResult: !!showResult });
+    printWin.document.open();
+    printWin.document.write(html);
+    printWin.document.close();
+    const doPrint = () => {
+      try { printWin.focus(); printWin.print(); } catch {}
+    };
+    if (printWin.document.readyState === "complete") setTimeout(doPrint, 450);
+    else printWin.onload = () => setTimeout(doPrint, 350);
+    return true;
+  } catch (err) {
+    try { printWin.close(); } catch {}
+    toast(`⚠️ No pude preparar la impresión${err?.message ? `: ${err.message}` : ""}`, 2200);
+    return false;
+  }
+}
+
 function ensureStudyCaptureModal() {
   let modal = document.getElementById("studyCaptureModal");
   if (modal) return modal;
@@ -1129,13 +1347,17 @@ function ensureStudyCaptureModal() {
   modal.innerHTML = `
     <div style="width:min(980px,96vw);max-height:94vh;overflow:auto;border-radius:22px;background:#07101d;border:1px solid rgba(255,255,255,.14);box-shadow:0 24px 80px rgba(0,0,0,.55);padding:12px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
-        <div style="font-weight:950;color:#eaf2ff;font-size:16px;">📸 Captura de estudio</div>
+        <div style="font-weight:950;color:#eaf2ff;font-size:16px;">📸 Captura de estudio · impresión</div>
         <button id="studyCaptureCloseBtn" class="btn btnGhost" type="button" style="min-width:44px;">✕</button>
       </div>
-      <img id="studyCaptureImg" alt="Captura de estudio" style="display:block;width:100%;height:auto;border-radius:16px;border:1px solid rgba(255,255,255,.12);background:#020617;"/>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
-        <button id="studyCaptureDownloadBtn" class="btn btnGhost" type="button">⬇️ Descargar PNG</button>
+      <img id="studyCaptureImg" alt="Captura de estudio" style="display:block;width:100%;height:auto;border-radius:16px;border:1px solid rgba(255,255,255,.18);background:#ffffff;"/>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 10px;border:1px solid rgba(255,255,255,.12);border-radius:12px;font-size:13px;font-weight:850;color:rgba(255,255,255,.9);">
+        <input id="studyCaptureShowResultToggle" type="checkbox"> Mostrar resultado al imprimir
+      </label>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px;">
+        <button id="studyCaptureDownloadBtn" class="btn btnGhost" type="button">⬇️ PNG</button>
         <button id="studyCaptureShareBtn" class="btn btnGhost" type="button">📤 Compartir</button>
+        <button id="studyCapturePrintBtn" class="btn btnGhost" type="button">🖨️ Imprimir</button>
       </div>
     </div>
   `;
@@ -1164,6 +1386,12 @@ async function showStudyCaptureForItem(item) {
   const img = modal.querySelector("#studyCaptureImg");
   const dl = modal.querySelector("#studyCaptureDownloadBtn");
   const sh = modal.querySelector("#studyCaptureShareBtn");
+  const pr = modal.querySelector("#studyCapturePrintBtn");
+  const showResultToggle = modal.querySelector("#studyCaptureShowResultToggle");
+  if (showResultToggle) {
+    showResultToggle.checked = getStudyPrintShowResultPreference();
+    showResultToggle.onchange = () => setStudyPrintShowResultPreference(showResultToggle.checked);
+  }
   modal.style.display = "flex";
   modal.classList.remove("hidden");
   img.removeAttribute("src");
@@ -1179,6 +1407,7 @@ async function showStudyCaptureForItem(item) {
     img.alt = `Captura ${item.symbol || ""} ${item.direction || ""}`;
     const filename = `captura-estudio-${item.symbol || "signal"}-${String(item.time || "").replace(/[^0-9A-Za-z]+/g, "-")}-${getStudyCaptureTradeResult(item) || "trade"}.png`;
     dl.onclick = () => downloadTextFile(filename, rec.dataUrl, "image/png");
+    if (pr) pr.onclick = () => printStudyItems([item], { showResult: !!showResultToggle?.checked });
     sh.onclick = async () => {
       try {
         const blob = dataURLToBlob(rec.dataUrl);
@@ -1539,7 +1768,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II32_20260819";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II33_20260819";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -8651,6 +8880,7 @@ function ensureTradesView() {
   }
   actions.classList.add("viewActions", "tradesActions");
   ensureTradesDateFilterControls(actions);
+  ensureStudyPrintControls(actions);
 
   // ✅ Lista (esta SÍ se limpia)
   let list = $("tradesList");
@@ -19510,6 +19740,7 @@ function buildRow(item, opts = {}) {
   const voteIsLocked = !!opts.voteLocked && !!item.vote && !opts.allowVoteChange;
   const commentPlaceholder = opts.source === "trades" ? "por qué" : "comentario";
   const commentStyle = "";
+  const printSelectionKey = getStudyPrintSelectionKey(item, opts);
   const actionsHtml = opts.hideActions
     ? ""
     : `
@@ -19518,6 +19749,7 @@ function buildRow(item, opts = {}) {
       <button class="voteBtn" data-v="dislike" type="button" ${voteIsLocked ? "disabled" : ""} title="No me gusta / operación que quiero evitar">👎</button>
       <button class="savePracticeBtn ${savedForPractice ? "selected" : ""}" type="button" title="${savedForPractice ? "Quitar del pool de práctica" : "Guardar en práctica Giro Doble Rechazo"}">💾</button>
       <button class="studyCaptureBtn" type="button" title="Generar / ver captura de estudio">📸</button>
+      ${opts.source === "trades" ? `<button class="studyPrintSelectBtn" data-print-key="${escapeHtml(printSelectionKey)}" type="button" title="Seleccionar para imprimir" aria-pressed="false">🖨️</button>` : ""}
       <input class="row-comment" style="${commentStyle}" placeholder="${commentPlaceholder}" value="${escapeHtml(item.comment || "")}">
     </div>
   `;
@@ -19671,6 +19903,22 @@ function buildRow(item, opts = {}) {
         e.stopPropagation();
         showStudyCaptureForItem(item);
       };
+    }
+
+    const studyPrintSelectBtn = row.querySelector(".studyPrintSelectBtn");
+    if (studyPrintSelectBtn) {
+      studyPrintSelectBtn.style.borderRadius = "12px";
+      studyPrintSelectBtn.style.minWidth = "40px";
+      studyPrintSelectBtn.style.fontWeight = "900";
+      studyPrintSelectBtn.onclick = (e) => {
+        e.stopPropagation();
+        const key = String(studyPrintSelectBtn.dataset.printKey || printSelectionKey || "");
+        if (!key) return;
+        if (studyPrintSelectedKeys.has(key)) studyPrintSelectedKeys.delete(key);
+        else studyPrintSelectedKeys.add(key);
+        updateStudyPrintControlsUI();
+      };
+      updateStudyPrintControlsUI();
     }
 
     const input = row.querySelector(".row-comment");
@@ -29861,7 +30109,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II32 — análisis PGP hasta s65 + rescate favorable s60→s70 + OTM por punto de entrada.
+// V113.33-II33 — II32 + capturas B/N imprimibles y bitácora A4 de dos formaciones por hoja.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -30063,7 +30311,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II32: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120.`;
+  const logicText = `Motor experimental V113.33-II33: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra.`;
 
   return {
     direction,
