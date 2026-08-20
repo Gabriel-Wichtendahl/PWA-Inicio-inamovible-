@@ -1,4 +1,4 @@
-// v113.33-II33: capturas de estudio optimizadas para impresión: fondo blanco, línea negra y bitácora A4 de dos formaciones por hoja con resultado opcional.
+// v113.33-II34: II33 + grabación local de análisis por señal con audio de voz comprimido, reproducción, borrado, duración y timeline preparado para sincronización con Replay.
 // Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
@@ -130,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II33";
+const APP_BUILD_VERSION = "v113.33-II34";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -187,6 +187,28 @@ const STUDY_CAPTURE_VERSION = 1;
 const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V113_33_PRINT_BW";
 const STUDY_PRINT_SHOW_RESULT_KEY = "studyPrintShowResult_v1";
 const studyPrintSelectedKeys = new Set();
+
+/* =========================
+   Audio de análisis por señal (II34)
+========================= */
+const VOICE_ANALYSIS_DB_NAME = "derivSignalVoiceAnalysis_v1";
+const VOICE_ANALYSIS_DB_VERSION = 1;
+const VOICE_ANALYSIS_STORE = "recordings";
+const VOICE_ANALYSIS_TARGET_BPS = 16000; // voz mono, bajo peso
+const VOICE_ANALYSIS_TIMELINE_SAMPLE_MS = 500;
+let voiceAnalysisDbPromise = null;
+let voiceAnalysisRecorder = null;
+let voiceAnalysisStream = null;
+let voiceAnalysisChunks = [];
+let voiceAnalysisRecordingSignalId = "";
+let voiceAnalysisRecordingMeta = null;
+let voiceAnalysisRecordStartedAt = 0;
+let voiceAnalysisUiTimer = null;
+let voiceAnalysisLastTimelineSampleAt = 0;
+let voiceAnalysisCurrentRecord = null;
+let voiceAnalysisAudio = null;
+let voiceAnalysisObjectUrl = "";
+let voiceAnalysisLoadToken = 0;
 
 /* =========================
    Trade account config
@@ -426,6 +448,556 @@ function linkContractToSignal(contractId, signalId) {
   if (!contractId || !signalId) return;
   tradeLinks.set(String(contractId), String(signalId));
   saveTradeLinks();
+}
+
+/* =========================
+   II34 · Grabación de análisis en voz alta por señal
+========================= */
+function openVoiceAnalysisDB() {
+  if (!("indexedDB" in window)) return Promise.resolve(null);
+  if (voiceAnalysisDbPromise) return voiceAnalysisDbPromise;
+  voiceAnalysisDbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(VOICE_ANALYSIS_DB_NAME, VOICE_ANALYSIS_DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(VOICE_ANALYSIS_STORE)) {
+        db.createObjectStore(VOICE_ANALYSIS_STORE, { keyPath: "signalId" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error("No pude abrir la base de audios"));
+  }).catch((err) => {
+    voiceAnalysisDbPromise = null;
+    throw err;
+  });
+  return voiceAnalysisDbPromise;
+}
+async function getVoiceAnalysisRecord(signalId) {
+  const key = String(signalId || "");
+  if (!key) return null;
+  const db = await openVoiceAnalysisDB();
+  if (!db) return null;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readonly");
+    const req = tx.objectStore(VOICE_ANALYSIS_STORE).get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error || new Error("No pude leer el audio"));
+  });
+}
+async function putVoiceAnalysisRecord(record) {
+  if (!record?.signalId || !(record?.blob instanceof Blob)) return false;
+  const db = await openVoiceAnalysisDB();
+  if (!db) return false;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readwrite");
+    tx.objectStore(VOICE_ANALYSIS_STORE).put(record);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error("No pude guardar el audio"));
+  });
+}
+async function deleteVoiceAnalysisRecord(signalId) {
+  const key = String(signalId || "");
+  if (!key) return false;
+  const db = await openVoiceAnalysisDB();
+  if (!db) return false;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readwrite");
+    tx.objectStore(VOICE_ANALYSIS_STORE).delete(key);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error("No pude borrar el audio"));
+  });
+}
+async function clearVoiceAnalysisRecords() {
+  const db = await openVoiceAnalysisDB();
+  if (!db) return false;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readwrite");
+    tx.objectStore(VOICE_ANALYSIS_STORE).clear();
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error || new Error("No pude borrar los audios"));
+  });
+}
+async function getVoiceAnalysisStats() {
+  const db = await openVoiceAnalysisDB();
+  if (!db) return { count: 0, bytes: 0, durationMs: 0 };
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readonly");
+    const req = tx.objectStore(VOICE_ANALYSIS_STORE).openCursor();
+    let count = 0, bytes = 0, durationMs = 0;
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) return resolve({ count, bytes, durationMs });
+      const value = cur.value || {};
+      count += 1;
+      bytes += Number(value.size || value?.blob?.size || 0) || 0;
+      durationMs += Number(value.durationMs || 0) || 0;
+      cur.continue();
+    };
+    req.onerror = () => reject(req.error || new Error("No pude calcular el uso de audios"));
+  });
+}
+function getVoiceAnalysisSignalId(item = modalCurrentItem) {
+  return String(item?.id || item?.signal_id || item?.journal_id || "").trim();
+}
+function formatVoiceDuration(ms) {
+  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  const min = Math.floor(total / 60);
+  const sec = String(total % 60).padStart(2, "0");
+  return `${min}:${sec}`;
+}
+function formatVoiceSignalSecond(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return "";
+  return `s${(Math.max(0, n) / 1000).toFixed(1)}`;
+}
+function formatVoiceBytes(bytes) {
+  const n = Math.max(0, Number(bytes || 0));
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 100 * 1024 ? 1 : 0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+function pickVoiceAnalysisMimeType() {
+  if (!("MediaRecorder" in window)) return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/ogg;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+  ];
+  for (const type of candidates) {
+    try { if (MediaRecorder.isTypeSupported(type)) return type; } catch {}
+  }
+  return "";
+}
+function getVoiceAnalysisVisualElapsedMs(item = modalCurrentItem) {
+  const itemId = getVoiceAnalysisSignalId(item);
+  if (
+    itemId &&
+    modalReplayState?.open &&
+    String(modalReplayState?.itemId || "") === itemId &&
+    Number.isFinite(Number(modalReplayState?.currentMs))
+  ) {
+    return Math.max(0, Number(modalReplayState.currentMs));
+  }
+  try {
+    const elapsed = Number(getSignalElapsedMsRaw(item));
+    if (Number.isFinite(elapsed)) return Math.max(0, elapsed);
+  } catch {}
+  const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
+  const last = ticks.length ? Number(ticks[ticks.length - 1]?.ms) : 0;
+  return Number.isFinite(last) ? Math.max(0, last) : 0;
+}
+function getVoiceAnalysisVisualMode(item = modalCurrentItem) {
+  const itemId = getVoiceAnalysisSignalId(item);
+  if (itemId && modalReplayState?.open && String(modalReplayState?.itemId || "") === itemId) {
+    return {
+      mode: "replay",
+      speed: Number(modalReplayState?.speed || 1) || 1,
+      autoFollow: !!modalReplayState?.autoFollow,
+      source: String(modalReplayState?.source || "manual"),
+    };
+  }
+  return { mode: "live", speed: 1, autoFollow: true, source: "live_modal" };
+}
+function sampleVoiceAnalysisTimeline(force = false) {
+  if (!voiceAnalysisRecordingMeta || !voiceAnalysisRecordStartedAt) return;
+  const now = Date.now();
+  if (!force && now - voiceAnalysisLastTimelineSampleAt < VOICE_ANALYSIS_TIMELINE_SAMPLE_MS) return;
+  voiceAnalysisLastTimelineSampleAt = now;
+  const activeId = voiceAnalysisRecordingSignalId;
+  const currentId = getVoiceAnalysisSignalId(modalCurrentItem);
+  if (!activeId || currentId !== activeId) return;
+  const visual = getVoiceAnalysisVisualMode(modalCurrentItem);
+  const sample = {
+    audioMs: Math.max(0, now - voiceAnalysisRecordStartedAt),
+    signalMs: Math.round(getVoiceAnalysisVisualElapsedMs(modalCurrentItem)),
+    mode: visual.mode,
+    speed: visual.speed,
+    autoFollow: visual.autoFollow,
+    source: visual.source,
+  };
+  const timeline = voiceAnalysisRecordingMeta.timeline || (voiceAnalysisRecordingMeta.timeline = []);
+  const prev = timeline[timeline.length - 1];
+  if (!prev || force || Math.abs(sample.signalMs - Number(prev.signalMs || 0)) >= 100 || sample.mode !== prev.mode || sample.speed !== prev.speed) {
+    timeline.push(sample);
+  }
+}
+function releaseVoiceAnalysisObjectUrl() {
+  if (voiceAnalysisAudio) {
+    try { voiceAnalysisAudio.pause(); } catch {}
+    voiceAnalysisAudio = null;
+  }
+  if (voiceAnalysisObjectUrl) {
+    try { URL.revokeObjectURL(voiceAnalysisObjectUrl); } catch {}
+    voiceAnalysisObjectUrl = "";
+  }
+}
+function stopVoiceAnalysisPlayback() {
+  if (voiceAnalysisAudio) {
+    try { voiceAnalysisAudio.pause(); voiceAnalysisAudio.currentTime = 0; } catch {}
+  }
+  updateVoiceAnalysisUI();
+}
+function cleanupVoiceAnalysisStream() {
+  if (voiceAnalysisStream) {
+    try { voiceAnalysisStream.getTracks().forEach((t) => t.stop()); } catch {}
+  }
+  voiceAnalysisStream = null;
+}
+function updateVoiceAnalysisUI() {
+  const recordBtn = pickEl("modalVoiceRecordBtn");
+  const playBtn = pickEl("modalVoicePlayBtn");
+  const deleteBtn = pickEl("modalVoiceDeleteBtn");
+  const metaEl = pickEl("modalVoiceMeta");
+  const controls = pickEl("modalVoiceControls");
+  if (!recordBtn || !playBtn || !deleteBtn || !metaEl || !controls) return;
+
+  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
+  controls.style.display = signalId ? "flex" : "none";
+  if (!signalId) return;
+
+  const supported = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder && window.indexedDB);
+  const recordingHere = !!voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId === signalId;
+  recordBtn.disabled = !supported || (!!voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && !recordingHere);
+  recordBtn.classList.toggle("is-recording", recordingHere);
+
+  if (recordingHere) {
+    const elapsed = Date.now() - voiceAnalysisRecordStartedAt;
+    recordBtn.textContent = `🔴 ${formatVoiceDuration(elapsed)}`;
+    recordBtn.title = "Detener y guardar audio";
+    playBtn.classList.add("hidden");
+    deleteBtn.classList.add("hidden");
+    metaEl.classList.remove("hidden");
+    metaEl.textContent = `grabando · ${formatVoiceSignalSecond(getVoiceAnalysisVisualElapsedMs(modalCurrentItem))}`;
+    return;
+  }
+
+  recordBtn.textContent = "🎙️";
+  recordBtn.title = supported
+    ? (voiceAnalysisCurrentRecord ? "Grabar de nuevo y reemplazar el audio de esta señal" : "Grabar análisis en voz alta")
+    : "Este navegador no permite grabar audio desde la PWA";
+
+  const rec = voiceAnalysisCurrentRecord && String(voiceAnalysisCurrentRecord.signalId || "") === signalId
+    ? voiceAnalysisCurrentRecord
+    : null;
+  if (!rec) {
+    playBtn.classList.add("hidden");
+    deleteBtn.classList.add("hidden");
+    metaEl.classList.add("hidden");
+    playBtn.classList.remove("is-playing");
+    return;
+  }
+
+  const playing = !!voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended;
+  playBtn.classList.remove("hidden");
+  deleteBtn.classList.remove("hidden");
+  metaEl.classList.remove("hidden");
+  playBtn.classList.toggle("is-playing", playing);
+  playBtn.textContent = playing ? "⏸" : "▶";
+  playBtn.title = playing ? "Pausar análisis" : "Reproducir análisis grabado";
+  const startMs = Number(rec.visualStartElapsedMs ?? rec.signalStartElapsedMs ?? 0);
+  if (playing && voiceAnalysisAudio) {
+    metaEl.textContent = `${formatVoiceDuration(voiceAnalysisAudio.currentTime * 1000)}/${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}`;
+  } else {
+    metaEl.textContent = `${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}`;
+  }
+}
+async function loadVoiceAnalysisForModal(item = modalCurrentItem) {
+  const signalId = getVoiceAnalysisSignalId(item);
+  const token = ++voiceAnalysisLoadToken;
+  releaseVoiceAnalysisObjectUrl();
+  voiceAnalysisCurrentRecord = null;
+  updateVoiceAnalysisUI();
+  if (!signalId) return;
+  try {
+    const rec = await getVoiceAnalysisRecord(signalId);
+    if (token !== voiceAnalysisLoadToken || getVoiceAnalysisSignalId(modalCurrentItem) !== signalId) return;
+    voiceAnalysisCurrentRecord = rec;
+    updateVoiceAnalysisUI();
+  } catch (err) {
+    console.warn("[VOICE_ANALYSIS_LOAD]", err);
+  }
+}
+async function startVoiceAnalysisRecording() {
+  const item = modalCurrentItem;
+  const signalId = getVoiceAnalysisSignalId(item);
+  if (!signalId) return;
+  if (!navigator.mediaDevices?.getUserMedia || !("MediaRecorder" in window) || !("indexedDB" in window)) {
+    toast("🎙️ Este navegador no permite grabación local de audio.", 2200);
+    return;
+  }
+  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") return;
+  if (voiceAnalysisCurrentRecord && !confirm("Esta señal ya tiene un audio. ¿Querés reemplazarlo por una nueva grabación?")) return;
+
+  stopVoiceAnalysisPlayback();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+      video: false,
+    });
+  } catch (err) {
+    const name = String(err?.name || "");
+    const msg = (name === "NotAllowedError" || name === "PermissionDeniedError")
+      ? "Permiso de micrófono denegado. Habilitalo para esta PWA y volvé a tocar 🎙️."
+      : "No pude abrir el micrófono.";
+    toast(`🎙️ ${msg}`, 3000);
+    return;
+  }
+
+  if (getVoiceAnalysisSignalId(modalCurrentItem) !== signalId) {
+    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+    return;
+  }
+
+  const mimeType = pickVoiceAnalysisMimeType();
+  let recorder;
+  try {
+    const options = { audioBitsPerSecond: VOICE_ANALYSIS_TARGET_BPS };
+    if (mimeType) options.mimeType = mimeType;
+    recorder = new MediaRecorder(stream, options);
+  } catch {
+    try { recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined); }
+    catch (err) {
+      try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+      toast("🎙️ No pude iniciar el grabador de audio.", 2500);
+      return;
+    }
+  }
+
+  voiceAnalysisStream = stream;
+  voiceAnalysisRecorder = recorder;
+  voiceAnalysisChunks = [];
+  voiceAnalysisRecordingSignalId = signalId;
+  voiceAnalysisRecordStartedAt = Date.now();
+  voiceAnalysisLastTimelineSampleAt = 0;
+  const visualStart = getVoiceAnalysisVisualElapsedMs(item);
+  let liveStart = visualStart;
+  try {
+    const raw = Number(getSignalElapsedMsRaw(item));
+    if (Number.isFinite(raw)) liveStart = raw;
+  } catch {}
+  voiceAnalysisRecordingMeta = {
+    signalId,
+    symbol: String(item?.symbol || ""),
+    direction: String(item?.direction || ""),
+    signalTime: String(item?.time || ""),
+    appVersion: APP_BUILD_VERSION,
+    startedAt: voiceAnalysisRecordStartedAt,
+    visualStartElapsedMs: Math.round(visualStart),
+    liveElapsedAtStartMs: Math.round(liveStart),
+    mimeType: recorder.mimeType || mimeType || "audio/webm",
+    requestedBitsPerSecond: VOICE_ANALYSIS_TARGET_BPS,
+    timelineVersion: 1,
+    timeline: [],
+  };
+
+  recorder.ondataavailable = (ev) => {
+    if (ev?.data && ev.data.size > 0) voiceAnalysisChunks.push(ev.data);
+  };
+  recorder.onerror = (ev) => {
+    console.warn("[VOICE_ANALYSIS_RECORDER]", ev?.error || ev);
+  };
+  recorder.onstop = async () => {
+    const meta = voiceAnalysisRecordingMeta;
+    const signalKey = voiceAnalysisRecordingSignalId;
+    const started = voiceAnalysisRecordStartedAt;
+    sampleVoiceAnalysisTimeline(true);
+    const chunks = voiceAnalysisChunks.slice();
+    const finalMime = String(recorder.mimeType || meta?.mimeType || chunks[0]?.type || "audio/webm");
+    const durationMs = Math.max(0, Date.now() - started);
+
+    voiceAnalysisRecorder = null;
+    voiceAnalysisChunks = [];
+    voiceAnalysisRecordingSignalId = "";
+    voiceAnalysisRecordingMeta = null;
+    voiceAnalysisRecordStartedAt = 0;
+    if (voiceAnalysisUiTimer) clearInterval(voiceAnalysisUiTimer);
+    voiceAnalysisUiTimer = null;
+    cleanupVoiceAnalysisStream();
+
+    try {
+      const blob = new Blob(chunks, { type: finalMime });
+      if (!signalKey || !blob.size || durationMs < 250) {
+        updateVoiceAnalysisUI();
+        if (durationMs >= 250) toast("🎙️ La grabación quedó vacía y no se guardó.", 1800);
+        return;
+      }
+      const record = {
+        ...meta,
+        signalId: signalKey,
+        blob,
+        mimeType: finalMime,
+        durationMs,
+        size: blob.size,
+        stoppedAt: Date.now(),
+        actualBitsPerSecondApprox: durationMs > 0 ? Math.round((blob.size * 8 * 1000) / durationMs) : 0,
+      };
+      await putVoiceAnalysisRecord(record);
+      if (getVoiceAnalysisSignalId(modalCurrentItem) === signalKey) {
+        voiceAnalysisCurrentRecord = record;
+        updateVoiceAnalysisUI();
+      }
+      refreshVoiceAnalysisStorageUI();
+      toast(`🎙️ Audio guardado · ${formatVoiceDuration(durationMs)} · ${formatVoiceBytes(blob.size)}`, 1800);
+    } catch (err) {
+      console.warn("[VOICE_ANALYSIS_SAVE]", err);
+      toast("🎙️ No pude guardar el audio localmente.", 2400);
+      updateVoiceAnalysisUI();
+    }
+  };
+
+  try {
+    recorder.start(1000);
+    sampleVoiceAnalysisTimeline(true);
+    voiceAnalysisUiTimer = setInterval(() => {
+      sampleVoiceAnalysisTimeline(false);
+      updateVoiceAnalysisUI();
+    }, 250);
+    try { void navigator.storage?.persist?.().catch?.(() => {}); } catch {}
+    updateVoiceAnalysisUI();
+    toast(`🎙️ Grabando análisis · ${formatVoiceSignalSecond(visualStart)}`, 1200);
+  } catch (err) {
+    voiceAnalysisRecorder = null;
+    voiceAnalysisRecordingSignalId = "";
+    voiceAnalysisRecordingMeta = null;
+    voiceAnalysisRecordStartedAt = 0;
+    cleanupVoiceAnalysisStream();
+    toast("🎙️ No pude comenzar la grabación.", 2200);
+  }
+}
+function stopVoiceAnalysisRecording({ silent = false } = {}) {
+  if (!voiceAnalysisRecorder || voiceAnalysisRecorder.state === "inactive") return false;
+  sampleVoiceAnalysisTimeline(true);
+  try {
+    voiceAnalysisRecorder.stop();
+    if (!silent) toast("⏹ Guardando audio…", 800);
+    return true;
+  } catch {
+    cleanupVoiceAnalysisStream();
+    return false;
+  }
+}
+async function toggleVoiceAnalysisPlayback() {
+  const rec = voiceAnalysisCurrentRecord;
+  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
+  if (!rec?.blob || String(rec.signalId || "") !== signalId) return;
+  if (voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended) {
+    try { voiceAnalysisAudio.pause(); } catch {}
+    updateVoiceAnalysisUI();
+    return;
+  }
+  if (!voiceAnalysisAudio) {
+    releaseVoiceAnalysisObjectUrl();
+    voiceAnalysisObjectUrl = URL.createObjectURL(rec.blob);
+    voiceAnalysisAudio = new Audio(voiceAnalysisObjectUrl);
+    voiceAnalysisAudio.preload = "metadata";
+    voiceAnalysisAudio.ontimeupdate = () => updateVoiceAnalysisUI();
+    voiceAnalysisAudio.onplay = () => updateVoiceAnalysisUI();
+    voiceAnalysisAudio.onpause = () => updateVoiceAnalysisUI();
+    voiceAnalysisAudio.onended = () => {
+      try { voiceAnalysisAudio.currentTime = 0; } catch {}
+      updateVoiceAnalysisUI();
+    };
+    voiceAnalysisAudio.onerror = () => toast("🎙️ No pude reproducir este audio.", 2000);
+  }
+  try {
+    await voiceAnalysisAudio.play();
+    updateVoiceAnalysisUI();
+  } catch {
+    toast("🎙️ Tocá ▶ nuevamente para reproducir.", 1500);
+  }
+}
+async function removeVoiceAnalysisForCurrentSignal() {
+  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
+  if (!signalId || !voiceAnalysisCurrentRecord) return;
+  if (!confirm("¿Borrar el audio de análisis de esta señal?")) return;
+  stopVoiceAnalysisPlayback();
+  releaseVoiceAnalysisObjectUrl();
+  try {
+    await deleteVoiceAnalysisRecord(signalId);
+    voiceAnalysisCurrentRecord = null;
+    updateVoiceAnalysisUI();
+    refreshVoiceAnalysisStorageUI();
+    toast("🗑️ Audio borrado", 1200);
+  } catch {
+    toast("No pude borrar el audio.", 1800);
+  }
+}
+function bindVoiceAnalysisControls() {
+  const recordBtn = pickEl("modalVoiceRecordBtn");
+  const playBtn = pickEl("modalVoicePlayBtn");
+  const deleteBtn = pickEl("modalVoiceDeleteBtn");
+  if (recordBtn && !recordBtn.dataset.boundVoice) {
+    recordBtn.dataset.boundVoice = "1";
+    recordBtn.onclick = (ev) => {
+      ev.stopPropagation();
+      const recordingHere = voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId === getVoiceAnalysisSignalId(modalCurrentItem);
+      if (recordingHere) stopVoiceAnalysisRecording();
+      else void startVoiceAnalysisRecording();
+    };
+  }
+  if (playBtn && !playBtn.dataset.boundVoice) {
+    playBtn.dataset.boundVoice = "1";
+    playBtn.onclick = (ev) => { ev.stopPropagation(); void toggleVoiceAnalysisPlayback(); };
+  }
+  if (deleteBtn && !deleteBtn.dataset.boundVoice) {
+    deleteBtn.dataset.boundVoice = "1";
+    deleteBtn.onclick = (ev) => { ev.stopPropagation(); void removeVoiceAnalysisForCurrentSignal(); };
+  }
+  updateVoiceAnalysisUI();
+}
+function ensureVoiceAnalysisSettingsUI() {
+  const body = document.querySelector("#settingsModal .settingsBody");
+  if (!body || document.getElementById("voiceAnalysisSettingsBox")) return;
+  const box = document.createElement("div");
+  box.id = "voiceAnalysisSettingsBox";
+  box.className = "fieldWrap";
+  box.innerHTML = `
+    <div class="fieldLabel">🎙️ Audios de análisis</div>
+    <div id="voiceAnalysisStorageInfo" style="font-size:12px;color:var(--muted);line-height:1.35;">Calculando…</div>
+    <div class="fieldActions" style="margin-top:8px;">
+      <button id="voiceAnalysisRefreshStorageBtn" class="btn btnGhost" type="button">↻ Actualizar</button>
+      <button id="voiceAnalysisClearAllBtn" class="btn btnGhost" type="button">🗑️ Borrar audios</button>
+    </div>`;
+  body.appendChild(box);
+  const refreshBtn = box.querySelector("#voiceAnalysisRefreshStorageBtn");
+  const clearBtn = box.querySelector("#voiceAnalysisClearAllBtn");
+  if (refreshBtn) refreshBtn.onclick = () => void refreshVoiceAnalysisStorageUI();
+  if (clearBtn) clearBtn.onclick = async () => {
+    if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") {
+      toast("⏹ Detené la grabación actual antes de borrar todos los audios.", 2200);
+      return;
+    }
+    if (!confirm("¿Borrar TODOS los audios de análisis guardados en esta PWA?")) return;
+    stopVoiceAnalysisPlayback();
+    try {
+      await clearVoiceAnalysisRecords();
+      voiceAnalysisCurrentRecord = null;
+      releaseVoiceAnalysisObjectUrl();
+      updateVoiceAnalysisUI();
+      await refreshVoiceAnalysisStorageUI();
+      toast("🗑️ Audios de análisis borrados", 1400);
+    } catch {
+      toast("No pude borrar todos los audios.", 1800);
+    }
+  };
+  void refreshVoiceAnalysisStorageUI();
+}
+async function refreshVoiceAnalysisStorageUI() {
+  const el = document.getElementById("voiceAnalysisStorageInfo");
+  if (!el) return;
+  try {
+    const stats = await getVoiceAnalysisStats();
+    const avg = stats.count ? stats.bytes / stats.count : 0;
+    el.textContent = `${stats.count} audio${stats.count === 1 ? "" : "s"} · ${formatVoiceBytes(stats.bytes)}${stats.count ? ` · promedio ${formatVoiceBytes(avg)}` : ""} · guardados solo en este dispositivo.`;
+  } catch {
+    el.textContent = "No pude calcular el espacio usado por los audios.";
+  }
 }
 
 /* =========================
@@ -1768,7 +2340,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II33_20260819";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II34_20260820";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -18862,6 +19434,12 @@ function navigateModalItem(step = 1) {
 function openChartModal(item, opts = {}) {
   cancelModalAutoReplayX2();
   closeModalReplay();
+  const nextVoiceSignalId = getVoiceAnalysisSignalId(item);
+  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId !== nextVoiceSignalId) {
+    stopVoiceAnalysisRecording({ silent: true });
+  }
+  stopVoiceAnalysisPlayback();
+  releaseVoiceAnalysisObjectUrl();
   modalCurrentItem = item;
   modalOpenContext = normalizeModalContext(opts, item);
   if (!chartModal || !modalTitle || !modalSub) return;
@@ -18905,12 +19483,18 @@ updateModalFooterReadingUI();
   updateModalChartViewBtnUI();
   updateVisualReadPanelUI();
 
+  bindVoiceAnalysisControls();
+  void loadVoiceAnalysisForModal(modalCurrentItem);
   requestModalDraw(true);
   scheduleModalAutoReplayX2(modalCurrentItem, "open_modal");
 }
 function closeChartModal() {
   cancelModalAutoReplayX2();
   closeModalReplay();
+  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") stopVoiceAnalysisRecording({ silent: true });
+  stopVoiceAnalysisPlayback();
+  releaseVoiceAnalysisObjectUrl();
+  voiceAnalysisLoadToken += 1;
   if (!chartModal) return;
   chartModal.classList.add("hidden");
   chartModal.setAttribute("aria-hidden", "true");
@@ -30109,7 +30693,7 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II33 — II32 + capturas B/N imprimibles y bitácora A4 de dos formaciones por hoja.
+// V113.33-II34 — II33 + audio local de análisis por señal.
 // Conserva el cierre operativo fijo en el segundo 60 de II15.
 // Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
 // El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
@@ -30311,7 +30895,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II33: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra.`;
+  const logicText = `Motor experimental V113.33-II34: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE para permitir sincronización futura sin rehacer los audios.`;
 
   return {
     direction,
@@ -32320,6 +32904,8 @@ ensureC100Panel();
 updateC100PanelUI();
 initWakeButton();
 initTokenAndStakeUI();
+bindVoiceAnalysisControls();
+ensureVoiceAnalysisSettingsUI();
 
 ensureResetCacheButton();
 ensureSplitClearButtons();
