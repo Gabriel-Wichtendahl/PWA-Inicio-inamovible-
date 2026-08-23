@@ -130,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II34";
+const APP_BUILD_VERSION = "v113.33-II35";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -621,6 +621,126 @@ function sampleVoiceAnalysisTimeline(force = false) {
     timeline.push(sample);
   }
 }
+function hasVoiceAnalysisSyncTimeline(record) {
+  return !!(record && Array.isArray(record.timeline) && record.timeline.length >= 1);
+}
+function getVoiceAnalysisTimelineSamples(record) {
+  if (hasVoiceAnalysisSyncTimeline(record)) {
+    return record.timeline
+      .map((row) => ({
+        audioMs: Math.max(0, Number(row?.audioMs || 0)),
+        signalMs: Math.max(0, Number(row?.signalMs || 0)),
+      }))
+      .filter((row) => Number.isFinite(row.audioMs) && Number.isFinite(row.signalMs))
+      .sort((a, b) => a.audioMs - b.audioMs);
+  }
+  const startMs = Math.max(0, Number(record?.visualStartElapsedMs ?? record?.signalStartElapsedMs ?? 0));
+  const durationMs = Math.max(0, Number(record?.durationMs || 0));
+  return [
+    { audioMs: 0, signalMs: startMs },
+    { audioMs: durationMs, signalMs: startMs + durationMs },
+  ];
+}
+function getVoiceAnalysisSignalMsAtAudioMs(record, audioMs) {
+  const samples = getVoiceAnalysisTimelineSamples(record);
+  if (!samples.length) return 0;
+  const target = Math.max(0, Number(audioMs || 0));
+  if (samples.length === 1) return samples[0].signalMs;
+  if (target <= samples[0].audioMs) {
+    const a = samples[0];
+    const b = samples[1];
+    const span = Math.max(1, b.audioMs - a.audioMs);
+    return a.signalMs + ((target - a.audioMs) / span) * (b.signalMs - a.signalMs);
+  }
+  for (let i = 1; i < samples.length; i += 1) {
+    const prev = samples[i - 1];
+    const next = samples[i];
+    if (target <= next.audioMs) {
+      const span = Math.max(1, next.audioMs - prev.audioMs);
+      const ratio = (target - prev.audioMs) / span;
+      return prev.signalMs + ratio * (next.signalMs - prev.signalMs);
+    }
+  }
+  const last = samples[samples.length - 1];
+  const prev = samples[samples.length - 2] || last;
+  const span = Math.max(1, last.audioMs - prev.audioMs);
+  const slope = (last.signalMs - prev.signalMs) / span;
+  return last.signalMs + Math.max(0, target - last.audioMs) * slope;
+}
+function getVoiceAnalysisAudioMsAtSignalMs(record, signalMs) {
+  const samples = getVoiceAnalysisTimelineSamples(record)
+    .slice()
+    .sort((a, b) => a.signalMs - b.signalMs || a.audioMs - b.audioMs);
+  if (!samples.length) return 0;
+  const target = Math.max(0, Number(signalMs || 0));
+  if (samples.length === 1) return samples[0].audioMs;
+  if (target <= samples[0].signalMs) {
+    const a = samples[0];
+    const b = samples[1];
+    const span = Math.max(1, b.signalMs - a.signalMs);
+    return a.audioMs + ((target - a.signalMs) / span) * (b.audioMs - a.audioMs);
+  }
+  for (let i = 1; i < samples.length; i += 1) {
+    const prev = samples[i - 1];
+    const next = samples[i];
+    if (target <= next.signalMs) {
+      const span = Math.max(1, next.signalMs - prev.signalMs);
+      const ratio = (target - prev.signalMs) / span;
+      return prev.audioMs + ratio * (next.audioMs - prev.audioMs);
+    }
+  }
+  const last = samples[samples.length - 1];
+  const prev = samples[samples.length - 2] || last;
+  const span = Math.max(1, last.signalMs - prev.signalMs);
+  const slope = (last.audioMs - prev.audioMs) / span;
+  return last.audioMs + Math.max(0, target - last.signalMs) * slope;
+}
+function isVoiceAnalysisSyncActive() {
+  return !!(modalReplayState?.open && modalReplayState?.controlledByAudio && voiceAnalysisAudio && voiceAnalysisCurrentRecord && getVoiceAnalysisSignalId(modalCurrentItem) === String(voiceAnalysisCurrentRecord.signalId || ""));
+}
+function syncModalReplayToVoiceAudio(forceDraw = false) {
+  if (!isVoiceAnalysisSyncActive()) return false;
+  const audioMs = Math.max(0, (Number(voiceAnalysisAudio.currentTime) || 0) * 1000);
+  const signalMs = Math.max(0, Math.min(60000, getVoiceAnalysisSignalMsAtAudioMs(voiceAnalysisCurrentRecord, audioMs)));
+  modalReplayState.currentMs = signalMs;
+  modalReplayState.playing = !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended;
+  modalReplayState.autoCatchUp = false;
+  modalReplayState.liveFollow = false;
+  modalReplayState.speed = 1;
+  modalReplayState.lastFrameTs = 0;
+  if (forceDraw) drawModalReplayFrame();
+  return true;
+}
+function startVoiceAnalysisPlaybackSync(record = voiceAnalysisCurrentRecord) {
+  if (!record || !modalCurrentItem) return false;
+  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
+  if (!signalId || String(record.signalId || "") !== signalId) return false;
+  const currentAudioMs = Math.max(0, (Number(voiceAnalysisAudio?.currentTime) || 0) * 1000);
+  openModalReplay({
+    source: "voice_sync",
+    speed: 1,
+    currentMs: getVoiceAnalysisSignalMsAtAudioMs(record, currentAudioMs),
+    controlledByAudio: true,
+  });
+  syncModalReplayToVoiceAudio(true);
+  return true;
+}
+function stopVoiceAnalysisPlaybackSync({ keepOpen = true } = {}) {
+  if (!modalReplayState?.controlledByAudio) return;
+  modalReplayState.controlledByAudio = false;
+  modalReplayState.autoCatchUp = false;
+  modalReplayState.liveFollow = false;
+  modalReplayState.lastFrameTs = 0;
+  modalReplayState.playing = false;
+  if (!keepOpen && modalReplayState.open && String(modalReplayState.source || "") === "voice_sync") {
+    closeModalReplay();
+    return;
+  }
+  if (modalReplayState.open) {
+    drawModalReplayFrame();
+    updateModalReplayControlsUI();
+  }
+}
 function releaseVoiceAnalysisObjectUrl() {
   if (voiceAnalysisAudio) {
     try { voiceAnalysisAudio.pause(); } catch {}
@@ -635,6 +755,7 @@ function stopVoiceAnalysisPlayback() {
   if (voiceAnalysisAudio) {
     try { voiceAnalysisAudio.pause(); voiceAnalysisAudio.currentTime = 0; } catch {}
   }
+  if (modalReplayState?.controlledByAudio) stopVoiceAnalysisPlaybackSync({ keepOpen: true });
   updateVoiceAnalysisUI();
 }
 function cleanupVoiceAnalysisStream() {
@@ -695,10 +816,11 @@ function updateVoiceAnalysisUI() {
   playBtn.textContent = playing ? "⏸" : "▶";
   playBtn.title = playing ? "Pausar análisis" : "Reproducir análisis grabado";
   const startMs = Number(rec.visualStartElapsedMs ?? rec.signalStartElapsedMs ?? 0);
+  const syncLabel = hasVoiceAnalysisSyncTimeline(rec) ? " · SYNC" : "";
   if (playing && voiceAnalysisAudio) {
-    metaEl.textContent = `${formatVoiceDuration(voiceAnalysisAudio.currentTime * 1000)}/${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}`;
+    metaEl.textContent = `${formatVoiceDuration(voiceAnalysisAudio.currentTime * 1000)}/${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}${syncLabel}`;
   } else {
-    metaEl.textContent = `${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}`;
+    metaEl.textContent = `${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}${syncLabel}`;
   }
 }
 async function loadVoiceAnalysisForModal(item = modalCurrentItem) {
@@ -888,6 +1010,10 @@ async function toggleVoiceAnalysisPlayback() {
   if (!rec?.blob || String(rec.signalId || "") !== signalId) return;
   if (voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended) {
     try { voiceAnalysisAudio.pause(); } catch {}
+    if (modalReplayState?.controlledByAudio) {
+      syncModalReplayToVoiceAudio(true);
+      stopVoiceAnalysisPlaybackSync({ keepOpen: true });
+    }
     updateVoiceAnalysisUI();
     return;
   }
@@ -896,18 +1022,36 @@ async function toggleVoiceAnalysisPlayback() {
     voiceAnalysisObjectUrl = URL.createObjectURL(rec.blob);
     voiceAnalysisAudio = new Audio(voiceAnalysisObjectUrl);
     voiceAnalysisAudio.preload = "metadata";
-    voiceAnalysisAudio.ontimeupdate = () => updateVoiceAnalysisUI();
-    voiceAnalysisAudio.onplay = () => updateVoiceAnalysisUI();
-    voiceAnalysisAudio.onpause = () => updateVoiceAnalysisUI();
+    voiceAnalysisAudio.ontimeupdate = () => {
+      if (modalReplayState?.controlledByAudio) syncModalReplayToVoiceAudio(true);
+      updateVoiceAnalysisUI();
+    };
+    voiceAnalysisAudio.onplay = () => {
+      startVoiceAnalysisPlaybackSync(rec);
+      updateVoiceAnalysisUI();
+    };
+    voiceAnalysisAudio.onpause = () => {
+      if (modalReplayState?.controlledByAudio) {
+        syncModalReplayToVoiceAudio(true);
+        stopVoiceAnalysisPlaybackSync({ keepOpen: true });
+      }
+      updateVoiceAnalysisUI();
+    };
     voiceAnalysisAudio.onended = () => {
       try { voiceAnalysisAudio.currentTime = 0; } catch {}
+      if (modalReplayState?.controlledByAudio) {
+        syncModalReplayToVoiceAudio(true);
+        stopVoiceAnalysisPlaybackSync({ keepOpen: true });
+      }
       updateVoiceAnalysisUI();
     };
     voiceAnalysisAudio.onerror = () => toast("🎙️ No pude reproducir este audio.", 2000);
   }
   try {
+    startVoiceAnalysisPlaybackSync(rec);
     await voiceAnalysisAudio.play();
     updateVoiceAnalysisUI();
+    if (hasVoiceAnalysisSyncTimeline(rec)) toast("🎙️ Audio + replay sincronizados", 900);
   } catch {
     toast("🎙️ Tocá ▶ nuevamente para reproducir.", 1500);
   }
@@ -3682,6 +3826,7 @@ let modalReplayState = {
   source: "manual",
   autoCatchUp: false,
   liveFollow: false,
+  controlledByAudio: false,
   itemId: "",
   liveToastShown: false,
 };
@@ -17681,6 +17826,10 @@ function ensureModalReplayBox() {
   if (closeBtn) closeBtn.onclick = (e) => { e.stopPropagation(); closeModalReplay(); };
   if (playBtn) playBtn.onclick = (e) => {
     e.stopPropagation();
+    if (modalReplayState.controlledByAudio) {
+      void toggleVoiceAnalysisPlayback();
+      return;
+    }
     disableModalReplayAutoFollow("manual_play");
     modalReplayState.playing = !modalReplayState.playing;
     modalReplayState.lastFrameTs = 0;
@@ -17690,6 +17839,12 @@ function ensureModalReplayBox() {
   };
   if (resetBtn) resetBtn.onclick = (e) => {
     e.stopPropagation();
+    if (modalReplayState.controlledByAudio && voiceAnalysisAudio && voiceAnalysisCurrentRecord) {
+      try { voiceAnalysisAudio.currentTime = 0; } catch {}
+      syncModalReplayToVoiceAudio(true);
+      updateVoiceAnalysisUI();
+      return;
+    }
     disableModalReplayAutoFollow("manual_reset");
     modalReplayState.currentMs = 0;
     modalReplayState.lastFrameTs = 0;
@@ -17699,6 +17854,10 @@ function ensureModalReplayBox() {
   };
   if (speedBtn) speedBtn.onclick = (e) => {
     e.stopPropagation();
+    if (modalReplayState.controlledByAudio) {
+      toast("🎙️ Replay sincronizado con el audio", 900);
+      return;
+    }
     disableModalReplayAutoFollow("manual_speed");
     const speeds = [1, 2, 4];
     const idx = speeds.indexOf(Number(modalReplayState.speed || 1));
@@ -17707,8 +17866,15 @@ function ensureModalReplayBox() {
   };
   if (seek) seek.oninput = (e) => {
     e.stopPropagation();
+    const nextMs = Math.max(0, Math.min(60000, Number(seek.value) || 0));
+    if (modalReplayState.controlledByAudio && voiceAnalysisAudio && voiceAnalysisCurrentRecord) {
+      try { voiceAnalysisAudio.currentTime = Math.max(0, getVoiceAnalysisAudioMsAtSignalMs(voiceAnalysisCurrentRecord, nextMs) / 1000); } catch {}
+      syncModalReplayToVoiceAudio(true);
+      updateVoiceAnalysisUI();
+      return;
+    }
     disableModalReplayAutoFollow("manual_seek");
-    modalReplayState.currentMs = Math.max(0, Math.min(60000, Number(seek.value) || 0));
+    modalReplayState.currentMs = nextMs;
     modalReplayState.lastFrameTs = 0;
     drawModalReplayFrame();
   };
@@ -17721,12 +17887,21 @@ function updateModalReplayControlsUI() {
   const playBtn = box.querySelector("#modalReplayPlayBtn");
   const speedBtn = box.querySelector("#modalReplaySpeedBtn");
   const seek = box.querySelector("#modalReplaySeek");
+  const syncMode = !!modalReplayState.controlledByAudio;
   if (playBtn) {
-    playBtn.textContent = modalReplayState.playing ? "⏸️" : "▶️";
-    playBtn.classList.toggle("active", !!modalReplayState.playing);
+    const isPlaying = syncMode ? (!!voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended) : !!modalReplayState.playing;
+    playBtn.textContent = isPlaying ? "⏸️" : "▶️";
+    playBtn.classList.toggle("active", !!isPlaying);
+    playBtn.title = syncMode ? "Reproducir o pausar el audio sincronizado" : "Reproducir o pausar replay";
   }
-  if (speedBtn) speedBtn.textContent = modalReplayState.liveFollow ? "LIVE 1x" : `${Number(modalReplayState.speed || 1)}x`;
-  if (seek) seek.value = String(Math.max(0, Math.min(60000, Number(modalReplayState.currentMs || 0))));
+  if (speedBtn) {
+    speedBtn.textContent = syncMode ? "🎙️ SYNC" : (modalReplayState.liveFollow ? "LIVE 1x" : `${Number(modalReplayState.speed || 1)}x`);
+    speedBtn.title = syncMode ? "El tiempo del replay lo controla el audio" : "Cambiar velocidad del replay";
+  }
+  if (seek) {
+    seek.value = String(Math.max(0, Math.min(60000, Number(modalReplayState.currentMs || 0))));
+    seek.title = syncMode ? "Deslizar para buscar dentro del audio sincronizado" : "Deslizar para moverse dentro del replay";
+  }
 }
 function openModalReplay(options = {}) {
   if (!modalCurrentItem) return;
@@ -17746,8 +17921,9 @@ function openModalReplay(options = {}) {
   modalReplayState.currentMs = Math.max(0, Math.min(60000, Number(options.currentMs || 0)));
   modalReplayState.lastFrameTs = 0;
   modalReplayState.source = source;
-  modalReplayState.autoCatchUp = autoCatchUp;
+  modalReplayState.autoCatchUp = autoCatchUp && !options.controlledByAudio;
   modalReplayState.liveFollow = false;
+  modalReplayState.controlledByAudio = !!options.controlledByAudio;
   modalReplayState.itemId = String(modalCurrentItem.id || "");
   modalReplayState.liveToastShown = false;
   updateModalReplayControlsUI();
@@ -17759,6 +17935,7 @@ function closeModalReplay() {
   modalReplayState.lastFrameTs = 0;
   modalReplayState.autoCatchUp = false;
   modalReplayState.liveFollow = false;
+  modalReplayState.controlledByAudio = false;
   modalReplayState.source = "manual";
   modalReplayState.itemId = "";
   modalReplayState.liveToastShown = false;
@@ -17779,7 +17956,9 @@ function modalReplayLoop(ts) {
     return;
   }
 
-  if (modalReplayState.liveFollow) {
+  if (modalReplayState.controlledByAudio) {
+    syncModalReplayToVoiceAudio(false);
+  } else if (modalReplayState.liveFollow) {
     // II25: una vez alcanzado el vivo no seguimos con un cronómetro independiente.
     // Seguimos el ms real de la ventana anclada; así cada nuevo tick aparece a 1x
     // y nunca hay deriva entre Replay y mercado.
