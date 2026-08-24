@@ -1,4 +1,4 @@
-// v113.33-II38: agrega flecha discreta en capturas de estudio impresas sin resultado para indicar la dirección real de los siguientes 60s.
+// v113.33-II39: impresión masiva robusta con progreso visible y sin consultas históricas innecesarias al imprimir sin resultado.
 // Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
@@ -130,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II38";
+const APP_BUILD_VERSION = "v113.33-II39";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -1911,7 +1911,10 @@ async function generateStudyPrintDataUrl(item, { showResult = true } = {}) {
     }
   }
   const timeline = getStudyCaptureTimeline(sourceItem);
-  const exactTicks = await fetchStudyCaptureExactTicks(sourceItem, timeline);
+  // II39: si el resultado está oculto, la hoja solo dibuja 0–60s. Esos ticks
+  // ya forman parte de la señal guardada, así que pedir ticks_history otra vez
+  // agrega hasta 7s de espera por operación sin aportar nada visible.
+  const exactTicks = showResult ? await fetchStudyCaptureExactTicks(sourceItem, timeline) : [];
   const canvas = document.createElement("canvas");
   canvas.width = 1600;
   canvas.height = 960;
@@ -2038,6 +2041,34 @@ function buildStudyPrintDocumentHtml(records, { showResult = true } = {}) {
     @media screen { body { max-width: 210mm; margin: 0 auto; padding: 7mm; } .sheet { border-bottom: 1px dashed #aaa; } }
   </style></head><body data-show-result="${showResult ? "1" : "0"}">${sheets.join("")}</body></html>`;
 }
+function writeStudyPrintProgress(printWin, { done = 0, total = 1, status = "Preparando capturas…", failed = 0 } = {}) {
+  if (!printWin || printWin.closed) return;
+  const pct = Math.max(0, Math.min(100, Math.round((Number(done || 0) / Math.max(1, Number(total || 1))) * 100)));
+  try {
+    const doc = printWin.document;
+    const countEl = doc.getElementById("studyPrintProgressCount");
+    const pctEl = doc.getElementById("studyPrintProgressPct");
+    const fillEl = doc.getElementById("studyPrintProgressFill");
+    const statusEl = doc.getElementById("studyPrintProgressStatus");
+    const failedEl = doc.getElementById("studyPrintProgressFailed");
+    if (countEl) countEl.textContent = `${done} de ${total}`;
+    if (pctEl) pctEl.textContent = `${pct}%`;
+    if (fillEl) fillEl.style.width = `${pct}%`;
+    if (statusEl) statusEl.textContent = status;
+    if (failedEl) {
+      failedEl.textContent = failed ? `${failed} captura${failed === 1 ? "" : "s"} con error; se continuará con las demás.` : "";
+      failedEl.style.display = failed ? "block" : "none";
+    }
+  } catch {}
+}
+function getStudyPrintProgressHtml(total) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Preparando bitácora</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+    *{box-sizing:border-box} body{margin:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif;padding:24px}
+    .prep{max-width:560px;margin:12px auto}.title{font-size:18px;font-weight:800;margin-bottom:8px}.sub{font-size:13px;color:#555;margin-bottom:20px}
+    .row{display:flex;justify-content:space-between;gap:12px;font-weight:800;margin-bottom:8px}.track{height:14px;background:#e5e7eb;border-radius:999px;overflow:hidden;border:1px solid #d1d5db}
+    .fill{height:100%;width:0;background:#111827;transition:width .18s ease}.status{font-size:13px;margin-top:12px;color:#444}.failed{font-size:12px;color:#8a3b12;margin-top:9px;display:none}
+  </style></head><body><div class="prep"><div class="title">Preparando bitácora de estudio…</div><div class="sub">No cierres esta ventana. Las capturas se preparan una por una.</div><div class="row"><span id="studyPrintProgressCount">0 de ${total}</span><span id="studyPrintProgressPct">0%</span></div><div class="track"><div id="studyPrintProgressFill" class="fill"></div></div><div id="studyPrintProgressStatus" class="status">Iniciando…</div><div id="studyPrintProgressFailed" class="failed"></div></div></body></html>`;
+}
 async function printStudyItems(items, { showResult = getStudyPrintShowResultPreference() } = {}) {
   const list = (Array.isArray(items) ? items : [items]).filter(Boolean);
   if (!list.length) return false;
@@ -2048,15 +2079,41 @@ async function printStudyItems(items, { showResult = getStudyPrintShowResultPref
   }
   try {
     printWin.document.open();
-    printWin.document.write('<!doctype html><html><body style="font-family:Arial;padding:24px">Preparando bitácora de estudio…</body></html>');
+    printWin.document.write(getStudyPrintProgressHtml(list.length));
     printWin.document.close();
+    writeStudyPrintProgress(printWin, { done: 0, total: list.length, status: "Preparando primera captura…" });
+
     const records = [];
+    let failed = 0;
     for (let i = 0; i < list.length; i++) {
-      const rec = await generateStudyPrintDataUrl(list[i], { showResult: !!showResult });
-      if (rec?.dataUrl) records.push(rec);
-      if (i < list.length - 1) await sleep(80);
+      const number = i + 1;
+      writeStudyPrintProgress(printWin, {
+        done: i,
+        total: list.length,
+        failed,
+        status: `Generando captura ${number} de ${list.length}…`,
+      });
+      try {
+        const rec = await generateStudyPrintDataUrl(list[i], { showResult: !!showResult });
+        if (rec?.dataUrl) records.push(rec);
+        else failed += 1;
+      } catch (err) {
+        console.warn("[STUDY_PRINT_ITEM]", number, err);
+        failed += 1;
+      }
+      writeStudyPrintProgress(printWin, {
+        done: number,
+        total: list.length,
+        failed,
+        status: number < list.length ? `Captura ${number} lista · continuando…` : "Terminando el documento…",
+      });
+      // Cede el hilo para que Android pinte el porcentaje y no parezca congelado.
+      if (i < list.length - 1) await sleep(showResult ? 70 : 25);
     }
-    if (!records.length) throw new Error("Sin capturas listas");
+    if (!records.length) throw new Error("No se pudo generar ninguna captura");
+
+    writeStudyPrintProgress(printWin, { done: list.length, total: list.length, failed, status: "Armando páginas A4…" });
+    await sleep(60);
     const html = buildStudyPrintDocumentHtml(records, { showResult: !!showResult });
     printWin.document.open();
     printWin.document.write(html);
@@ -2064,12 +2121,20 @@ async function printStudyItems(items, { showResult = getStudyPrintShowResultPref
     const doPrint = () => {
       try { printWin.focus(); printWin.print(); } catch {}
     };
-    if (printWin.document.readyState === "complete") setTimeout(doPrint, 450);
-    else printWin.onload = () => setTimeout(doPrint, 350);
+    if (printWin.document.readyState === "complete") setTimeout(doPrint, 500);
+    else printWin.onload = () => setTimeout(doPrint, 400);
+    if (failed) toast(`🖨️ Bitácora lista · ${records.length}/${list.length} capturas · ${failed} omitida${failed === 1 ? "" : "s"}`, 2600);
     return true;
   } catch (err) {
-    try { printWin.close(); } catch {}
-    toast(`⚠️ No pude preparar la impresión${err?.message ? `: ${err.message}` : ""}`, 2200);
+    console.warn("[STUDY_PRINT]", err);
+    try {
+      if (printWin && !printWin.closed) {
+        printWin.document.open();
+        printWin.document.write(`<!doctype html><html><body style="font-family:Arial;padding:24px;color:#111"><h3>No se pudo preparar la bitácora</h3><p>${String(err?.message || "Error desconocido").replace(/[<>&]/g, "")}</p><p>Volvé a la PWA y probá nuevamente.</p></body></html>`);
+        printWin.document.close();
+      }
+    } catch {}
+    toast(`⚠️ No pude preparar la impresión${err?.message ? `: ${err.message}` : ""}`, 2600);
     return false;
   }
 }
@@ -2513,7 +2578,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_V113_33_II38_20260824";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_V113_33_II39_20260824";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -31290,7 +31355,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II38: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial.`;
+  const logicText = `Motor experimental V113.33-II39: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones.`;
 
   return {
     direction,
