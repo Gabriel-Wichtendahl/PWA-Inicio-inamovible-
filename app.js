@@ -1,4 +1,4 @@
-// v113.33-II34: II33 + grabación local de análisis por señal con audio de voz comprimido, reproducción, borrado, duración y timeline preparado para sincronización con Replay.
+// v113.33-II36: II35 + cola/handoff automático de señales pendientes al cerrar s65, con elegibilidad calculada para Auto Replay X2.
 // Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
@@ -130,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II35";
+const APP_BUILD_VERSION = "v113.33-II36";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -339,6 +339,12 @@ const AUTO_REPLAY_X2_SPEED = 2;
 let autoReplayX2OnSignal = true;
 let modalAutoReplayTimer = null;
 let modalAutoReplayToken = "";
+// II36: señales que nacen mientras otra conserva el foco quedan pendientes para
+// un handoff automático cuando la ventana PGP actual termina en s65.
+let modalSequentialHandoffTimer = null;
+let modalSequentialHandoffCurrentId = "";
+const pendingAutoReplaySignalIds = [];
+const AUTO_REPLAY_SEQUENTIAL_MIN_MARGIN_MS = 500;
 let activeTradingAccount = ACCOUNT_MODE_DEMO;
 let c100State = null;
 let c100PanelEl = null;
@@ -2484,7 +2490,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_V113_33_II34_20260820";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_V113_33_II36_20260824";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -8866,22 +8872,162 @@ function cancelModalAutoReplayX2() {
   modalAutoReplayTimer = null;
   modalAutoReplayToken = "";
 }
+function enqueuePendingAutoReplaySignal(item) {
+  const id = String(item?.id || "").trim();
+  if (!id) return;
+  if (!pendingAutoReplaySignalIds.includes(id)) pendingAutoReplaySignalIds.push(id);
+  // Si la señal que ocupa el modal ya pasó s65, no esperamos otro evento: se
+  // intenta el handoff inmediatamente con la nueva candidata.
+  if (modalCurrentItem && getSignalElapsedMsRaw(modalCurrentItem) > SIGNAL_LATE_ANALYSIS_END_MS) {
+    scheduleModalSequentialSignalHandoff(modalCurrentItem, 80);
+  }
+}
+function removePendingAutoReplaySignalId(id) {
+  const key = String(id || "");
+  let idx = pendingAutoReplaySignalIds.indexOf(key);
+  while (idx >= 0) {
+    pendingAutoReplaySignalIds.splice(idx, 1);
+    idx = pendingAutoReplaySignalIds.indexOf(key);
+  }
+}
+function getSequentialReplayFormationTargetMs(item) {
+  if (!item) return 30000;
+  const gp = item?.giroPolaridad || item?.snrLevel || {};
+  const candidates = [
+    Number(item.constructiveFormedAtMs),
+    Number(item.turnQualityValidatedAtMs),
+    Number(item.turnQualitySetupFormedAtMs),
+    Number(item.signalFromSec) * 1000,
+    Number(gp.constructiveFormedAtMs),
+    Number(gp.turnQualityValidatedAtMs),
+    Number(gp.turnQualitySetupFormedAtMs),
+    Number(gp.signalFromSec) * 1000,
+  ].filter((v) => Number.isFinite(v) && v > 0);
+  const blocks = Array.isArray(item?.giroPolaridad?.acceptedReductionBlocks)
+    ? item.giroPolaridad.acceptedReductionBlocks
+    : (Array.isArray(item?.acceptedReductionBlocks) ? item.acceptedReductionBlocks : []);
+  for (const block of blocks) {
+    const endMs = Number(block?.endMs);
+    if (Number.isFinite(endMs) && endMs > 0) candidates.push(endMs);
+  }
+  // Inicio Inamovible se confirma a más tardar en la gracia de s30. Si una
+  // señal vieja no trae metadata suficiente, usamos s30 como objetivo seguro.
+  if (!candidates.length) return 30000;
+  return Math.max(1000, Math.min(30000, Math.max(...candidates)));
+}
+function getSequentialAutoReplayEligibility(item, nowMs = serverNowMs()) {
+  if (!autoOpenChartOnSignal || !autoReplayX2OnSignal || !item) return { ok: false, reason: "settings_off" };
+  const elapsedMs = getSignalElapsedMsRaw(item, nowMs);
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs >= SIGNAL_LATE_ANALYSIS_END_MS) {
+    return { ok: false, reason: "analysis_closed", elapsedMs };
+  }
+  if (!isItemLiveMinute(item)) return { ok: false, reason: "not_live", elapsedMs };
+  const targetMs = getSequentialReplayFormationTargetMs(item);
+  const remainingRealMs = Math.max(0, SIGNAL_LATE_ANALYSIS_END_MS - elapsedMs - AUTO_REPLAY_SEQUENTIAL_MIN_MARGIN_MS);
+  const visualReachMs = remainingRealMs * AUTO_REPLAY_X2_SPEED;
+  return {
+    ok: visualReachMs >= targetMs,
+    reason: visualReachMs >= targetMs ? "enough_time_to_replay_formation" : "not_enough_replay_time",
+    elapsedMs,
+    targetMs,
+    remainingRealMs,
+    visualReachMs,
+  };
+}
+function getNextPendingAutoReplaySignal() {
+  if (!pendingAutoReplaySignalIds.length) return null;
+  const now = serverNowMs();
+  const currentId = String(modalCurrentItem?.id || "");
+  let chosen = null;
+  const keep = [];
+  for (const id of pendingAutoReplaySignalIds) {
+    if (!id || id === currentId) continue;
+    const item = history.find((x) => String(x?.id || "") === String(id));
+    if (!item) continue;
+    const eligibility = getSequentialAutoReplayEligibility(item, now);
+    if (!eligibility.ok) {
+      // Una señal con ventana ya cerrada o que ya no puede llegar a su formación
+      // antes de s65 no tiene utilidad para este handoff automático.
+      if (eligibility.reason === "settings_off") keep.push(id);
+      continue;
+    }
+    if (!chosen) chosen = { item, eligibility };
+    else keep.push(id);
+  }
+  pendingAutoReplaySignalIds.length = 0;
+  pendingAutoReplaySignalIds.push(...keep);
+  return chosen;
+}
+function cancelModalSequentialSignalHandoff() {
+  if (modalSequentialHandoffTimer) clearTimeout(modalSequentialHandoffTimer);
+  modalSequentialHandoffTimer = null;
+  modalSequentialHandoffCurrentId = "";
+}
+function scheduleModalSequentialSignalHandoff(item = modalCurrentItem, explicitDelayMs = null) {
+  if (!item || !autoOpenChartOnSignal || !autoReplayX2OnSignal) return;
+  const id = String(item.id || "");
+  if (!id) return;
+  if (!(item.signalFloatingWindow || isFloatingSignalItem(item))) return;
+  cancelModalSequentialSignalHandoff();
+  modalSequentialHandoffCurrentId = id;
+  const elapsed = getSignalElapsedMsRaw(item);
+  const delay = Number.isFinite(Number(explicitDelayMs))
+    ? Math.max(50, Number(explicitDelayMs))
+    : Math.max(80, SIGNAL_LATE_ANALYSIS_END_MS - elapsed + 90);
+  modalSequentialHandoffTimer = setTimeout(() => {
+    modalSequentialHandoffTimer = null;
+    tryModalSequentialSignalHandoff(id);
+  }, delay);
+}
+function tryModalSequentialSignalHandoff(expectedCurrentId = modalSequentialHandoffCurrentId) {
+  if (!autoOpenChartOnSignal || !autoReplayX2OnSignal) return false;
+  if (!chartModal || chartModal.classList.contains("hidden") || !modalCurrentItem) return false;
+  const currentId = String(modalCurrentItem.id || "");
+  if (expectedCurrentId && currentId !== String(expectedCurrentId)) return false;
+  const elapsed = getSignalElapsedMsRaw(modalCurrentItem);
+  if (elapsed <= SIGNAL_LATE_ANALYSIS_END_MS) {
+    scheduleModalSequentialSignalHandoff(modalCurrentItem);
+    return false;
+  }
+  // No interrumpimos una explicación que todavía se está grabando ni una
+  // revisión de audio ya en curso. Se reintenta brevemente; si la candidata
+  // deja de ser útil, se descarta sola por la regla temporal de arriba.
+  const recordingHere = !!voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId === currentId;
+  const audioPlaying = !!voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended;
+  if (recordingHere || audioPlaying) {
+    scheduleModalSequentialSignalHandoff(modalCurrentItem, 400);
+    return false;
+  }
+  const next = getNextPendingAutoReplaySignal();
+  if (!next?.item) return false;
+  removePendingAutoReplaySignalId(next.item.id);
+  setActiveView("signals");
+  openChartModal(next.item, {
+    source: "signals",
+    signalId: next.item.id || "",
+    autoReplayReason: "sequential_handoff",
+  });
+  toast(`⏭️ Siguiente señal · Replay X2 · quedan ${Math.max(0, Math.ceil((SIGNAL_LATE_ANALYSIS_END_MS - next.eligibility.elapsedMs) / 1000))}s de análisis`, 1800);
+  return true;
+}
 function getModalAutoReplayToken(item = modalCurrentItem) {
   if (!item) return "";
   return `${String(item.id || "")}|${String(item.symbol || "")}|${Number(item.minute) || 0}|${String(modalOpenContext?.source || "")}`;
 }
-function isModalAutoReplayEligible(item = modalCurrentItem) {
+function isModalAutoReplayEligible(item = modalCurrentItem, reason = "open") {
   if (!autoReplayX2OnSignal) return false;
   if (!item || !chartModal || chartModal.classList.contains("hidden")) return false;
   if (modalReplayState?.open) return false;
   if (!isItemLiveMinute(item)) return false;
   const ms = getSignalConfirmationMs(item);
-  // Solo se usa mientras la señal sigue en su ventana viva; no depende ya de esperar a s28.
+  if (reason === "sequential_handoff") return !!getSequentialAutoReplayEligibility(item).ok;
+  // Apertura normal: conserva el margen histórico. El handoff II36 tiene su
+  // propia regla, basada en poder reproducir la formación antes de s65.
   return ms >= 0 && ms <= 36000;
 }
 function scheduleModalAutoReplayX2(item = modalCurrentItem, reason = "open") {
   cancelModalAutoReplayX2();
-  if (!isModalAutoReplayEligible(item)) return;
+  if (!isModalAutoReplayEligible(item, reason)) return;
   const token = getModalAutoReplayToken(item);
   if (!token) return;
 
@@ -8905,7 +9051,10 @@ function runModalAutoReplayX2(token, reason = "timer") {
     scheduleModalAutoReplayX2(modalCurrentItem, "early_retry");
     return;
   }
-  if (ms > 36000 || modalReplayState?.open) return;
+  if (modalReplayState?.open) return;
+  if (reason === "sequential_handoff") {
+    if (!getSequentialAutoReplayEligibility(modalCurrentItem).ok) return;
+  } else if (ms > 36000) return;
 
   if (modalChartView !== "candles1m") setModalChartView("candles1m");
   openModalReplay({ speed: AUTO_REPLAY_X2_SPEED, source: "auto_x2" });
@@ -19620,6 +19769,7 @@ function openChartModal(item, opts = {}) {
   stopVoiceAnalysisPlayback();
   releaseVoiceAnalysisObjectUrl();
   modalCurrentItem = item;
+  removePendingAutoReplaySignalId(item?.id || "");
   modalOpenContext = normalizeModalContext(opts, item);
   if (!chartModal || !modalTitle || !modalSub) return;
 
@@ -19665,10 +19815,12 @@ updateModalFooterReadingUI();
   bindVoiceAnalysisControls();
   void loadVoiceAnalysisForModal(modalCurrentItem);
   requestModalDraw(true);
-  scheduleModalAutoReplayX2(modalCurrentItem, "open_modal");
+  scheduleModalAutoReplayX2(modalCurrentItem, String(opts.autoReplayReason || "open_modal"));
+  scheduleModalSequentialSignalHandoff(modalCurrentItem);
 }
 function closeChartModal() {
   cancelModalAutoReplayX2();
+  cancelModalSequentialSignalHandoff();
   closeModalReplay();
   if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") stopVoiceAnalysisRecording({ silent: true });
   stopVoiceAnalysisPlayback();
@@ -31074,7 +31226,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II34: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE para permitir sincronización futura sin rehacer los audios.`;
+  const logicText = `Motor experimental V113.33-II36: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65.`;
 
   return {
     direction,
@@ -32391,7 +32543,8 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
       } catch {}
     });
   } else if (autoOpenBlockedByCurrentAnalysis) {
-    toast(`📈 Nueva señal ${symbol} ${labelDir(direction)} guardada · el gráfico actual queda fijado hasta cerrarlo`, 2600);
+    enqueuePendingAutoReplaySignal(item);
+    toast(`📈 Nueva señal ${symbol} ${labelDir(direction)} guardada · queda en espera hasta que cierre s65`, 2600);
   }
 
   return item;
