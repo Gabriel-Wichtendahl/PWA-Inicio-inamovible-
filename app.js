@@ -1,4 +1,4 @@
-// v113.33-II40: simulador defensivo No Touch en paralelo, basado en nivel fuerte cercano, sin comprar el segundo contrato.
+// v113.33-II43: II42 corregida: estima/mide el payout de la barrera MAX s120 mediante curva de cotizaciones virtuales post-entrada.
 // Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
@@ -130,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II40";
+const APP_BUILD_VERSION = "v113.33-II43";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -297,6 +297,15 @@ const ENTRY_TIMING_AUTO58_DURATION_1M = "AUTO58_DURATION_1M";
 const ENTRY_TIMING_FORCE_SECOND_60 = true;
 let entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
 const AUTO_TARGET_RETURN_PCT = 130; // ganancia neta objetivo sobre el stake: (payout - stake) / stake × 100.
+// II43: curva virtual de payout para estimar cuánto habría pagado la barrera MAX s120.
+// Se cotiza después del buy real y NUNCA se compra ninguna de estas propuestas.
+const MAX_BARRIER_PAYOUT_CURVE_VERSION = "MAX_BARRIER_PAYOUT_CURVE_V1";
+const MAX_BARRIER_PAYOUT_CALIBRATION_MULTIPLIERS = [1.35, 1.75, 2.5, 4.0];
+const MAX_BARRIER_PAYOUT_CALIBRATION_START_DELAY_MS = 3200;
+const MAX_BARRIER_PAYOUT_CALIBRATION_BETWEEN_MS = 380;
+const MAX_BARRIER_PAYOUT_CALIBRATION_TIMEOUT_MS = 4500;
+const MAX_BARRIER_PAYOUT_CALIBRATION_MIN_REMAIN_MS = 12000;
+const maxBarrierPayoutCalibrationInFlight = new Set();
 const HIGHLOW_TARGET_PAYOUT_TOTAL_PCT = 100 + AUTO_TARGET_RETURN_PCT; // 230% total = stake + 130% de ganancia.
 const HIGHLOW_TARGET_TOLERANCE_PCT = 2;
 const HIGHLOW_TARGET_ACCEPT_MIN_PCT = 225; // 125% de ganancia neta.
@@ -2870,6 +2879,595 @@ function scheduleVirtualNoTouchRecovery() {
 }
 
 /* =========================
+   II41 · Barrera máxima ganadora s120
+   - Backtest retrospectivo: NO cambia la barrera real ni compra nada.
+   - Usa el precio real de entrada y el cierre canónico ancla+s120.
+   - Calcula la barrera relativa más lejana representable que todavía habría ganado.
+========================= */
+function isHighLowTradeForMaxBarrierStudy(item) {
+  const trade = item?.trade || {};
+  const mode = `${String(trade.exec_mode || "")} ${String(trade.contract_type || "")} ${String(trade.api_contract_type || "")}`.toUpperCase();
+  if (mode.includes("HIGHLOW") || mode.includes("HIGHER") || mode.includes("LOWER")) return true;
+  const barrierText = String(trade.barrier || "").trim();
+  return /^[-+]\d/.test(barrierText);
+}
+function getMaxBarrierStudySide(item) {
+  const tradeSide = normalizeSignalConfirmationSide(item?.trade?.side);
+  if (tradeSide) return tradeSide;
+  return normalizeSignalConfirmationSide(item?.direction);
+}
+function getMaxBarrierStudyEntryQuote(item) {
+  const trade = item?.trade || {};
+  const direct = [
+    trade.entry_spot,
+    trade.entry_reference_quote,
+    trade.entry_tick,
+    trade.proposal_spot,
+    trade.late_entry_trigger_price,
+  ];
+  for (const raw of direct) {
+    const q = Number(raw);
+    if (Number.isFinite(q) && q > 0) return { quote: q, source: raw === trade.entry_spot ? "trade_entry_spot" : "trade_entry_fallback" };
+  }
+  try {
+    const timeline = getStudyCaptureTimeline(item);
+    const entryMs = Number(timeline?.entryMs);
+    const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
+    const q = Number.isFinite(entryMs) ? studyNearestQuoteAtMs(ticks, entryMs, 3500) : null;
+    if (Number.isFinite(Number(q)) && Number(q) > 0) return { quote: Number(q), source: "saved_tick_near_entry" };
+  } catch {}
+  return { quote: null, source: "missing" };
+}
+function getMaxBarrierStudyClose120Quote(item) {
+  try {
+    if (isFloatingSignalItem(item)) syncCanonicalSignal60FromStoredTicks(item);
+  } catch {}
+  const r = item?.signalResult60 || {};
+  const canonical = Number(r?.endQuote);
+  if (Number.isFinite(canonical) && canonical > 0 && normalizeSignalResult60Outcome(r?.outcome)) {
+    return { quote: canonical, source: "signal_result_s120", epochMs: Number(r?.endEpochMs || r?.deadlineEpochMs || 0) || null };
+  }
+
+  // Fallback únicamente si el cierre real del contrato está alineado con ancla+s120.
+  try {
+    const trade = item?.trade || {};
+    const anchor = Number(getStudyCaptureAnchorEpochMs(item) || 0);
+    const expected = anchor > 0 ? anchor + 120000 : 0;
+    const exitEpoch = studyEpochMs(trade.exit_spot_time ?? trade.expiry_time ?? trade.sold_time);
+    const exitQuote = Number(trade.exit_spot);
+    if (Number.isFinite(exitQuote) && exitQuote > 0 && expected > 0 && Number.isFinite(exitEpoch) && Math.abs(exitEpoch - expected) <= 5000) {
+      return { quote: exitQuote, source: "contract_exit_aligned_s120", epochMs: exitEpoch };
+    }
+  } catch {}
+  return { quote: null, source: "pending" };
+}
+function getMaxBarrierStudyPrecision(item) {
+  const symbol = String(item?.symbol || item?.trade?.symbol || "");
+  let requested = null;
+  try {
+    const parsed = parseRelativeBarrierString(item?.trade?.barrier);
+    if (parsed && Number.isFinite(Number(parsed.precision))) requested = Number(parsed.precision);
+  } catch {}
+  return getHighLowEffectiveBarrierPrecision(symbol, requested);
+}
+function getMaxSafeBarrierDistanceStrict(favorableMove, step) {
+  const move = Number(favorableMove);
+  const unit = Number(step);
+  if (!Number.isFinite(move) || !Number.isFinite(unit) || move <= 0 || unit <= 0) return 0;
+  let ratio = move / unit;
+  const nearest = Math.round(ratio);
+  if (Math.abs(ratio - nearest) < 1e-7) ratio = nearest;
+  const steps = Math.max(0, Math.ceil(ratio) - 1); // estrictamente dentro del cierre, no igual.
+  return steps * unit;
+}
+function formatMaxBarrierDistance(symbol, value, { signedSide = "" } = {}) {
+  const precision = getHighLowEffectiveBarrierPrecision(symbol);
+  const n = Math.max(0, Number(value || 0));
+  const body = n.toFixed(precision);
+  if (signedSide === "CALL") return `+${body}`;
+  if (signedSide === "PUT") return `-${body}`;
+  return body;
+}
+function getMaxBarrierStudyUsedNetProfitPct(item) {
+  const trade = item?.trade || {};
+  const candidates = [
+    [trade.payout_pct, "trade_payout_pct"],
+    [trade.actual_return_pct, "trade_actual_return_pct"],
+    [Number.isFinite(Number(trade.payout_total_pct)) ? Number(trade.payout_total_pct) - 100 : null, "trade_payout_total_pct"],
+  ];
+  for (const [value, source] of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return { pct: n, source, exact: true };
+  }
+  const buy = Number(trade.buy_price);
+  const payout = Number(trade.payout);
+  if (Number.isFinite(buy) && buy > 0 && Number.isFinite(payout) && payout > buy) {
+    return { pct: ((payout - buy) / buy) * 100, source: "buy_price_payout", exact: true };
+  }
+  const target = Number(trade.target_profit_pct ?? item?.signalAutoEntry?.target_profit_pct ?? AUTO_TARGET_RETURN_PCT);
+  if (Number.isFinite(target) && target > 0) return { pct: target, source: "strategy_target", exact: false };
+  return { pct: null, source: "missing", exact: false };
+}
+function getMaxBarrierPayoutCurveState(item) {
+  const tradeCurve = item?.trade?.max_barrier_payout_curve;
+  const itemCurve = item?.maxBarrierPayoutCurve;
+  const curve = tradeCurve && typeof tradeCurve === "object" ? tradeCurve : (itemCurve && typeof itemCurve === "object" ? itemCurve : null);
+  return curve ? { ...curve, samples: Array.isArray(curve.samples) ? curve.samples.map((x) => ({ ...x })) : [] } : null;
+}
+function normalizeMaxBarrierPayoutCurveSample(sample) {
+  if (!sample || typeof sample !== "object") return null;
+  const distance = Math.abs(Number(sample.distance));
+  const pct = Number(sample.net_profit_pct);
+  if (!Number.isFinite(distance) || distance <= 0 || !Number.isFinite(pct) || pct <= 0) return null;
+  return {
+    ...sample,
+    distance,
+    net_profit_pct: pct,
+    payout_total_pct: Number.isFinite(Number(sample.payout_total_pct)) ? Number(sample.payout_total_pct) : pct + 100,
+  };
+}
+function persistMaxBarrierPayoutCurve(item, curve, { journal = false } = {}) {
+  if (!item || !curve) return;
+  item.maxBarrierPayoutCurve = { ...curve, samples: Array.isArray(curve.samples) ? curve.samples.map((x) => ({ ...x })) : [] };
+  item.trade ||= {};
+  item.trade.max_barrier_payout_curve = { ...item.maxBarrierPayoutCurve };
+  try { saveHistory(history); } catch {}
+  if (journal) {
+    try { upsertTradeJournalFromSignal(item); } catch {}
+    try {
+      if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView();
+    } catch {}
+  }
+}
+function addMaxBarrierPayoutCurveSample(item, sample, { journal = false } = {}) {
+  const row = normalizeMaxBarrierPayoutCurveSample(sample);
+  if (!item || !row) return null;
+  const current = getMaxBarrierPayoutCurveState(item) || {
+    version: MAX_BARRIER_PAYOUT_CURVE_VERSION,
+    status: "preparing",
+    simulated_only: true,
+    bought: false,
+    symbol: String(item?.symbol || item?.trade?.symbol || ""),
+    side: getMaxBarrierStudySide(item) || "",
+    samples: [],
+    started_at: Date.now(),
+  };
+  const precision = getHighLowEffectiveBarrierPrecision(current.symbol || item?.symbol || "");
+  const tolerance = Math.pow(10, -precision) / 2;
+  const samples = Array.isArray(current.samples) ? current.samples.map((x) => ({ ...x })) : [];
+  const idx = samples.findIndex((x) => Math.abs(Number(x?.distance) - row.distance) <= tolerance);
+  if (idx >= 0) {
+    const prev = samples[idx] || {};
+    // Preferimos la compra real como ancla; después, una cotización absoluta sobre una relativa.
+    const rank = (x) => String(x?.source || "") === "bought_barrier" ? 3 : String(x?.barrier_mode || "") === "absolute" ? 2 : 1;
+    if (rank(row) >= rank(prev)) samples[idx] = { ...prev, ...row };
+  } else {
+    samples.push(row);
+  }
+  samples.sort((a, b) => Number(a.distance) - Number(b.distance));
+  current.samples = samples.slice(0, 16);
+  current.updated_at = Date.now();
+  persistMaxBarrierPayoutCurve(item, current, { journal });
+  return current;
+}
+function getMaxBarrierPayoutEstimateFromCurve(item, targetDistance) {
+  const target = Math.abs(Number(targetDistance));
+  const curve = getMaxBarrierPayoutCurveState(item);
+  const samples = (curve?.samples || []).map(normalizeMaxBarrierPayoutCurveSample).filter(Boolean).sort((a, b) => a.distance - b.distance);
+  if (!Number.isFinite(target) || target <= 0 || !samples.length) {
+    return { available: false, status: samples.length ? "invalid_target" : "no_curve", samples: samples.length };
+  }
+  const symbol = String(curve?.symbol || item?.symbol || item?.trade?.symbol || "");
+  const precision = getHighLowEffectiveBarrierPrecision(symbol);
+  const tol = Math.pow(10, -precision) / 2;
+  const exact = samples.find((x) => Math.abs(x.distance - target) <= tol);
+  if (exact) {
+    return {
+      available: true,
+      status: "measured",
+      pct: exact.net_profit_pct,
+      source: exact.source || "quoted_curve",
+      lower: exact,
+      upper: exact,
+      samples: samples.length,
+    };
+  }
+  let lower = null, upper = null;
+  for (const row of samples) {
+    if (row.distance < target) lower = row;
+    if (row.distance > target) { upper = row; break; }
+  }
+  if (lower && upper && upper.distance > lower.distance) {
+    const ratio = (target - lower.distance) / (upper.distance - lower.distance);
+    const pct = lower.net_profit_pct + ratio * (upper.net_profit_pct - lower.net_profit_pct);
+    if (Number.isFinite(pct) && pct > 0) {
+      return { available: true, status: "interpolated", pct, lower, upper, samples: samples.length };
+    }
+  }
+  if (lower && !upper) {
+    return {
+      available: true,
+      status: "above_curve",
+      pct: lower.net_profit_pct,
+      lower,
+      upper: null,
+      samples: samples.length,
+      lower_bound: true,
+    };
+  }
+  if (!lower && upper) {
+    return {
+      available: true,
+      status: "below_curve",
+      pct: upper.net_profit_pct,
+      lower: null,
+      upper,
+      samples: samples.length,
+      upper_bound: true,
+    };
+  }
+  return { available: false, status: "insufficient_curve", samples: samples.length };
+}
+function initMaxBarrierPayoutCurveFromBoughtTrade(item) {
+  if (!item?.trade || !isHighLowTradeForMaxBarrierStudy(item)) return null;
+  const side = getMaxBarrierStudySide(item);
+  const symbol = String(item?.symbol || item?.trade?.symbol || "");
+  const parsed = parseRelativeBarrierString(item?.trade?.barrier);
+  const distance = Math.abs(Number(parsed?.barrierNum));
+  const profit = getMaxBarrierStudyUsedNetProfitPct(item);
+  const entry = getMaxBarrierStudyEntryQuote(item);
+  if (!side || !symbol || !Number.isFinite(distance) || distance <= 0 || !Number.isFinite(Number(profit.pct))) return null;
+  const curve = {
+    version: MAX_BARRIER_PAYOUT_CURVE_VERSION,
+    status: "preparing",
+    simulated_only: true,
+    bought: false,
+    symbol,
+    side,
+    entry_quote: Number.isFinite(Number(entry.quote)) ? Number(entry.quote) : null,
+    entry_quote_source: entry.source,
+    fixed_expiry_epoch_sec: Number(item?.trade?.planned_expiry_time || getHighLowFixedExpiryEpochSec(item) || 0) || null,
+    used_distance: distance,
+    started_at: Date.now(),
+    samples: [],
+  };
+  persistMaxBarrierPayoutCurve(item, curve, { journal: false });
+  return addMaxBarrierPayoutCurveSample(item, {
+    distance,
+    barrier: String(item.trade.barrier || ""),
+    net_profit_pct: Number(profit.pct),
+    payout_total_pct: Number(profit.pct) + 100,
+    source: "bought_barrier",
+    exact: !!profit.exact,
+    quoted_at: Number(item?.trade?.entry_buy_request_sent_at || Date.now()),
+    barrier_mode: String(item?.trade?.proposal_barrier_mode || "bought"),
+    api_barrier: String(item?.trade?.proposal_api_barrier || ""),
+  }, { journal: false });
+}
+async function prepareMaxBarrierPayoutCalibration(item) {
+  if (!item?.trade?.contract_id || !isHighLowTradeForMaxBarrierStudy(item)) return false;
+  const key = String(item.trade.contract_id || item.id || "");
+  if (!key || maxBarrierPayoutCalibrationInFlight.has(key)) return false;
+  maxBarrierPayoutCalibrationInFlight.add(key);
+  try {
+    initMaxBarrierPayoutCurveFromBoughtTrade(item);
+    let curve = getMaxBarrierPayoutCurveState(item);
+    const side = getMaxBarrierStudySide(item);
+    const symbol = String(item?.symbol || item?.trade?.symbol || "");
+    const parsed = parseRelativeBarrierString(item?.trade?.barrier);
+    const usedDistance = Math.abs(Number(parsed?.barrierNum));
+    const stake = Number(item?.trade?.stake || getEffectiveTradeStake());
+    const entry = getMaxBarrierStudyEntryQuote(item);
+    const entryQuote = Number(entry.quote);
+    const precision = getHighLowEffectiveBarrierPrecision(symbol, parsed?.precision);
+    const step = Math.pow(10, -precision);
+    if (!side || !symbol || !Number.isFinite(usedDistance) || usedDistance <= 0 || !Number.isFinite(stake) || stake <= 0 || !Number.isFinite(entryQuote) || entryQuote <= 0) {
+      if (curve) { curve.status = "unavailable"; curve.reason = "missing_entry_or_barrier"; persistMaxBarrierPayoutCurve(item, curve, { journal: true }); }
+      return false;
+    }
+
+    const expirySec = Number(item?.trade?.planned_expiry_time || getHighLowFixedExpiryEpochSec(item) || 0);
+    for (const mult of MAX_BARRIER_PAYOUT_CALIBRATION_MULTIPLIERS) {
+      if (tradeInFlight || autoPreProposalInFlight.size > 0 || highLowCooldownRemainingMs() > 0) {
+        curve = getMaxBarrierPayoutCurveState(item) || curve;
+        if (curve) { curve.status = "partial"; curve.reason = "aborted_to_protect_trading"; persistMaxBarrierPayoutCurve(item, curve, { journal: true }); }
+        return false;
+      }
+      if (expirySec > 0 && expirySec * 1000 - serverNowMs() < MAX_BARRIER_PAYOUT_CALIBRATION_MIN_REMAIN_MS) break;
+      let distance = Math.round((usedDistance * Number(mult)) / step) * step;
+      distance = Number(distance.toFixed(precision));
+      if (!Number.isFinite(distance) || distance <= usedDistance || distance <= 0) continue;
+      const existing = (getMaxBarrierPayoutCurveState(item)?.samples || []).some((x) => Math.abs(Number(x?.distance) - distance) <= step / 2);
+      if (existing) continue;
+      const candidate = makeBarrierCandidateFromAbsolute(side, distance, precision);
+      if (!candidate?.barrier) continue;
+      try {
+        const quoteSpot = Number(lastQuoteBySymbol?.[symbol]);
+        const plan = await getHighLowProposalQuote(
+          symbol,
+          side,
+          candidate,
+          precision,
+          stake,
+          MAX_BARRIER_PAYOUT_CALIBRATION_TIMEOUT_MS,
+          "",
+          entryQuote,
+          item,
+          false
+        );
+        if (plan && Number.isFinite(Number(plan.profitPct)) && Number(plan.profitPct) > 0) {
+          addMaxBarrierPayoutCurveSample(item, {
+            distance,
+            barrier: String(plan.barrier || candidate.barrier || ""),
+            net_profit_pct: Number(plan.profitPct),
+            payout_total_pct: Number(plan.payoutTotalPct || Number(plan.profitPct) + 100),
+            ask_price: Number.isFinite(Number(plan.askPrice)) ? Number(plan.askPrice) : null,
+            payout: Number.isFinite(Number(plan.payout)) ? Number(plan.payout) : null,
+            source: "post_entry_virtual_quote",
+            exact: true,
+            multiplier: Number(mult),
+            quoted_at: Date.now(),
+            quote_spot: Number.isFinite(quoteSpot) ? quoteSpot : null,
+            entry_reference_quote: entryQuote,
+            barrier_mode: String(plan.barrierMode || ""),
+            api_barrier: String(plan.apiBarrier || ""),
+            fixed_expiry_epoch_sec: Number(plan.fixedExpiryEpochSec || expirySec || 0) || null,
+          }, { journal: false });
+        }
+      } catch (err) {
+        curve = getMaxBarrierPayoutCurveState(item) || curve;
+        if (curve) {
+          curve.last_quote_error = String(err?.message || err || "");
+          curve.last_quote_error_at = Date.now();
+          persistMaxBarrierPayoutCurve(item, curve, { journal: false });
+        }
+        if (highLowCooldownRemainingMs() > 0) break;
+      }
+      await sleep(MAX_BARRIER_PAYOUT_CALIBRATION_BETWEEN_MS);
+    }
+    curve = getMaxBarrierPayoutCurveState(item) || curve;
+    if (curve) {
+      curve.status = (curve.samples || []).length >= 2 ? "ready" : "partial";
+      curve.completed_at = Date.now();
+      persistMaxBarrierPayoutCurve(item, curve, { journal: true });
+    }
+    return true;
+  } finally {
+    maxBarrierPayoutCalibrationInFlight.delete(key);
+  }
+}
+function scheduleMaxBarrierPayoutCalibration(item) {
+  if (!item?.trade?.contract_id || !isHighLowTradeForMaxBarrierStudy(item)) return;
+  initMaxBarrierPayoutCurveFromBoughtTrade(item);
+  setTimeout(() => {
+    const live = item?.id ? (findHistoryItemById(String(item.id)) || item) : item;
+    prepareMaxBarrierPayoutCalibration(live).catch(() => {});
+  }, MAX_BARRIER_PAYOUT_CALIBRATION_START_DELAY_MS);
+}
+
+function formatMaxBarrierProfitPct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const rounded = Math.abs(n - Math.round(n)) < 0.05 ? Math.round(n).toFixed(0) : n.toFixed(1);
+  return `${n >= 0 ? "+" : ""}${rounded}%`;
+}
+function getMaxWinningBarrierS120Info(item) {
+  if (!item || !isHighLowTradeForMaxBarrierStudy(item)) return { eligible: false, status: "not_highlow" };
+  const side = getMaxBarrierStudySide(item);
+  const symbol = String(item?.symbol || item?.trade?.symbol || "");
+  if (!side || !symbol) return { eligible: false, status: "missing_side_symbol" };
+
+  const entry = getMaxBarrierStudyEntryQuote(item);
+  const close = getMaxBarrierStudyClose120Quote(item);
+  if (!Number.isFinite(Number(entry.quote)) || !Number.isFinite(Number(close.quote))) {
+    return {
+      eligible: true,
+      status: "pending",
+      side,
+      symbol,
+      entry_quote: Number.isFinite(Number(entry.quote)) ? Number(entry.quote) : null,
+      close_s120_quote: Number.isFinite(Number(close.quote)) ? Number(close.quote) : null,
+      entry_source: entry.source,
+      close_source: close.source,
+    };
+  }
+
+  const entryQuote = Number(entry.quote);
+  const closeQuote = Number(close.quote);
+  const favorableMove = side === "CALL" ? closeQuote - entryQuote : entryQuote - closeQuote;
+  const precision = getMaxBarrierStudyPrecision(item);
+  const step = Math.pow(10, -precision);
+  const theoreticalDistance = Math.max(0, favorableMove);
+  const maxSafeDistance = getMaxSafeBarrierDistanceStrict(theoreticalDistance, step);
+  const maxSigned = side === "CALL" ? maxSafeDistance : -maxSafeDistance;
+
+  let usedDistance = null;
+  let usedSigned = null;
+  try {
+    const parsed = parseRelativeBarrierString(item?.trade?.barrier);
+    if (parsed && Number.isFinite(Number(parsed.barrierNum))) {
+      usedSigned = Number(parsed.barrierNum);
+      usedDistance = Math.abs(usedSigned);
+    }
+  } catch {}
+  const marginVsUsed = Number.isFinite(usedDistance) ? maxSafeDistance - usedDistance : null;
+  const usedWouldWin = Number.isFinite(usedDistance) ? favorableMove > usedDistance : null;
+  const usedProfitInfo = getMaxBarrierStudyUsedNetProfitPct(item);
+  const maxPayoutEstimate = maxSafeDistance > 0 ? getMaxBarrierPayoutEstimateFromCurve(item, maxSafeDistance) : { available: false, status: "no_positive_distance" };
+
+  return {
+    eligible: true,
+    status: "resolved",
+    version: "MAX_WINNING_BARRIER_S120_V1",
+    symbol,
+    side,
+    precision,
+    step,
+    entry_quote: entryQuote,
+    entry_source: entry.source,
+    close_s120_quote: closeQuote,
+    close_source: close.source,
+    close_s120_epoch_ms: Number(close.epochMs || 0) || null,
+    favorable_move: favorableMove,
+    favorable_direction: favorableMove > 0,
+    theoretical_max_distance: theoreticalDistance,
+    max_safe_distance: maxSafeDistance,
+    max_safe_barrier: maxSigned,
+    used_barrier: usedSigned,
+    used_distance: usedDistance,
+    margin_vs_used: marginVsUsed,
+    used_would_win_at_s120: usedWouldWin,
+    used_net_profit_pct: usedProfitInfo.pct,
+    used_net_profit_pct_source: usedProfitInfo.source,
+    used_net_profit_pct_exact: usedProfitInfo.exact,
+    max_barrier_net_profit_pct: maxPayoutEstimate.available ? Number(maxPayoutEstimate.pct) : null,
+    max_barrier_net_profit_pct_status: String(maxPayoutEstimate.status || ""),
+    max_barrier_net_profit_pct_samples: Number(maxPayoutEstimate.samples || 0),
+    max_barrier_net_profit_pct_lower_bound: !!maxPayoutEstimate.lower_bound,
+    max_barrier_payout_curve: getMaxBarrierPayoutCurveState(item),
+    strategy_target_profit_pct: AUTO_TARGET_RETURN_PCT,
+  };
+}
+function quantileSortedMaxBarrier(values, q) {
+  const arr = (values || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!arr.length) return null;
+  if (arr.length === 1) return arr[0];
+  const pos = Math.max(0, Math.min(1, Number(q))) * (arr.length - 1);
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  if (lo === hi) return arr[lo];
+  const frac = pos - lo;
+  return arr[lo] + (arr[hi] - arr[lo]) * frac;
+}
+function avgMaxBarrier(values) {
+  const arr = (values || []).map(Number).filter(Number.isFinite);
+  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+}
+function getMaxWinningBarrierPortfolioStats(entries) {
+  const groups = new Map();
+  let totalEligible = 0, resolved = 0, pending = 0, noPositive = 0;
+  for (const entry of entries || []) {
+    const item = buildModalItemFromTradeEntry(entry) || entry;
+    const info = getMaxWinningBarrierS120Info(item);
+    if (!info?.eligible) continue;
+    totalEligible += 1;
+    if (info.status !== "resolved") { pending += 1; continue; }
+    resolved += 1;
+    const symbol = String(info.symbol || "—");
+    if (!groups.has(symbol)) groups.set(symbol, { symbol, resolved: 0, positive: [], used: [], margins: [], usedProfitPct: [], maxProfitPct: [], maxProfitPctMeasured: 0, noPositive: 0 });
+    const g = groups.get(symbol);
+    g.resolved += 1;
+    if (Number(info.max_safe_distance) > 0) {
+      g.positive.push(Number(info.max_safe_distance));
+      if (Number.isFinite(Number(info.used_distance))) g.used.push(Number(info.used_distance));
+      if (Number.isFinite(Number(info.margin_vs_used))) g.margins.push(Number(info.margin_vs_used));
+      if (Number.isFinite(Number(info.used_net_profit_pct))) g.usedProfitPct.push(Number(info.used_net_profit_pct));
+      if (Number.isFinite(Number(info.max_barrier_net_profit_pct))) {
+        g.maxProfitPct.push(Number(info.max_barrier_net_profit_pct));
+        if (String(info.max_barrier_net_profit_pct_status) === "measured") g.maxProfitPctMeasured += 1;
+      }
+    } else {
+      g.noPositive += 1;
+      noPositive += 1;
+    }
+  }
+  const bySymbol = Array.from(groups.values()).map((g) => {
+    const vals = g.positive.slice().sort((a, b) => a - b);
+    return {
+      symbol: g.symbol,
+      resolved: g.resolved,
+      positive_count: vals.length,
+      no_positive: g.noPositive,
+      average_max: avgMaxBarrier(vals),
+      median_max: quantileSortedMaxBarrier(vals, 0.5),
+      survive_75: quantileSortedMaxBarrier(vals, 0.25), // 75% de casos queda por encima de este umbral.
+      survive_80: quantileSortedMaxBarrier(vals, 0.20),
+      survive_90: quantileSortedMaxBarrier(vals, 0.10),
+      average_used: avgMaxBarrier(g.used),
+      average_margin_vs_used: avgMaxBarrier(g.margins),
+      average_used_net_profit_pct: avgMaxBarrier(g.usedProfitPct),
+      average_max_net_profit_pct: avgMaxBarrier(g.maxProfitPct),
+      max_profit_pct_count: g.maxProfitPct.length,
+      max_profit_pct_measured_count: g.maxProfitPctMeasured,
+    };
+  }).sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
+  return { totalEligible, resolved, pending, noPositive, bySymbol };
+}
+function getMaxWinningBarrierBadgeInfo(item) {
+  const info = getMaxWinningBarrierS120Info(item);
+  if (!info?.eligible) return { visible: false };
+  if (info.status !== "resolved") return { visible: true, key: "pending", label: "🎯 MAX…", title: "Barrera máxima s120: esperando cierre canónico/entrada." };
+  const symbol = String(info.symbol || item?.symbol || "");
+  if (!(Number(info.max_safe_distance) > 0)) {
+    return {
+      visible: true,
+      key: "zero",
+      label: "🎯 MAX 0",
+      title: `Al cierre s120 el precio no terminó a favor de ${info.side}; no existía una barrera positiva alejada de la entrada que ganara. Entrada ${virtualNoTouchFmtPrice(info.entry_quote, symbol)} · cierre s120 ${virtualNoTouchFmtPrice(info.close_s120_quote, symbol)}.`,
+    };
+  }
+  const maxTxt = formatMaxBarrierDistance(symbol, info.max_safe_distance, { signedSide: info.side });
+  const usedTxt = Number.isFinite(Number(info.used_distance)) ? formatMaxBarrierDistance(symbol, info.used_distance, { signedSide: info.side }) : "—";
+  const maxProfitStatus = String(info.max_barrier_net_profit_pct_status || "");
+  const maxProfitValue = Number(info.max_barrier_net_profit_pct);
+  const maxProfitAvailable = Number.isFinite(maxProfitValue) && maxProfitValue > 0;
+  const maxProfitPrefix = maxProfitStatus === "measured" ? "" : maxProfitStatus === "above_curve" ? "≥" : "≈";
+  const maxProfitTxt = maxProfitAvailable ? `${maxProfitPrefix}${formatMaxBarrierProfitPct(maxProfitValue)}` : "—";
+  const maxProfitExplain = maxProfitStatus === "measured"
+    ? "cotización medida para esa distancia"
+    : maxProfitStatus === "interpolated"
+      ? "estimación interpolada entre dos cotizaciones reales de esa operación"
+      : maxProfitStatus === "above_curve"
+        ? "límite inferior: la barrera MAX quedó más lejos que la mayor cotización de la curva"
+        : "sin curva histórica suficiente";
+  const margin = Number(info.margin_vs_used);
+  const marginTxt = Number.isFinite(margin)
+    ? `${margin >= 0 ? "margen extra" : "exceso"} ${formatMaxBarrierDistance(symbol, Math.abs(margin))}`
+    : "barrera usada no disponible";
+  return {
+    visible: true,
+    key: Number.isFinite(margin) && margin < 0 ? "too_far" : "ok",
+    label: `🎯 MAX ${maxTxt} · ${maxProfitTxt}`,
+    title: `Máxima barrera relativa representable que todavía habría ganado en s120: ${maxTxt}. Ganancia neta estimada/medida para esa MAX: ${maxProfitTxt} (${maxProfitExplain}; ${Number(info.max_barrier_net_profit_pct_samples || 0)} puntos de curva). Entrada ${virtualNoTouchFmtPrice(info.entry_quote, symbol)} · cierre s120 ${virtualNoTouchFmtPrice(info.close_s120_quote, symbol)} · barrera usada ${usedTxt} · ${marginTxt}. El cálculo de barrera exige cierre estrictamente del lado ganador, no igualdad.`,
+  };
+}
+function updateRowMaxWinningBarrierBadgeOnRow(row, item) {
+  if (!row) return;
+  const el = row.querySelector(".maxWinningBarrierBadge");
+  if (!el) return;
+  const info = getMaxWinningBarrierBadgeInfo(item);
+  if (!info?.visible) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    el.title = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.textContent = info.label;
+  el.title = info.title || "";
+  el.style.display = "inline-flex";
+  el.style.alignItems = "center";
+  el.style.justifyContent = "center";
+  el.style.padding = "4px 7px";
+  el.style.borderRadius = "999px";
+  el.style.fontSize = "10px";
+  el.style.fontWeight = "950";
+  el.style.whiteSpace = "nowrap";
+  if (info.key === "too_far") {
+    el.style.border = "1px solid rgba(248,113,113,.55)";
+    el.style.background = "rgba(248,113,113,.10)";
+    el.style.color = "#fecaca";
+  } else if (info.key === "zero") {
+    el.style.border = "1px solid rgba(148,163,184,.40)";
+    el.style.background = "rgba(71,85,105,.12)";
+    el.style.color = "#e2e8f0";
+  } else {
+    el.style.border = "1px solid rgba(250,204,21,.42)";
+    el.style.background = "rgba(250,204,21,.09)";
+    el.style.color = "#fef3c7";
+  }
+}
+
+/* =========================
    Trades Journal persistence
 ========================= */
 function loadTradesJournal() {
@@ -3209,7 +3807,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_V113_33_II40_20260825";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_V113_33_II43_20260825";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -10711,6 +11309,35 @@ function renderTradesView() {
     list.appendChild(ntHeader);
   }
 
+  const maxBarrierStats = getMaxWinningBarrierPortfolioStats(visibleTrades);
+  if (maxBarrierStats.totalEligible > 0) {
+    const box = document.createElement("div");
+    box.className = "tradesScopeNotice";
+    box.style.padding = "10px 12px";
+    box.style.margin = "0 0 10px";
+    box.style.borderRadius = "14px";
+    box.style.border = "1px solid rgba(250,204,21,.24)";
+    box.style.background = "rgba(113,63,18,.12)";
+    box.style.color = "rgba(254,243,199,.94)";
+    box.innerHTML = `<div style="font-weight:950;font-size:12px;margin-bottom:${maxBarrierStats.bySymbol.length ? "6px" : "0"};">🎯 Barrera máxima ganadora s120 · payout MAX medido/estimado por curva · ${maxBarrierStats.resolved}/${maxBarrierStats.totalEligible} resueltos${maxBarrierStats.pending ? ` · ${maxBarrierStats.pending} pendientes` : ""}${maxBarrierStats.noPositive ? ` · ${maxBarrierStats.noPositive} sin margen favorable` : ""}</div>`;
+    for (const g of maxBarrierStats.bySymbol) {
+      if (!g.positive_count) continue;
+      const symbol = g.symbol;
+      const fmt = (v) => Number.isFinite(Number(v)) ? formatMaxBarrierDistance(symbol, Number(v)) : "—";
+      const delta = Number(g.average_margin_vs_used);
+      const deltaTxt = Number.isFinite(delta) ? ` · Δ máx-usada ${delta >= 0 ? "+" : "-"}${fmt(Math.abs(delta))}` : "";
+      const line = document.createElement("div");
+      line.style.fontSize = "11px";
+      line.style.fontWeight = "800";
+      line.style.lineHeight = "1.45";
+      const maxPctTxt = Number.isFinite(Number(g.average_max_net_profit_pct)) ? ` · % MAX prom ${formatMaxBarrierProfitPct(g.average_max_net_profit_pct)} (${g.max_profit_pct_count}/${g.positive_count})` : " · % MAX aún sin curva";
+      line.textContent = `${symbol} · n ${g.positive_count}/${g.resolved} · máx prom ${fmt(g.average_max)} · med ${fmt(g.median_max)} · 80% ≥ ${fmt(g.survive_80)} · 90% ≥ ${fmt(g.survive_90)}${Number.isFinite(Number(g.average_used)) ? ` · usada prom ${fmt(g.average_used)}` : ""}${maxPctTxt}${deltaTxt}`;
+      line.title = `Umbral 80% = barrera que el 80% de los giros favorables todavía habría soportado al cierre s120. Umbral 90% = nivel más conservador soportado por el 90%.`;
+      box.appendChild(line);
+    }
+    list.appendChild(box);
+  }
+
   if (!visibleTrades.length) {
     const filterText = hasDateFilter ? ` para ${getTradesDateFilterLabel()}` : "";
     list.insertAdjacentHTML("beforeend", `<div class="tradesEmptyState">Todavía no hay trades ${scopeLabel}${filterText}.</div>`);
@@ -11311,7 +11938,8 @@ function compactTradeForAnalysis(trade) {
     "exec_mode", "contract_type", "payout_pct", "ic2_level", "ic2_step",
     "entry_timing_mode", "entry_timing_variant", "purchase_time", "start_time",
     "buy_price", "payout", "profit", "status", "sold_time", "expiry_time",
-    "entry_spot", "entry_spot_time", "exit_spot", "exit_spot_time", "sell_price"
+    "entry_spot", "entry_spot_time", "entry_reference_quote", "exit_spot", "exit_spot_time", "sell_price",
+    "barrier", "proposal_api_barrier", "proposal_barrier_mode", "payout_total_pct", "target_profit_pct"
   ];
   const out = {};
   keep.forEach((k) => { if (trade[k] !== undefined) out[k] = trade[k]; });
@@ -11361,6 +11989,7 @@ function compactSignalForAnalysis(item) {
     visualRead: item.visualRead ? stripForAnalysisCopy(item.visualRead) : null,
     giroPlus: item.giroPlus ? stripForAnalysisCopy(item.giroPlus) : null,
     virtualNoTouch: item.virtualNoTouch ? stripForAnalysisCopy(item.virtualNoTouch) : null,
+    maxWinningBarrierS120: stripForAnalysisCopy(getMaxWinningBarrierS120Info(item)),
     ticks: Array.isArray(item.ticks)
       ? item.ticks.map((t) => ({ ms: Number(t.ms), quote: Number(t.quote) })).filter((t) => Number.isFinite(t.ms) && Number.isFinite(t.quote))
       : [],
@@ -11390,6 +12019,7 @@ function compactTradeJournalForAnalysis(entry) {
     visualRead: entry.visualRead ? stripForAnalysisCopy(entry.visualRead) : null,
     giroPlus: entry.giroPlus ? stripForAnalysisCopy(entry.giroPlus) : null,
     virtualNoTouch: entry.virtualNoTouch ? stripForAnalysisCopy(entry.virtualNoTouch) : null,
+    maxWinningBarrierS120: stripForAnalysisCopy(getMaxWinningBarrierS120Info(buildModalItemFromTradeEntry(entry) || entry)),
     ticks: Array.isArray(entry.ticks)
       ? entry.ticks.map((t) => ({ ms: Number(t.ms), quote: Number(t.quote) })).filter((t) => Number.isFinite(t.ms) && Number.isFinite(t.quote))
       : [],
@@ -21475,6 +22105,7 @@ function buildRow(item, opts = {}) {
         <span class="tradeBadge hidden" title=""></span>
         <span class="otmEntryPointBadge hidden" title=""></span>
         <span class="virtualNoTouchBadge hidden" title=""></span>
+        <span class="maxWinningBarrierBadge hidden" title=""></span>
         <span class="nextArrow pending" title="Próxima vela: esperando…">⏳</span>
       </div>
     </div>
@@ -21524,6 +22155,7 @@ function buildRow(item, opts = {}) {
   updateRowChartBtnOnRow(row, item);
   updateRowTradeBadgeOnRow(row, item);
   updateRowVirtualNoTouchBadgeOnRow(row, item);
+  updateRowMaxWinningBarrierBadgeOnRow(row, item);
   updateRowNextArrowOnRow(row, item);
   updateRowSignalStageOnRow(row, item);
   updateRowGiroPlusBadgeOnRow(row, item);
@@ -22456,6 +23088,9 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
       // II40: prepara en segundo plano una cotización NOTOUCH virtual basada en nivel.
       // No envía buy para ese segundo contrato.
       scheduleVirtualNoTouchSimulation(itemCtx);
+      // II43: curva de cotizaciones virtuales para estimar el payout de la barrera MAX s120.
+      // Solo proposal: jamás envía buy.
+      scheduleMaxBarrierPayoutCalibration(itemCtx);
     }
 
     subscribeContractOutcome(cid, true);
@@ -32029,7 +32664,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II40: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual.`;
+  const logicText = `Motor experimental V113.33-II43: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje.`;
 
   return {
     direction,
