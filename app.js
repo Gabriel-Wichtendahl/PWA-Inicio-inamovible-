@@ -1,12 +1,4 @@
-// v113.33-II43: II42 corregida: estima/mide el payout de la barrera MAX s120 mediante curva de cotizaciones virtuales post-entrada.
-// Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
-// Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
-// La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
-// sin esperar la autorización 2/2. Recalibra antes de s58 y conserva un rescate mínimo cuando la
-// granularidad real de la barrera deja el payout apenas fuera del rango 125–135% neto.
-// La rama continuidad anula el giro; la rama giro exige autorización final explícita y recién entonces habilita AUTO 58.
-// El retroceso terminal solo CIERRA el tercer impulso: no se dibuja ni se exporta como confirmación amarilla.
-// Mantiene intacto el detector II3, la dirección contraria de GIRO y el cierre completo del tercer impulso.
+// v113.33-II1: versión experimental separada “Inicio Inamovible”.
 // Detecta un único patrón lateral menor → G central → lateral menor entre s15 y s25.
 // La base estable v113.33 original no se modifica.
 // v113.31: elimina la pausa visual automática y agrega efectividad diaria en los encabezados de Trades.
@@ -126,11 +118,27 @@
 // ✅ V66: pre-proposal 56-58s: arma proposal antes y en post-58 solo compra; disciplina 3 ITM/2 OTM desactivada para pruebas.
 "use strict";
 
-// V113.33-II8: persistencia estándar, igual que la PWA v113.33 original.
-// No se versionan las claves de localStorage: al actualizar esta variante
-// en su repositorio, el token y las preferencias permanecen guardados.
+// V113.33-II1: aislamiento total de la variante experimental.
+// La PWA original y esta copia no mezclan token, historial, ajustes ni trades.
+const INICIO_INAMOVIBLE_STORAGE_PREFIX = "inicio_inamovible_v113_33_ii1::";
+(() => {
+  try {
+    const proto = Storage.prototype;
+    if (proto.__inicioInamovibleNamespaced) return;
+    const rawGet = proto.getItem;
+    const rawSet = proto.setItem;
+    const rawRemove = proto.removeItem;
+    const scopedKey = (store, key) => store === window.localStorage
+      ? INICIO_INAMOVIBLE_STORAGE_PREFIX + String(key)
+      : String(key);
+    proto.getItem = function (key) { return rawGet.call(this, scopedKey(this, key)); };
+    proto.setItem = function (key, value) { return rawSet.call(this, scopedKey(this, key), value); };
+    proto.removeItem = function (key) { return rawRemove.call(this, scopedKey(this, key)); };
+    Object.defineProperty(proto, "__inicioInamovibleNamespaced", { value: true, configurable: false });
+  } catch {}
+})();
 
-const APP_BUILD_VERSION = "v113.33-II43";
+const APP_BUILD_VERSION = "v113.33-II1";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -181,52 +189,10 @@ const TRADES_JOURNAL_MAX = 500;
 /* =========================
    Capturas de estudio
 ========================= */
-const STUDY_CAPTURE_DB_NAME = "derivStudyCaptures_v1";
+const STUDY_CAPTURE_DB_NAME = "derivStudyCaptures_inicioInamovible_v11333_ii1";
 const STUDY_CAPTURE_STORE_NAME = "captures";
 const STUDY_CAPTURE_VERSION = 1;
-const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V113_38_PRINT_BW_HIDDEN_ARROW";
-const STUDY_PRINT_SHOW_RESULT_KEY = "studyPrintShowResult_v1";
-const studyPrintSelectedKeys = new Set();
-
-/* =========================
-   II40 · Simulador No Touch defensivo
-   - Nunca compra el segundo contrato.
-   - Cotiza NOTOUCH y registra qué habría ocurrido con el mismo riesgo total.
-========================= */
-const VIRTUAL_NOTOUCH_ENABLED = true;
-const VIRTUAL_NOTOUCH_VERSION = "VIRTUAL_NOTOUCH_DEFENSIVE_V1";
-const VIRTUAL_NOTOUCH_TARGET_RATIO = 0.20;
-const VIRTUAL_NOTOUCH_MIN_STAKE = 0.35;
-const VIRTUAL_NOTOUCH_LOOKBACK_CANDLES = 120;
-const VIRTUAL_NOTOUCH_MIN_TOUCHES = 2;
-const VIRTUAL_NOTOUCH_PREPARE_DELAY_MS = 900;
-const VIRTUAL_NOTOUCH_MIN_REMAINING_MS = 8000;
-const VIRTUAL_NOTOUCH_PROPOSAL_TIMEOUT_MS = 12000;
-let virtualNoTouchRecoveryRunning = false;
-let virtualNoTouchRecoveryLastAt = 0;
-const VIRTUAL_NOTOUCH_RECOVERY_COOLDOWN_MS = 30000;
-
-/* =========================
-   Audio de análisis por señal (II34)
-========================= */
-const VOICE_ANALYSIS_DB_NAME = "derivSignalVoiceAnalysis_v1";
-const VOICE_ANALYSIS_DB_VERSION = 1;
-const VOICE_ANALYSIS_STORE = "recordings";
-const VOICE_ANALYSIS_TARGET_BPS = 16000; // voz mono, bajo peso
-const VOICE_ANALYSIS_TIMELINE_SAMPLE_MS = 500;
-let voiceAnalysisDbPromise = null;
-let voiceAnalysisRecorder = null;
-let voiceAnalysisStream = null;
-let voiceAnalysisChunks = [];
-let voiceAnalysisRecordingSignalId = "";
-let voiceAnalysisRecordingMeta = null;
-let voiceAnalysisRecordStartedAt = 0;
-let voiceAnalysisUiTimer = null;
-let voiceAnalysisLastTimelineSampleAt = 0;
-let voiceAnalysisCurrentRecord = null;
-let voiceAnalysisAudio = null;
-let voiceAnalysisObjectUrl = "";
-let voiceAnalysisLoadToken = 0;
+const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V112_2_ESTILO_DERIV_LINEA_BLANCA";
 
 /* =========================
    Trade account config
@@ -293,19 +259,8 @@ const ENTRY_TIMING_MODE_KEY = "entryTimingMode_v1";
 const ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY = "AUTO58_NEXT_CANDLE_EXPIRY";
 const ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY = "AUTO58_VISUAL_58_EXPIRY";
 const ENTRY_TIMING_AUTO58_DURATION_1M = "AUTO58_DURATION_1M";
-// II15: la operación debe vencer en el segundo 60. No se permite volver al modo visual de 58s.
-const ENTRY_TIMING_FORCE_SECOND_60 = true;
-let entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
+let entryTimingMode = ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
 const AUTO_TARGET_RETURN_PCT = 130; // ganancia neta objetivo sobre el stake: (payout - stake) / stake × 100.
-// II43: curva virtual de payout para estimar cuánto habría pagado la barrera MAX s120.
-// Se cotiza después del buy real y NUNCA se compra ninguna de estas propuestas.
-const MAX_BARRIER_PAYOUT_CURVE_VERSION = "MAX_BARRIER_PAYOUT_CURVE_V1";
-const MAX_BARRIER_PAYOUT_CALIBRATION_MULTIPLIERS = [1.35, 1.75, 2.5, 4.0];
-const MAX_BARRIER_PAYOUT_CALIBRATION_START_DELAY_MS = 3200;
-const MAX_BARRIER_PAYOUT_CALIBRATION_BETWEEN_MS = 380;
-const MAX_BARRIER_PAYOUT_CALIBRATION_TIMEOUT_MS = 4500;
-const MAX_BARRIER_PAYOUT_CALIBRATION_MIN_REMAIN_MS = 12000;
-const maxBarrierPayoutCalibrationInFlight = new Set();
 const HIGHLOW_TARGET_PAYOUT_TOTAL_PCT = 100 + AUTO_TARGET_RETURN_PCT; // 230% total = stake + 130% de ganancia.
 const HIGHLOW_TARGET_TOLERANCE_PCT = 2;
 const HIGHLOW_TARGET_ACCEPT_MIN_PCT = 225; // 125% de ganancia neta.
@@ -314,8 +269,8 @@ const HIGHLOW_TARGET_MAX_SEARCH_QUOTES = 10;
 const AUTO_PRECALC_REFRESH_MS = 10000;
 const AUTO_PRECALC_STALE_MS = 120000;
 const HIGHLOW_PRECALC_MAX_ATTEMPTS = 1;
-const HIGHLOW_BARRIER_CACHE_KEY = "highLowBarrierCache_v13_profit130_fixed_s60";
-const HIGHLOW_BARRIER_PRECISION_CACHE_KEY = "highLowBarrierPrecisionBySymbol_v4_explicit_errors_only";
+const HIGHLOW_BARRIER_CACHE_KEY = "highLowBarrierCache_v12_profit130_precision_real";
+const HIGHLOW_BARRIER_PRECISION_CACHE_KEY = "highLowBarrierPrecisionBySymbol_v3_real_symbol_precision";
 const HIGHLOW_API_MAX_BARRIER_DECIMALS = 4;
 const HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL = {
   R_10: 3,
@@ -358,20 +313,13 @@ const AUTO_FULL_PROPOSAL_TIMEOUT_MS = 12000;
 const AUTOOPEN_CHART_KEY = "autoOpenChartOnSignal_v1";
 let autoOpenChartOnSignal = false;
 
-// II28: ayuda visual automática: abre Replay X2 apenas se abre la señal.
-// Se deja un margen mínimo solo para que el modal termine de montarse; no espera a s28.
+// V90: ayuda visual automática: abre replay X2 al segundo 28 si el modal sigue abierto.
 const AUTO_REPLAY_X2_KEY = "autoReplayX2OnSignal_v1";
-const AUTO_REPLAY_X2_TRIGGER_MS = 0;
+const AUTO_REPLAY_X2_TRIGGER_MS = 28000;
 const AUTO_REPLAY_X2_SPEED = 2;
 let autoReplayX2OnSignal = true;
 let modalAutoReplayTimer = null;
 let modalAutoReplayToken = "";
-// II36: señales que nacen mientras otra conserva el foco quedan pendientes para
-// un handoff automático cuando la ventana PGP actual termina en s65.
-let modalSequentialHandoffTimer = null;
-let modalSequentialHandoffCurrentId = "";
-const pendingAutoReplaySignalIds = [];
-const AUTO_REPLAY_SEQUENTIAL_MIN_MARGIN_MS = 500;
 let activeTradingAccount = ACCOUNT_MODE_DEMO;
 let c100State = null;
 let c100PanelEl = null;
@@ -481,700 +429,6 @@ function linkContractToSignal(contractId, signalId) {
   if (!contractId || !signalId) return;
   tradeLinks.set(String(contractId), String(signalId));
   saveTradeLinks();
-}
-
-/* =========================
-   II34 · Grabación de análisis en voz alta por señal
-========================= */
-function openVoiceAnalysisDB() {
-  if (!("indexedDB" in window)) return Promise.resolve(null);
-  if (voiceAnalysisDbPromise) return voiceAnalysisDbPromise;
-  voiceAnalysisDbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(VOICE_ANALYSIS_DB_NAME, VOICE_ANALYSIS_DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(VOICE_ANALYSIS_STORE)) {
-        db.createObjectStore(VOICE_ANALYSIS_STORE, { keyPath: "signalId" });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error("No pude abrir la base de audios"));
-  }).catch((err) => {
-    voiceAnalysisDbPromise = null;
-    throw err;
-  });
-  return voiceAnalysisDbPromise;
-}
-async function getVoiceAnalysisRecord(signalId) {
-  const key = String(signalId || "");
-  if (!key) return null;
-  const db = await openVoiceAnalysisDB();
-  if (!db) return null;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readonly");
-    const req = tx.objectStore(VOICE_ANALYSIS_STORE).get(key);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error || new Error("No pude leer el audio"));
-  });
-}
-async function putVoiceAnalysisRecord(record) {
-  if (!record?.signalId || !(record?.blob instanceof Blob)) return false;
-  const db = await openVoiceAnalysisDB();
-  if (!db) return false;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readwrite");
-    tx.objectStore(VOICE_ANALYSIS_STORE).put(record);
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error || new Error("No pude guardar el audio"));
-  });
-}
-async function deleteVoiceAnalysisRecord(signalId) {
-  const key = String(signalId || "");
-  if (!key) return false;
-  const db = await openVoiceAnalysisDB();
-  if (!db) return false;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readwrite");
-    tx.objectStore(VOICE_ANALYSIS_STORE).delete(key);
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error || new Error("No pude borrar el audio"));
-  });
-}
-async function clearVoiceAnalysisRecords() {
-  const db = await openVoiceAnalysisDB();
-  if (!db) return false;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readwrite");
-    tx.objectStore(VOICE_ANALYSIS_STORE).clear();
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error || new Error("No pude borrar los audios"));
-  });
-}
-async function getVoiceAnalysisStats() {
-  const db = await openVoiceAnalysisDB();
-  if (!db) return { count: 0, bytes: 0, durationMs: 0 };
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(VOICE_ANALYSIS_STORE, "readonly");
-    const req = tx.objectStore(VOICE_ANALYSIS_STORE).openCursor();
-    let count = 0, bytes = 0, durationMs = 0;
-    req.onsuccess = () => {
-      const cur = req.result;
-      if (!cur) return resolve({ count, bytes, durationMs });
-      const value = cur.value || {};
-      count += 1;
-      bytes += Number(value.size || value?.blob?.size || 0) || 0;
-      durationMs += Number(value.durationMs || 0) || 0;
-      cur.continue();
-    };
-    req.onerror = () => reject(req.error || new Error("No pude calcular el uso de audios"));
-  });
-}
-function getVoiceAnalysisSignalId(item = modalCurrentItem) {
-  return String(item?.id || item?.signal_id || item?.journal_id || "").trim();
-}
-function formatVoiceDuration(ms) {
-  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
-  const min = Math.floor(total / 60);
-  const sec = String(total % 60).padStart(2, "0");
-  return `${min}:${sec}`;
-}
-function formatVoiceSignalSecond(ms) {
-  const n = Number(ms);
-  if (!Number.isFinite(n)) return "";
-  return `s${(Math.max(0, n) / 1000).toFixed(1)}`;
-}
-function formatVoiceBytes(bytes) {
-  const n = Math.max(0, Number(bytes || 0));
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 100 * 1024 ? 1 : 0)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-function pickVoiceAnalysisMimeType() {
-  if (!("MediaRecorder" in window)) return "";
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/ogg;codecs=opus",
-    "audio/webm",
-    "audio/mp4",
-  ];
-  for (const type of candidates) {
-    try { if (MediaRecorder.isTypeSupported(type)) return type; } catch {}
-  }
-  return "";
-}
-function getVoiceAnalysisVisualElapsedMs(item = modalCurrentItem) {
-  const itemId = getVoiceAnalysisSignalId(item);
-  if (
-    itemId &&
-    modalReplayState?.open &&
-    String(modalReplayState?.itemId || "") === itemId &&
-    Number.isFinite(Number(modalReplayState?.currentMs))
-  ) {
-    return Math.max(0, Number(modalReplayState.currentMs));
-  }
-  try {
-    const elapsed = Number(getSignalElapsedMsRaw(item));
-    if (Number.isFinite(elapsed)) return Math.max(0, elapsed);
-  } catch {}
-  const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
-  const last = ticks.length ? Number(ticks[ticks.length - 1]?.ms) : 0;
-  return Number.isFinite(last) ? Math.max(0, last) : 0;
-}
-function getVoiceAnalysisVisualMode(item = modalCurrentItem) {
-  const itemId = getVoiceAnalysisSignalId(item);
-  if (itemId && modalReplayState?.open && String(modalReplayState?.itemId || "") === itemId) {
-    return {
-      mode: "replay",
-      speed: Number(modalReplayState?.speed || 1) || 1,
-      autoFollow: !!modalReplayState?.autoFollow,
-      source: String(modalReplayState?.source || "manual"),
-    };
-  }
-  return { mode: "live", speed: 1, autoFollow: true, source: "live_modal" };
-}
-function sampleVoiceAnalysisTimeline(force = false) {
-  if (!voiceAnalysisRecordingMeta || !voiceAnalysisRecordStartedAt) return;
-  const now = Date.now();
-  if (!force && now - voiceAnalysisLastTimelineSampleAt < VOICE_ANALYSIS_TIMELINE_SAMPLE_MS) return;
-  voiceAnalysisLastTimelineSampleAt = now;
-  const activeId = voiceAnalysisRecordingSignalId;
-  const currentId = getVoiceAnalysisSignalId(modalCurrentItem);
-  if (!activeId || currentId !== activeId) return;
-  const visual = getVoiceAnalysisVisualMode(modalCurrentItem);
-  const sample = {
-    audioMs: Math.max(0, now - voiceAnalysisRecordStartedAt),
-    signalMs: Math.round(getVoiceAnalysisVisualElapsedMs(modalCurrentItem)),
-    mode: visual.mode,
-    speed: visual.speed,
-    autoFollow: visual.autoFollow,
-    source: visual.source,
-  };
-  const timeline = voiceAnalysisRecordingMeta.timeline || (voiceAnalysisRecordingMeta.timeline = []);
-  const prev = timeline[timeline.length - 1];
-  if (!prev || force || Math.abs(sample.signalMs - Number(prev.signalMs || 0)) >= 100 || sample.mode !== prev.mode || sample.speed !== prev.speed) {
-    timeline.push(sample);
-  }
-}
-function hasVoiceAnalysisSyncTimeline(record) {
-  return !!(record && Array.isArray(record.timeline) && record.timeline.length >= 1);
-}
-function getVoiceAnalysisTimelineSamples(record) {
-  if (hasVoiceAnalysisSyncTimeline(record)) {
-    return record.timeline
-      .map((row) => ({
-        audioMs: Math.max(0, Number(row?.audioMs || 0)),
-        signalMs: Math.max(0, Number(row?.signalMs || 0)),
-      }))
-      .filter((row) => Number.isFinite(row.audioMs) && Number.isFinite(row.signalMs))
-      .sort((a, b) => a.audioMs - b.audioMs);
-  }
-  const startMs = Math.max(0, Number(record?.visualStartElapsedMs ?? record?.signalStartElapsedMs ?? 0));
-  const durationMs = Math.max(0, Number(record?.durationMs || 0));
-  return [
-    { audioMs: 0, signalMs: startMs },
-    { audioMs: durationMs, signalMs: startMs + durationMs },
-  ];
-}
-function getVoiceAnalysisSignalMsAtAudioMs(record, audioMs) {
-  const samples = getVoiceAnalysisTimelineSamples(record);
-  if (!samples.length) return 0;
-  const target = Math.max(0, Number(audioMs || 0));
-  if (samples.length === 1) return samples[0].signalMs;
-  if (target <= samples[0].audioMs) {
-    const a = samples[0];
-    const b = samples[1];
-    const span = Math.max(1, b.audioMs - a.audioMs);
-    return a.signalMs + ((target - a.audioMs) / span) * (b.signalMs - a.signalMs);
-  }
-  for (let i = 1; i < samples.length; i += 1) {
-    const prev = samples[i - 1];
-    const next = samples[i];
-    if (target <= next.audioMs) {
-      const span = Math.max(1, next.audioMs - prev.audioMs);
-      const ratio = (target - prev.audioMs) / span;
-      return prev.signalMs + ratio * (next.signalMs - prev.signalMs);
-    }
-  }
-  const last = samples[samples.length - 1];
-  const prev = samples[samples.length - 2] || last;
-  const span = Math.max(1, last.audioMs - prev.audioMs);
-  const slope = (last.signalMs - prev.signalMs) / span;
-  return last.signalMs + Math.max(0, target - last.audioMs) * slope;
-}
-function getVoiceAnalysisAudioMsAtSignalMs(record, signalMs) {
-  const samples = getVoiceAnalysisTimelineSamples(record)
-    .slice()
-    .sort((a, b) => a.signalMs - b.signalMs || a.audioMs - b.audioMs);
-  if (!samples.length) return 0;
-  const target = Math.max(0, Number(signalMs || 0));
-  if (samples.length === 1) return samples[0].audioMs;
-  if (target <= samples[0].signalMs) {
-    const a = samples[0];
-    const b = samples[1];
-    const span = Math.max(1, b.signalMs - a.signalMs);
-    return a.audioMs + ((target - a.signalMs) / span) * (b.audioMs - a.audioMs);
-  }
-  for (let i = 1; i < samples.length; i += 1) {
-    const prev = samples[i - 1];
-    const next = samples[i];
-    if (target <= next.signalMs) {
-      const span = Math.max(1, next.signalMs - prev.signalMs);
-      const ratio = (target - prev.signalMs) / span;
-      return prev.audioMs + ratio * (next.audioMs - prev.audioMs);
-    }
-  }
-  const last = samples[samples.length - 1];
-  const prev = samples[samples.length - 2] || last;
-  const span = Math.max(1, last.signalMs - prev.signalMs);
-  const slope = (last.audioMs - prev.audioMs) / span;
-  return last.audioMs + Math.max(0, target - last.signalMs) * slope;
-}
-function isVoiceAnalysisSyncActive() {
-  return !!(modalReplayState?.open && modalReplayState?.controlledByAudio && voiceAnalysisAudio && voiceAnalysisCurrentRecord && getVoiceAnalysisSignalId(modalCurrentItem) === String(voiceAnalysisCurrentRecord.signalId || ""));
-}
-function syncModalReplayToVoiceAudio(forceDraw = false) {
-  if (!isVoiceAnalysisSyncActive()) return false;
-  const audioMs = Math.max(0, (Number(voiceAnalysisAudio.currentTime) || 0) * 1000);
-  const signalMs = Math.max(0, Math.min(60000, getVoiceAnalysisSignalMsAtAudioMs(voiceAnalysisCurrentRecord, audioMs)));
-  modalReplayState.currentMs = signalMs;
-  modalReplayState.playing = !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended;
-  modalReplayState.autoCatchUp = false;
-  modalReplayState.liveFollow = false;
-  modalReplayState.speed = 1;
-  modalReplayState.lastFrameTs = 0;
-  if (forceDraw) drawModalReplayFrame();
-  return true;
-}
-function startVoiceAnalysisPlaybackSync(record = voiceAnalysisCurrentRecord) {
-  if (!record || !modalCurrentItem) return false;
-  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
-  if (!signalId || String(record.signalId || "") !== signalId) return false;
-  const currentAudioMs = Math.max(0, (Number(voiceAnalysisAudio?.currentTime) || 0) * 1000);
-  openModalReplay({
-    source: "voice_sync",
-    speed: 1,
-    currentMs: getVoiceAnalysisSignalMsAtAudioMs(record, currentAudioMs),
-    controlledByAudio: true,
-  });
-  syncModalReplayToVoiceAudio(true);
-  return true;
-}
-function stopVoiceAnalysisPlaybackSync({ keepOpen = true } = {}) {
-  if (!modalReplayState?.controlledByAudio) return;
-  modalReplayState.controlledByAudio = false;
-  modalReplayState.autoCatchUp = false;
-  modalReplayState.liveFollow = false;
-  modalReplayState.lastFrameTs = 0;
-  modalReplayState.playing = false;
-  if (!keepOpen && modalReplayState.open && String(modalReplayState.source || "") === "voice_sync") {
-    closeModalReplay();
-    return;
-  }
-  if (modalReplayState.open) {
-    drawModalReplayFrame();
-    updateModalReplayControlsUI();
-  }
-}
-function releaseVoiceAnalysisObjectUrl() {
-  if (voiceAnalysisAudio) {
-    try { voiceAnalysisAudio.pause(); } catch {}
-    voiceAnalysisAudio = null;
-  }
-  if (voiceAnalysisObjectUrl) {
-    try { URL.revokeObjectURL(voiceAnalysisObjectUrl); } catch {}
-    voiceAnalysisObjectUrl = "";
-  }
-}
-function stopVoiceAnalysisPlayback() {
-  if (voiceAnalysisAudio) {
-    try { voiceAnalysisAudio.pause(); voiceAnalysisAudio.currentTime = 0; } catch {}
-  }
-  if (modalReplayState?.controlledByAudio) stopVoiceAnalysisPlaybackSync({ keepOpen: true });
-  updateVoiceAnalysisUI();
-}
-function cleanupVoiceAnalysisStream() {
-  if (voiceAnalysisStream) {
-    try { voiceAnalysisStream.getTracks().forEach((t) => t.stop()); } catch {}
-  }
-  voiceAnalysisStream = null;
-}
-function updateVoiceAnalysisUI() {
-  const recordBtn = pickEl("modalVoiceRecordBtn");
-  const playBtn = pickEl("modalVoicePlayBtn");
-  const deleteBtn = pickEl("modalVoiceDeleteBtn");
-  const metaEl = pickEl("modalVoiceMeta");
-  const controls = pickEl("modalVoiceControls");
-  if (!recordBtn || !playBtn || !deleteBtn || !metaEl || !controls) return;
-
-  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
-  controls.style.display = signalId ? "flex" : "none";
-  if (!signalId) return;
-
-  const supported = !!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder && window.indexedDB);
-  const recordingHere = !!voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId === signalId;
-  recordBtn.disabled = !supported || (!!voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && !recordingHere);
-  recordBtn.classList.toggle("is-recording", recordingHere);
-
-  if (recordingHere) {
-    const elapsed = Date.now() - voiceAnalysisRecordStartedAt;
-    recordBtn.textContent = `🔴 ${formatVoiceDuration(elapsed)}`;
-    recordBtn.title = "Detener y guardar audio";
-    playBtn.classList.add("hidden");
-    deleteBtn.classList.add("hidden");
-    metaEl.classList.remove("hidden");
-    metaEl.textContent = `grabando · ${formatVoiceSignalSecond(getVoiceAnalysisVisualElapsedMs(modalCurrentItem))}`;
-    return;
-  }
-
-  recordBtn.textContent = "🎙️";
-  recordBtn.title = supported
-    ? (voiceAnalysisCurrentRecord ? "Grabar de nuevo y reemplazar el audio de esta señal" : "Grabar análisis en voz alta")
-    : "Este navegador no permite grabar audio desde la PWA";
-
-  const rec = voiceAnalysisCurrentRecord && String(voiceAnalysisCurrentRecord.signalId || "") === signalId
-    ? voiceAnalysisCurrentRecord
-    : null;
-  if (!rec) {
-    playBtn.classList.add("hidden");
-    deleteBtn.classList.add("hidden");
-    metaEl.classList.add("hidden");
-    playBtn.classList.remove("is-playing");
-    return;
-  }
-
-  const playing = !!voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended;
-  playBtn.classList.remove("hidden");
-  deleteBtn.classList.remove("hidden");
-  metaEl.classList.remove("hidden");
-  playBtn.classList.toggle("is-playing", playing);
-  playBtn.textContent = playing ? "⏸" : "▶";
-  playBtn.title = playing ? "Pausar análisis" : "Reproducir análisis grabado";
-  const startMs = Number(rec.visualStartElapsedMs ?? rec.signalStartElapsedMs ?? 0);
-  const syncLabel = hasVoiceAnalysisSyncTimeline(rec) ? " · SYNC" : "";
-  if (playing && voiceAnalysisAudio) {
-    metaEl.textContent = `${formatVoiceDuration(voiceAnalysisAudio.currentTime * 1000)}/${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}${syncLabel}`;
-  } else {
-    metaEl.textContent = `${formatVoiceDuration(rec.durationMs)} · ${formatVoiceSignalSecond(startMs)}${syncLabel}`;
-  }
-}
-async function loadVoiceAnalysisForModal(item = modalCurrentItem) {
-  const signalId = getVoiceAnalysisSignalId(item);
-  const token = ++voiceAnalysisLoadToken;
-  releaseVoiceAnalysisObjectUrl();
-  voiceAnalysisCurrentRecord = null;
-  updateVoiceAnalysisUI();
-  if (!signalId) return;
-  try {
-    const rec = await getVoiceAnalysisRecord(signalId);
-    if (token !== voiceAnalysisLoadToken || getVoiceAnalysisSignalId(modalCurrentItem) !== signalId) return;
-    voiceAnalysisCurrentRecord = rec;
-    updateVoiceAnalysisUI();
-  } catch (err) {
-    console.warn("[VOICE_ANALYSIS_LOAD]", err);
-  }
-}
-async function startVoiceAnalysisRecording() {
-  const item = modalCurrentItem;
-  const signalId = getVoiceAnalysisSignalId(item);
-  if (!signalId) return;
-  if (!navigator.mediaDevices?.getUserMedia || !("MediaRecorder" in window) || !("indexedDB" in window)) {
-    toast("🎙️ Este navegador no permite grabación local de audio.", 2200);
-    return;
-  }
-  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") return;
-  if (voiceAnalysisCurrentRecord && !confirm("Esta señal ya tiene un audio. ¿Querés reemplazarlo por una nueva grabación?")) return;
-
-  stopVoiceAnalysisPlayback();
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
-  } catch (err) {
-    const name = String(err?.name || "");
-    const msg = (name === "NotAllowedError" || name === "PermissionDeniedError")
-      ? "Permiso de micrófono denegado. Habilitalo para esta PWA y volvé a tocar 🎙️."
-      : "No pude abrir el micrófono.";
-    toast(`🎙️ ${msg}`, 3000);
-    return;
-  }
-
-  if (getVoiceAnalysisSignalId(modalCurrentItem) !== signalId) {
-    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-    return;
-  }
-
-  const mimeType = pickVoiceAnalysisMimeType();
-  let recorder;
-  try {
-    const options = { audioBitsPerSecond: VOICE_ANALYSIS_TARGET_BPS };
-    if (mimeType) options.mimeType = mimeType;
-    recorder = new MediaRecorder(stream, options);
-  } catch {
-    try { recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined); }
-    catch (err) {
-      try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-      toast("🎙️ No pude iniciar el grabador de audio.", 2500);
-      return;
-    }
-  }
-
-  voiceAnalysisStream = stream;
-  voiceAnalysisRecorder = recorder;
-  voiceAnalysisChunks = [];
-  voiceAnalysisRecordingSignalId = signalId;
-  voiceAnalysisRecordStartedAt = Date.now();
-  voiceAnalysisLastTimelineSampleAt = 0;
-  const visualStart = getVoiceAnalysisVisualElapsedMs(item);
-  let liveStart = visualStart;
-  try {
-    const raw = Number(getSignalElapsedMsRaw(item));
-    if (Number.isFinite(raw)) liveStart = raw;
-  } catch {}
-  voiceAnalysisRecordingMeta = {
-    signalId,
-    symbol: String(item?.symbol || ""),
-    direction: String(item?.direction || ""),
-    signalTime: String(item?.time || ""),
-    appVersion: APP_BUILD_VERSION,
-    startedAt: voiceAnalysisRecordStartedAt,
-    visualStartElapsedMs: Math.round(visualStart),
-    liveElapsedAtStartMs: Math.round(liveStart),
-    mimeType: recorder.mimeType || mimeType || "audio/webm",
-    requestedBitsPerSecond: VOICE_ANALYSIS_TARGET_BPS,
-    timelineVersion: 1,
-    timeline: [],
-  };
-
-  recorder.ondataavailable = (ev) => {
-    if (ev?.data && ev.data.size > 0) voiceAnalysisChunks.push(ev.data);
-  };
-  recorder.onerror = (ev) => {
-    console.warn("[VOICE_ANALYSIS_RECORDER]", ev?.error || ev);
-  };
-  recorder.onstop = async () => {
-    const meta = voiceAnalysisRecordingMeta;
-    const signalKey = voiceAnalysisRecordingSignalId;
-    const started = voiceAnalysisRecordStartedAt;
-    sampleVoiceAnalysisTimeline(true);
-    const chunks = voiceAnalysisChunks.slice();
-    const finalMime = String(recorder.mimeType || meta?.mimeType || chunks[0]?.type || "audio/webm");
-    const durationMs = Math.max(0, Date.now() - started);
-
-    voiceAnalysisRecorder = null;
-    voiceAnalysisChunks = [];
-    voiceAnalysisRecordingSignalId = "";
-    voiceAnalysisRecordingMeta = null;
-    voiceAnalysisRecordStartedAt = 0;
-    if (voiceAnalysisUiTimer) clearInterval(voiceAnalysisUiTimer);
-    voiceAnalysisUiTimer = null;
-    cleanupVoiceAnalysisStream();
-
-    try {
-      const blob = new Blob(chunks, { type: finalMime });
-      if (!signalKey || !blob.size || durationMs < 250) {
-        updateVoiceAnalysisUI();
-        if (durationMs >= 250) toast("🎙️ La grabación quedó vacía y no se guardó.", 1800);
-        return;
-      }
-      const record = {
-        ...meta,
-        signalId: signalKey,
-        blob,
-        mimeType: finalMime,
-        durationMs,
-        size: blob.size,
-        stoppedAt: Date.now(),
-        actualBitsPerSecondApprox: durationMs > 0 ? Math.round((blob.size * 8 * 1000) / durationMs) : 0,
-      };
-      await putVoiceAnalysisRecord(record);
-      if (getVoiceAnalysisSignalId(modalCurrentItem) === signalKey) {
-        voiceAnalysisCurrentRecord = record;
-        updateVoiceAnalysisUI();
-      }
-      refreshVoiceAnalysisStorageUI();
-      toast(`🎙️ Audio guardado · ${formatVoiceDuration(durationMs)} · ${formatVoiceBytes(blob.size)}`, 1800);
-    } catch (err) {
-      console.warn("[VOICE_ANALYSIS_SAVE]", err);
-      toast("🎙️ No pude guardar el audio localmente.", 2400);
-      updateVoiceAnalysisUI();
-    }
-  };
-
-  try {
-    recorder.start(1000);
-    sampleVoiceAnalysisTimeline(true);
-    voiceAnalysisUiTimer = setInterval(() => {
-      sampleVoiceAnalysisTimeline(false);
-      updateVoiceAnalysisUI();
-    }, 250);
-    try { void navigator.storage?.persist?.().catch?.(() => {}); } catch {}
-    updateVoiceAnalysisUI();
-    toast(`🎙️ Grabando análisis · ${formatVoiceSignalSecond(visualStart)}`, 1200);
-  } catch (err) {
-    voiceAnalysisRecorder = null;
-    voiceAnalysisRecordingSignalId = "";
-    voiceAnalysisRecordingMeta = null;
-    voiceAnalysisRecordStartedAt = 0;
-    cleanupVoiceAnalysisStream();
-    toast("🎙️ No pude comenzar la grabación.", 2200);
-  }
-}
-function stopVoiceAnalysisRecording({ silent = false } = {}) {
-  if (!voiceAnalysisRecorder || voiceAnalysisRecorder.state === "inactive") return false;
-  sampleVoiceAnalysisTimeline(true);
-  try {
-    voiceAnalysisRecorder.stop();
-    if (!silent) toast("⏹ Guardando audio…", 800);
-    return true;
-  } catch {
-    cleanupVoiceAnalysisStream();
-    return false;
-  }
-}
-async function toggleVoiceAnalysisPlayback() {
-  const rec = voiceAnalysisCurrentRecord;
-  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
-  if (!rec?.blob || String(rec.signalId || "") !== signalId) return;
-  if (voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended) {
-    try { voiceAnalysisAudio.pause(); } catch {}
-    if (modalReplayState?.controlledByAudio) {
-      syncModalReplayToVoiceAudio(true);
-      stopVoiceAnalysisPlaybackSync({ keepOpen: true });
-    }
-    updateVoiceAnalysisUI();
-    return;
-  }
-  if (!voiceAnalysisAudio) {
-    releaseVoiceAnalysisObjectUrl();
-    voiceAnalysisObjectUrl = URL.createObjectURL(rec.blob);
-    voiceAnalysisAudio = new Audio(voiceAnalysisObjectUrl);
-    voiceAnalysisAudio.preload = "metadata";
-    voiceAnalysisAudio.ontimeupdate = () => {
-      if (modalReplayState?.controlledByAudio) syncModalReplayToVoiceAudio(true);
-      updateVoiceAnalysisUI();
-    };
-    voiceAnalysisAudio.onplay = () => {
-      startVoiceAnalysisPlaybackSync(rec);
-      updateVoiceAnalysisUI();
-    };
-    voiceAnalysisAudio.onpause = () => {
-      if (modalReplayState?.controlledByAudio) {
-        syncModalReplayToVoiceAudio(true);
-        stopVoiceAnalysisPlaybackSync({ keepOpen: true });
-      }
-      updateVoiceAnalysisUI();
-    };
-    voiceAnalysisAudio.onended = () => {
-      try { voiceAnalysisAudio.currentTime = 0; } catch {}
-      if (modalReplayState?.controlledByAudio) {
-        syncModalReplayToVoiceAudio(true);
-        stopVoiceAnalysisPlaybackSync({ keepOpen: true });
-      }
-      updateVoiceAnalysisUI();
-    };
-    voiceAnalysisAudio.onerror = () => toast("🎙️ No pude reproducir este audio.", 2000);
-  }
-  try {
-    startVoiceAnalysisPlaybackSync(rec);
-    await voiceAnalysisAudio.play();
-    updateVoiceAnalysisUI();
-    if (hasVoiceAnalysisSyncTimeline(rec)) toast("🎙️ Audio + replay sincronizados", 900);
-  } catch {
-    toast("🎙️ Tocá ▶ nuevamente para reproducir.", 1500);
-  }
-}
-async function removeVoiceAnalysisForCurrentSignal() {
-  const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
-  if (!signalId || !voiceAnalysisCurrentRecord) return;
-  if (!confirm("¿Borrar el audio de análisis de esta señal?")) return;
-  stopVoiceAnalysisPlayback();
-  releaseVoiceAnalysisObjectUrl();
-  try {
-    await deleteVoiceAnalysisRecord(signalId);
-    voiceAnalysisCurrentRecord = null;
-    updateVoiceAnalysisUI();
-    refreshVoiceAnalysisStorageUI();
-    toast("🗑️ Audio borrado", 1200);
-  } catch {
-    toast("No pude borrar el audio.", 1800);
-  }
-}
-function bindVoiceAnalysisControls() {
-  const recordBtn = pickEl("modalVoiceRecordBtn");
-  const playBtn = pickEl("modalVoicePlayBtn");
-  const deleteBtn = pickEl("modalVoiceDeleteBtn");
-  if (recordBtn && !recordBtn.dataset.boundVoice) {
-    recordBtn.dataset.boundVoice = "1";
-    recordBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      const recordingHere = voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId === getVoiceAnalysisSignalId(modalCurrentItem);
-      if (recordingHere) stopVoiceAnalysisRecording();
-      else void startVoiceAnalysisRecording();
-    };
-  }
-  if (playBtn && !playBtn.dataset.boundVoice) {
-    playBtn.dataset.boundVoice = "1";
-    playBtn.onclick = (ev) => { ev.stopPropagation(); void toggleVoiceAnalysisPlayback(); };
-  }
-  if (deleteBtn && !deleteBtn.dataset.boundVoice) {
-    deleteBtn.dataset.boundVoice = "1";
-    deleteBtn.onclick = (ev) => { ev.stopPropagation(); void removeVoiceAnalysisForCurrentSignal(); };
-  }
-  updateVoiceAnalysisUI();
-}
-function ensureVoiceAnalysisSettingsUI() {
-  const body = document.querySelector("#settingsModal .settingsBody");
-  if (!body || document.getElementById("voiceAnalysisSettingsBox")) return;
-  const box = document.createElement("div");
-  box.id = "voiceAnalysisSettingsBox";
-  box.className = "fieldWrap";
-  box.innerHTML = `
-    <div class="fieldLabel">🎙️ Audios de análisis</div>
-    <div id="voiceAnalysisStorageInfo" style="font-size:12px;color:var(--muted);line-height:1.35;">Calculando…</div>
-    <div class="fieldActions" style="margin-top:8px;">
-      <button id="voiceAnalysisRefreshStorageBtn" class="btn btnGhost" type="button">↻ Actualizar</button>
-      <button id="voiceAnalysisClearAllBtn" class="btn btnGhost" type="button">🗑️ Borrar audios</button>
-    </div>`;
-  body.appendChild(box);
-  const refreshBtn = box.querySelector("#voiceAnalysisRefreshStorageBtn");
-  const clearBtn = box.querySelector("#voiceAnalysisClearAllBtn");
-  if (refreshBtn) refreshBtn.onclick = () => void refreshVoiceAnalysisStorageUI();
-  if (clearBtn) clearBtn.onclick = async () => {
-    if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") {
-      toast("⏹ Detené la grabación actual antes de borrar todos los audios.", 2200);
-      return;
-    }
-    if (!confirm("¿Borrar TODOS los audios de análisis guardados en esta PWA?")) return;
-    stopVoiceAnalysisPlayback();
-    try {
-      await clearVoiceAnalysisRecords();
-      voiceAnalysisCurrentRecord = null;
-      releaseVoiceAnalysisObjectUrl();
-      updateVoiceAnalysisUI();
-      await refreshVoiceAnalysisStorageUI();
-      toast("🗑️ Audios de análisis borrados", 1400);
-    } catch {
-      toast("No pude borrar todos los audios.", 1800);
-    }
-  };
-  void refreshVoiceAnalysisStorageUI();
-}
-async function refreshVoiceAnalysisStorageUI() {
-  const el = document.getElementById("voiceAnalysisStorageInfo");
-  if (!el) return;
-  try {
-    const stats = await getVoiceAnalysisStats();
-    const avg = stats.count ? stats.bytes / stats.count : 0;
-    el.textContent = `${stats.count} audio${stats.count === 1 ? "" : "s"} · ${formatVoiceBytes(stats.bytes)}${stats.count ? ` · promedio ${formatVoiceBytes(avg)}` : ""} · guardados solo en este dispositivo.`;
-  } catch {
-    el.textContent = "No pude calcular el espacio usado por los audios.";
-  }
 }
 
 /* =========================
@@ -1571,64 +825,50 @@ function getStudyPatternText(item, meta) {
   ).trim();
 }
 
-function studyDrawMonoPill(ctx, x, y, w, h, text, fontSize = 14) {
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "#111827";
-  ctx.lineWidth = 1.4;
-  studyRoundRect(ctx, x, y, w, h, h / 2, true, true, "#111827");
-  ctx.fillStyle = "#111827";
-  ctx.font = `700 ${fontSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
-  let label = String(text || "");
-  while (label.length > 3 && ctx.measureText(label).width > w - 18) label = label.slice(0, -2).trimEnd() + "…";
-  const tw = ctx.measureText(label).width;
-  ctx.fillText(label, x + (w - tw) / 2, y + h / 2 + fontSize * 0.34);
-}
-
-function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput = null, options = {}) {
+function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput = null) {
   const ctx = canvas.getContext("2d");
   const W = canvas.width;
   const H = canvas.height;
   const timeline = timelineInput || getStudyCaptureTimeline(item);
-  const showResult = options?.showResult !== false;
   const dir = String(item?.direction || "PUT").toUpperCase() === "CALL" ? "CALL" : "PUT";
   const isCall = dir === "CALL";
   const tradeResult = getStudyCaptureTradeResult(item);
   const signal60Label = getStudySignal60Label(item);
+  const signal60Correctness = getStudySignal60Correctness(item);
   const hasRealContract = !!timeline.hasRealContract;
   const resultLabel = tradeResult || "PEND";
-  const allTicksRaw = normalizeStudyExactTicks(item, exactTicks, timeline);
+  const allTicks = normalizeStudyExactTicks(item, exactTicks, timeline);
   const meta = getStudyCaptureLevelMeta(item);
   const patternText = getStudyPatternText(item, meta);
-  const baseWindowEndMs = Number(timeline.windowEndMs || 120000);
-  // II33: al ocultar resultado, la hoja no debe revelar la segunda ventana por la forma del gráfico.
-  const windowEndMs = showResult ? baseWindowEndMs : Math.min(60000, baseWindowEndMs);
-  const allTicks = allTicksRaw.filter((p) => Number(p?.ms) <= windowEndMs);
+  const windowEndMs = Number(timeline.windowEndMs || 120000);
 
-  // II33: captura pensada para imprimir con consumo mínimo de tinta.
-  const bg = "#ffffff";
-  const panel = "#ffffff";
-  const border = "#c7cbd1";
-  const grid = "#e5e7eb";
-  const line = "#111111";
-  const softText = "#4b5563";
-  const mainText = "#111827";
-  const neutral = "#6b7280";
+  const bg = "#0f141d";
+  const panel = "#141b26";
+  const border = "rgba(255,255,255,.10)";
+  const grid = "rgba(255,255,255,.09)";
+  const line = "#f8fafc";
+  const softText = "rgba(235,241,255,.72)";
+  const mainText = "#eef4ff";
+  const accent = isCall ? "#22c55e" : "#ef4444";
+  const neutral = "#38bdf8";
+  const signalColor = signal60Correctness === "correct" ? "#22c55e" : signal60Correctness === "incorrect" ? "#ef4444" : "#f59e0b";
 
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // Encabezado monocromo.
+  // Encabezado mínimo estilo Deriv
   ctx.fillStyle = panel;
   studyRoundRect(ctx, 24, 20, W - 48, 72, 16, true, true, border);
   ctx.fillStyle = mainText;
   ctx.font = "700 24px system-ui, -apple-system, Segoe UI, sans-serif";
   ctx.fillText(`${item?.symbol || "—"} · ${isCall ? "COMPRA" : "VENTA"}`, 46, 50);
+  ctx.font = "500 14px system-ui, -apple-system, Segoe UI, sans-serif";
   const sub = `${String(patternText || meta?.visualReductionPattern || "Formación").trim() || "Formación"} · ancla ${studyFormatUtc(timeline.anchorEpochMs)}`;
-  studyDrawFittedText(ctx, sub, 46, 73, showResult ? W - 360 : W - 250, "500 14px system-ui, -apple-system, Segoe UI, sans-serif", softText);
-  if (showResult) studyDrawMonoPill(ctx, W - 250, 36, 92, 28, hasRealContract ? resultLabel : signal60Label, 12);
-  studyDrawMonoPill(ctx, W - 148, 36, 98, 28, isCall ? "CALL" : "PUT", 12);
+  studyDrawFittedText(ctx, sub, 46, 73, W - 360, "500 14px system-ui, -apple-system, Segoe UI, sans-serif", softText);
+  studyDrawPill(ctx, W - 250, 36, 92, 28, hasRealContract ? resultLabel : signal60Label, hasRealContract ? (tradeResult === "ITM" ? "#22c55e" : tradeResult === "OTM" ? "#ef4444" : "#f59e0b") : signalColor, "#f8fafc", 12);
+  studyDrawPill(ctx, W - 148, 36, 98, 28, isCall ? "CALL" : "PUT", accent, "#f8fafc", 12);
 
-  // Zona principal del gráfico.
+  // Zona principal del gráfico
   const x0 = 28, y0 = 108, x1 = W - 28, y1 = H - 112;
   ctx.fillStyle = panel;
   studyRoundRect(ctx, x0, y0, x1 - x0, y1 - y0, 16, true, true, border);
@@ -1641,10 +881,15 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
   const cx0 = x0 + chartPad.l, cy0 = y0 + chartPad.t, cx1 = x1 - chartPad.r, cy1 = y1 - chartPad.b;
   const xOf = (ms) => cx0 + ((cx1 - cx0) * Math.max(0, Math.min(windowEndMs, Number(ms)))) / Math.max(windowEndMs, 1);
 
-  ctx.fillStyle = "#ffffff";
+  // Fondo del chart y sombreado suave por ventanas
+  ctx.fillStyle = "#171f2b";
   ctx.fillRect(cx0, cy0, cx1 - cx0, cy1 - cy0);
+  ctx.fillStyle = "rgba(255,255,255,.018)";
+  ctx.fillRect(xOf(0), cy0, Math.max(0, xOf(60000) - xOf(0)), cy1 - cy0);
+  ctx.fillStyle = "rgba(255,255,255,.028)";
+  ctx.fillRect(xOf(60000), cy0, Math.max(0, xOf(Math.min(windowEndMs, 120000)) - xOf(60000)), cy1 - cy0);
 
-  // Grilla tenue, apta para impresora.
+  // Grillas
   for (let i = 0; i <= 5; i++) {
     const y = cy0 + ((cy1 - cy0) * i) / 5;
     ctx.strokeStyle = grid;
@@ -1654,7 +899,7 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
   const verticalMarks = [0, 15000, 30000, 45000, 60000, 90000, 120000].filter((ms) => ms <= windowEndMs);
   verticalMarks.forEach((ms) => {
     const x = xOf(ms);
-    ctx.strokeStyle = ms === 60000 ? "#b9bec6" : grid;
+    ctx.strokeStyle = ms === 60000 ? "rgba(255,255,255,.16)" : grid;
     ctx.lineWidth = ms === 60000 ? 1.6 : 1;
     ctx.beginPath(); ctx.moveTo(x, cy0); ctx.lineTo(x, cy1); ctx.stroke();
   });
@@ -1662,18 +907,18 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
   if (allTicks.length >= 2) {
     const qs = allTicks.map((p) => Number(p.quote)).filter(Number.isFinite);
     const entryQuote = studyValidQuote(timeline.entryQuote, null);
-    const exitQuote = showResult ? studyValidQuote(timeline.exitQuote, null) : null;
-    if (Number.isFinite(entryQuote) && Number(timeline.entryMs) <= windowEndMs) qs.push(entryQuote);
-    if (Number.isFinite(exitQuote) && Number(timeline.exitMs) <= windowEndMs) qs.push(exitQuote);
+    const exitQuote = studyValidQuote(timeline.exitQuote, null);
+    if (Number.isFinite(entryQuote)) qs.push(entryQuote);
+    if (Number.isFinite(exitQuote)) qs.push(exitQuote);
     let min = Math.min(...qs), max = Math.max(...qs);
     let range = max - min;
     if (!Number.isFinite(range) || range < 1e-9) range = Math.max(Math.abs(max || 1) * 0.000001, 1);
     min -= range * 0.10; max += range * 0.10;
     const yOf = (q) => cy1 - ((Number(q) - min) / Math.max(max - min, 1e-9)) * (cy1 - cy0);
 
-    // Línea negra limpia.
+    // Línea blanca limpia
     ctx.strokeStyle = line;
-    ctx.lineWidth = 3.2;
+    ctx.lineWidth = 3.4;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.beginPath();
@@ -1683,6 +928,7 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
     });
     ctx.stroke();
 
+    // Marcadores mínimos
     const startP = allTicks[0];
     const endP = allTicks[allTicks.length - 1];
     if (startP) {
@@ -1694,50 +940,46 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
       ctx.beginPath(); ctx.arc(xOf(endP.ms), yOf(endP.quote), 4.5, 0, Math.PI * 2); ctx.fill();
     }
 
-    // Marcador de entrada. El cierre/resultado solo se imprime si el usuario lo habilita.
+    // Entrada/cierre contractual o ventana siguiente, con marcadores discretos
     if (hasRealContract && Number.isFinite(Number(timeline.entryMs))) {
       const entryMs = Math.max(0, Math.min(windowEndMs, Number(timeline.entryMs)));
+      const exitMs = Math.max(entryMs, Math.min(windowEndMs, Number(timeline.exitMs)));
       const eq = Number.isFinite(entryQuote) ? entryQuote : studyNearestQuoteAtMs(allTicks, entryMs, 3500);
-      if (Number.isFinite(eq) && Number(timeline.entryMs) <= windowEndMs) {
+      const xq = Number.isFinite(exitQuote) ? exitQuote : studyNearestQuoteAtMs(allTicks, exitMs, 3500);
+      if (Number.isFinite(eq)) {
         const ex = xOf(entryMs), ey = yOf(eq);
-        ctx.fillStyle = "#ffffff";
-        ctx.strokeStyle = neutral;
-        ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(ex, ey, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        studyDrawMonoPill(ctx, Math.max(cx0 + 4, Math.min(ex - 34, cx1 - 68)), Math.max(cy0 + 8, ey - 34), 68, 24, "ENT", 11);
+        ctx.fillStyle = neutral;
+        ctx.beginPath(); ctx.arc(ex, ey, 7, 0, Math.PI * 2); ctx.fill();
+        studyDrawPill(ctx, Math.max(cx0 + 4, Math.min(ex - 34, cx1 - 68)), Math.max(cy0 + 8, ey - 34), 68, 24, "ENT", neutral, "#f8fafc", 11);
       }
-      if (showResult && Number.isFinite(Number(timeline.exitMs)) && Number(timeline.exitMs) <= windowEndMs) {
-        const exitMs = Math.max(entryMs, Math.min(windowEndMs, Number(timeline.exitMs)));
-        const xq = Number.isFinite(exitQuote) ? exitQuote : studyNearestQuoteAtMs(allTicks, exitMs, 3500);
-        if (Number.isFinite(xq)) {
-          const xx = xOf(exitMs), xy = yOf(xq);
-          ctx.fillStyle = "#ffffff";
-          ctx.strokeStyle = "#111827";
-          ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(xx, xy, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-          studyDrawMonoPill(ctx, Math.max(cx0 + 4, Math.min(xx - 34, cx1 - 68)), Math.max(cy0 + 8, xy - 34), 68, 24, resultLabel, 11);
-        }
+      if (Number.isFinite(xq)) {
+        const xx = xOf(exitMs), xy = yOf(xq);
+        const resColor = tradeResult === "ITM" ? "#22c55e" : tradeResult === "OTM" ? "#ef4444" : "#f59e0b";
+        ctx.fillStyle = resColor;
+        ctx.beginPath(); ctx.arc(xx, xy, 7, 0, Math.PI * 2); ctx.fill();
+        studyDrawPill(ctx, Math.max(cx0 + 4, Math.min(xx - 34, cx1 - 68)), Math.max(cy0 + 8, xy - 34), 68, 24, resultLabel, resColor, "#f8fafc", 11);
       }
-    } else if (showResult && Number.isFinite(Number(timeline.signalStartMs)) && Number.isFinite(Number(timeline.signalEndMs))) {
+    } else if (Number.isFinite(Number(timeline.signalStartMs)) && Number.isFinite(Number(timeline.signalEndMs))) {
       const sMs = Math.max(0, Math.min(windowEndMs, Number(timeline.signalStartMs)));
       const eMs = Math.max(sMs, Math.min(windowEndMs, Number(timeline.signalEndMs)));
       const sq = studyValidQuote(timeline.signalStartQuote, null) ?? studyNearestQuoteAtMs(allTicks, sMs, 3500);
       const eq = studyValidQuote(timeline.signalEndQuote, null) ?? studyNearestQuoteAtMs(allTicks, eMs, 3500);
       if (Number.isFinite(sq)) {
         const sx = xOf(sMs), sy = yOf(sq);
-        ctx.fillStyle = "#ffffff"; ctx.strokeStyle = neutral; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(sx, sy, 6.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = neutral;
+        ctx.beginPath(); ctx.arc(sx, sy, 6.5, 0, Math.PI * 2); ctx.fill();
       }
       if (Number.isFinite(eq)) {
         const ex = xOf(eMs), ey = yOf(eq);
-        ctx.fillStyle = "#ffffff"; ctx.strokeStyle = "#111827"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(ex, ey, 6.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = signalColor;
+        ctx.beginPath(); ctx.arc(ex, ey, 6.5, 0, Math.PI * 2); ctx.fill();
       }
     }
 
+    // Etiquetas de precio mínimas a la derecha
     const priceSteps = 4;
     ctx.font = "12px system-ui, -apple-system, Segoe UI, sans-serif";
-    ctx.fillStyle = "#6b7280";
+    ctx.fillStyle = "rgba(255,255,255,.52)";
     for (let i = 0; i <= priceSteps; i++) {
       const frac = i / priceSteps;
       const q = max - (max - min) * frac;
@@ -1748,68 +990,42 @@ function drawStudyCaptureToCanvas(canvas, item, exactTicks = [], timelineInput =
     }
   }
 
-  const timeLabels = showResult
-    ? [[0, "0s"], [30000, "30s"], [60000, "60s"], [90000, "+30s"], [120000, "+60s"]]
-    : [[0, "0s"], [15000, "15s"], [30000, "30s"], [45000, "45s"], [60000, "60s"]];
+  // Etiquetas temporales
+  const timeLabels = [
+    [0, "0s"], [30000, "30s"], [60000, "60s"], [90000, "+30s"], [120000, "+60s"]
+  ].filter(([ms]) => ms <= windowEndMs);
   ctx.font = "12px system-ui, -apple-system, Segoe UI, sans-serif";
-  timeLabels.filter(([ms]) => ms <= windowEndMs).forEach(([ms, label]) => {
+  timeLabels.forEach(([ms, label]) => {
     const x = xOf(ms);
-    ctx.fillStyle = ms === 60000 ? "#111827" : "#6b7280";
+    ctx.fillStyle = ms === 60000 ? "rgba(255,255,255,.88)" : "rgba(255,255,255,.58)";
     const tw = ctx.measureText(label).width;
     ctx.fillText(label, Math.max(cx0, Math.min(cx1 - tw, x - tw / 2)), cy1 + 24);
   });
-  ctx.fillStyle = "#4b5563";
+  ctx.fillStyle = "rgba(255,255,255,.56)";
   ctx.font = "600 12px system-ui, -apple-system, Segoe UI, sans-serif";
   ctx.fillText("Formación", cx0 + 4, cy0 - 8);
-  if (showResult && windowEndMs >= 120000) {
+  if (windowEndMs >= 120000) {
     const t = "Próximos 60s";
+    const tw = ctx.measureText(t).width;
     ctx.fillText(t, Math.max(cx0 + 4, xOf(60000) + 6), cy0 - 8);
   }
 
   ctx.restore();
 
-  // Pie monocromo. Con resultado oculto no se filtra ninguna pista del desenlace.
+  // Pie simple
   const fy = H - 86;
   ctx.fillStyle = panel;
   studyRoundRect(ctx, 24, fy, W - 48, 50, 14, true, true, border);
-  if (showResult) {
-    const foot1 = hasRealContract
-      ? `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Entrada ${studyFormatUtc(timeline.entryEpochMs)} · Cierre ${studyFormatUtc(timeline.exitEpochMs)}`
-      : `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Alarma ${studyFormatUtc(timeline.alarmEpochMs)} · Resultado ${signal60Label}`;
-    const foot2 = hasRealContract
-      ? `Resultado Deriv ${resultLabel} · Próximos 60s ${signal60Label}`
-      : `Ventana siguiente 60→120s · sin operación Deriv`;
-    studyDrawFittedText(ctx, foot1, 44, fy + 20, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
-    studyDrawFittedText(ctx, foot2, 44, fy + 38, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
-  } else {
-    const foot = hasRealContract
-      ? `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Entrada ${studyFormatUtc(timeline.entryEpochMs)}`
-      : `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Alarma ${studyFormatUtc(timeline.alarmEpochMs)}`;
-    studyDrawFittedText(ctx, foot, 44, fy + 30, W - 120, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
-
-    // II38: pista visual mínima para impresión sin resultado.
-    // Debe ser poco visible a primera vista, pero localizable luego.
-    const hiddenOutcome = getStudySignal60Outcome(item);
-    const hiddenArrow = hiddenOutcome === "up" ? "↑" : hiddenOutcome === "down" ? "↓" : hiddenOutcome === "flat" ? "→" : "";
-    if (hiddenArrow) {
-      const hintX = W - 72;
-      const hintY = fy + 25;
-      ctx.save();
-      ctx.strokeStyle = "#dde2e8";
-      ctx.fillStyle = "#eef2f6";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(hintX, hintY, 15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = "#b8c0ca";
-      ctx.font = "700 16px system-ui, -apple-system, Segoe UI, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(hiddenArrow, hintX, hintY + 0.5);
-      ctx.restore();
-    }
-  }
+  ctx.fillStyle = mainText;
+  ctx.font = "600 13px system-ui, -apple-system, Segoe UI, sans-serif";
+  const foot1 = hasRealContract
+    ? `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Entrada ${studyFormatUtc(timeline.entryEpochMs)} · Cierre ${studyFormatUtc(timeline.exitEpochMs)}`
+    : `Ancla ${studyFormatUtc(timeline.anchorEpochMs)} · Alarma ${studyFormatUtc(timeline.alarmEpochMs)} · Resultado ${signal60Label}`;
+  const foot2 = hasRealContract
+    ? `Resultado Deriv ${resultLabel} · Próximos 60s ${signal60Label}`
+    : `Ventana siguiente 60→120s · sin operación Deriv`;
+  studyDrawFittedText(ctx, foot1, 44, fy + 20, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
+  studyDrawFittedText(ctx, foot2, 44, fy + 38, W - 88, "600 13px system-ui, -apple-system, Segoe UI, sans-serif", softText);
 }
 
 async function generateAndSaveStudyCaptureForSignal(item, { force = false } = {}) {
@@ -1900,272 +1116,6 @@ async function generateAndSaveStudyCaptureForSignal(item, { force = false } = {}
   return record;
 }
 
-
-function getStudyPrintShowResultPreference() {
-  try {
-    const raw = localStorage.getItem(STUDY_PRINT_SHOW_RESULT_KEY);
-    return raw === null ? true : raw === "1";
-  } catch {
-    return true;
-  }
-}
-function setStudyPrintShowResultPreference(value) {
-  try { localStorage.setItem(STUDY_PRINT_SHOW_RESULT_KEY, value ? "1" : "0"); } catch {}
-}
-function getStudyPrintSelectionKey(item, opts = {}) {
-  return String(opts?.journalId || item?.journal_id || makeJournalIdFromSignal(item) || item?.id || "");
-}
-function resolveStudyPrintSourceItem(item) {
-  if (!item) return null;
-  const liveItem = item?.id ? findHistoryItemById(String(item.id)) : null;
-  if (!liveItem) return item;
-  return {
-    ...item,
-    ...liveItem,
-    journal_id: item?.journal_id || liveItem?.journal_id || "",
-    trade: { ...(liveItem?.trade || {}), ...(item?.trade || {}) },
-    signalResult60: liveItem?.signalResult60 || item?.signalResult60 || null,
-  };
-}
-async function generateStudyPrintDataUrl(item, { showResult = true } = {}) {
-  let sourceItem = resolveStudyPrintSourceItem(item);
-  if (!sourceItem || !isStudyCaptureReadyItem(sourceItem)) return null;
-  if (isFloatingSignalItem(sourceItem)) {
-    const r = ensureSignalResult60(sourceItem);
-    if (showResult && r && serverNowMs() >= Number(r.deadlineEpochMs)) {
-      try { await hydrateSignalResult60FromDerivHistory(sourceItem, { force: true }); } catch {}
-      sourceItem = resolveStudyPrintSourceItem(sourceItem) || sourceItem;
-    }
-  }
-  const timeline = getStudyCaptureTimeline(sourceItem);
-  // II39: si el resultado está oculto, la hoja solo dibuja 0–60s. Esos ticks
-  // ya forman parte de la señal guardada, así que pedir ticks_history otra vez
-  // agrega hasta 7s de espera por operación sin aportar nada visible.
-  const exactTicks = showResult ? await fetchStudyCaptureExactTicks(sourceItem, timeline) : [];
-  const canvas = document.createElement("canvas");
-  canvas.width = 1600;
-  canvas.height = 960;
-  drawStudyCaptureToCanvas(canvas, sourceItem, exactTicks, timeline, { showResult: !!showResult });
-  return {
-    item: sourceItem,
-    dataUrl: canvas.toDataURL("image/png", 0.94),
-  };
-}
-function getStudyPrintItemFromSelectionKey(key) {
-  const k = String(key || "");
-  if (!k) return null;
-  const entry = (tradesJournal || []).find((x) => String(x?.journal_id || "") === k);
-  if (entry) return buildModalItemFromTradeEntry(entry) || entry;
-  const byId = findHistoryItemById(k);
-  if (byId) return byId;
-  return null;
-}
-function getSelectedStudyPrintItems() {
-  const out = [];
-  for (const key of studyPrintSelectedKeys) {
-    const item = getStudyPrintItemFromSelectionKey(key);
-    if (item) out.push(item);
-  }
-  return out;
-}
-function updateStudyPrintControlsUI() {
-  const btn = document.getElementById("studyPrintSelectedBtn");
-  const count = studyPrintSelectedKeys.size;
-  if (btn) {
-    btn.textContent = `🖨️ Imprimir seleccionadas (${count})`;
-    btn.disabled = count < 1;
-  }
-  const clear = document.getElementById("studyPrintClearSelectionBtn");
-  if (clear) clear.disabled = count < 1;
-  document.querySelectorAll(".studyPrintSelectBtn").forEach((el) => {
-    const key = String(el.dataset.printKey || "");
-    const selected = !!key && studyPrintSelectedKeys.has(key);
-    el.classList.toggle("selected", selected);
-    el.setAttribute("aria-pressed", selected ? "true" : "false");
-    el.title = selected ? "Quitar de impresión" : "Seleccionar para imprimir";
-    el.style.borderColor = selected ? "rgba(34,211,238,.9)" : "";
-    el.style.background = selected ? "rgba(34,211,238,.16)" : "";
-    el.style.boxShadow = selected ? "0 0 0 1px rgba(34,211,238,.18) inset" : "";
-  });
-}
-function ensureStudyPrintControls(actions = document.getElementById("tradesActions")) {
-  if (!actions) return null;
-  let wrap = document.getElementById("studyPrintControls");
-  if (!wrap) {
-    wrap = document.createElement("div");
-    wrap.id = "studyPrintControls";
-    wrap.style.display = "flex";
-    wrap.style.flexWrap = "wrap";
-    wrap.style.alignItems = "center";
-    wrap.style.gap = "8px";
-    wrap.style.marginTop = "8px";
-    wrap.innerHTML = `
-      <button id="studyPrintSelectedBtn" class="btn btnGhost" type="button" disabled>🖨️ Imprimir seleccionadas (0)</button>
-      <label style="display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:850;color:rgba(255,255,255,.88);">
-        <input id="studyPrintShowResultToggle" type="checkbox"> Mostrar resultado
-      </label>
-      <button id="studyPrintClearSelectionBtn" class="btn btnGhost" type="button" disabled>Limpiar selección</button>
-    `;
-    actions.appendChild(wrap);
-    const toggle = wrap.querySelector("#studyPrintShowResultToggle");
-    if (toggle) {
-      toggle.checked = getStudyPrintShowResultPreference();
-      toggle.onchange = () => setStudyPrintShowResultPreference(toggle.checked);
-    }
-    const printBtn = wrap.querySelector("#studyPrintSelectedBtn");
-    if (printBtn) printBtn.onclick = () => {
-      const items = getSelectedStudyPrintItems();
-      if (!items.length) return toast("Seleccioná al menos una captura", 1500);
-      const showResult = !!wrap.querySelector("#studyPrintShowResultToggle")?.checked;
-      printStudyItems(items, { showResult });
-    };
-    const clearBtn = wrap.querySelector("#studyPrintClearSelectionBtn");
-    if (clearBtn) clearBtn.onclick = () => {
-      studyPrintSelectedKeys.clear();
-      updateStudyPrintControlsUI();
-    };
-  }
-  updateStudyPrintControlsUI();
-  return wrap;
-}
-function buildStudyPrintDocumentHtml(records, { showResult = true } = {}) {
-  const safeRecords = Array.isArray(records) ? records.filter((x) => x?.dataUrl) : [];
-  const cards = safeRecords.map((rec, idx) => {
-    return `
-      <section class="study-card">
-        <div class="question-title">¿Qué pregunta le da sentido a esta vela?</div>
-        <div class="answer-line"></div>
-        <img class="study-image" src="${rec.dataUrl}" alt="Formación ${idx + 1}">
-        <div class="notes-block">
-          <div class="notes-title">Puntos a favor</div>
-          <div class="write-line"></div><div class="write-line"></div><div class="write-line"></div>
-        </div>
-        <div class="notes-block against">
-          <div class="notes-title">Puntos en contra</div>
-          <div class="write-line"></div><div class="write-line"></div><div class="write-line"></div>
-        </div>
-      </section>`;
-  });
-  const sheets = [];
-  for (let i = 0; i < cards.length; i += 2) {
-    sheets.push(`<main class="sheet">${cards[i] || ""}${cards[i + 1] || ""}</main>`);
-  }
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Bitácora de estudio</title><style>
-    @page { size: A4 portrait; margin: 7mm; }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; background: #fff; color: #000; font-family: Arial, Helvetica, sans-serif; }
-    body { -webkit-print-color-adjust: economy; print-color-adjust: economy; }
-    .sheet { height: 283mm; display: flex; flex-direction: column; gap: 4mm; page-break-after: always; break-after: page; overflow: hidden; }
-    .sheet:last-child { page-break-after: auto; break-after: auto; }
-    .study-card { height: 139.5mm; flex: 0 0 139.5mm; overflow: hidden; break-inside: avoid; page-break-inside: avoid; padding: 1.5mm 2mm 1mm; border: .25mm solid #c9c9c9; border-radius: 2mm; }
-    .question-title { font-size: 10pt; line-height: 1.15; font-weight: 700; margin: 0 0 1.2mm; }
-    .answer-line { height: 5mm; border-bottom: .3mm solid #777; margin-bottom: 1.2mm; }
-    .study-image { display: block; width: 100%; height: 70mm; object-fit: contain; object-position: center; border: .2mm solid #d6d6d6; background: #fff; }
-    .notes-block { margin-top: 1.5mm; }
-    .notes-title { font-size: 8.5pt; font-weight: 700; line-height: 4mm; }
-    .write-line { height: 5.2mm; border-bottom: .22mm solid #999; }
-    .against { margin-top: 1.2mm; }
-    @media screen { body { max-width: 210mm; margin: 0 auto; padding: 7mm; } .sheet { border-bottom: 1px dashed #aaa; } }
-  </style></head><body data-show-result="${showResult ? "1" : "0"}">${sheets.join("")}</body></html>`;
-}
-function writeStudyPrintProgress(printWin, { done = 0, total = 1, status = "Preparando capturas…", failed = 0 } = {}) {
-  if (!printWin || printWin.closed) return;
-  const pct = Math.max(0, Math.min(100, Math.round((Number(done || 0) / Math.max(1, Number(total || 1))) * 100)));
-  try {
-    const doc = printWin.document;
-    const countEl = doc.getElementById("studyPrintProgressCount");
-    const pctEl = doc.getElementById("studyPrintProgressPct");
-    const fillEl = doc.getElementById("studyPrintProgressFill");
-    const statusEl = doc.getElementById("studyPrintProgressStatus");
-    const failedEl = doc.getElementById("studyPrintProgressFailed");
-    if (countEl) countEl.textContent = `${done} de ${total}`;
-    if (pctEl) pctEl.textContent = `${pct}%`;
-    if (fillEl) fillEl.style.width = `${pct}%`;
-    if (statusEl) statusEl.textContent = status;
-    if (failedEl) {
-      failedEl.textContent = failed ? `${failed} captura${failed === 1 ? "" : "s"} con error; se continuará con las demás.` : "";
-      failedEl.style.display = failed ? "block" : "none";
-    }
-  } catch {}
-}
-function getStudyPrintProgressHtml(total) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Preparando bitácora</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-    *{box-sizing:border-box} body{margin:0;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif;padding:24px}
-    .prep{max-width:560px;margin:12px auto}.title{font-size:18px;font-weight:800;margin-bottom:8px}.sub{font-size:13px;color:#555;margin-bottom:20px}
-    .row{display:flex;justify-content:space-between;gap:12px;font-weight:800;margin-bottom:8px}.track{height:14px;background:#e5e7eb;border-radius:999px;overflow:hidden;border:1px solid #d1d5db}
-    .fill{height:100%;width:0;background:#111827;transition:width .18s ease}.status{font-size:13px;margin-top:12px;color:#444}.failed{font-size:12px;color:#8a3b12;margin-top:9px;display:none}
-  </style></head><body><div class="prep"><div class="title">Preparando bitácora de estudio…</div><div class="sub">No cierres esta ventana. Las capturas se preparan una por una.</div><div class="row"><span id="studyPrintProgressCount">0 de ${total}</span><span id="studyPrintProgressPct">0%</span></div><div class="track"><div id="studyPrintProgressFill" class="fill"></div></div><div id="studyPrintProgressStatus" class="status">Iniciando…</div><div id="studyPrintProgressFailed" class="failed"></div></div></body></html>`;
-}
-async function printStudyItems(items, { showResult = getStudyPrintShowResultPreference() } = {}) {
-  const list = (Array.isArray(items) ? items : [items]).filter(Boolean);
-  if (!list.length) return false;
-  const printWin = window.open("", "_blank");
-  if (!printWin) {
-    toast("⚠️ El navegador bloqueó la ventana de impresión", 2200);
-    return false;
-  }
-  try {
-    printWin.document.open();
-    printWin.document.write(getStudyPrintProgressHtml(list.length));
-    printWin.document.close();
-    writeStudyPrintProgress(printWin, { done: 0, total: list.length, status: "Preparando primera captura…" });
-
-    const records = [];
-    let failed = 0;
-    for (let i = 0; i < list.length; i++) {
-      const number = i + 1;
-      writeStudyPrintProgress(printWin, {
-        done: i,
-        total: list.length,
-        failed,
-        status: `Generando captura ${number} de ${list.length}…`,
-      });
-      try {
-        const rec = await generateStudyPrintDataUrl(list[i], { showResult: !!showResult });
-        if (rec?.dataUrl) records.push(rec);
-        else failed += 1;
-      } catch (err) {
-        console.warn("[STUDY_PRINT_ITEM]", number, err);
-        failed += 1;
-      }
-      writeStudyPrintProgress(printWin, {
-        done: number,
-        total: list.length,
-        failed,
-        status: number < list.length ? `Captura ${number} lista · continuando…` : "Terminando el documento…",
-      });
-      // Cede el hilo para que Android pinte el porcentaje y no parezca congelado.
-      if (i < list.length - 1) await sleep(showResult ? 70 : 25);
-    }
-    if (!records.length) throw new Error("No se pudo generar ninguna captura");
-
-    writeStudyPrintProgress(printWin, { done: list.length, total: list.length, failed, status: "Armando páginas A4…" });
-    await sleep(60);
-    const html = buildStudyPrintDocumentHtml(records, { showResult: !!showResult });
-    printWin.document.open();
-    printWin.document.write(html);
-    printWin.document.close();
-    const doPrint = () => {
-      try { printWin.focus(); printWin.print(); } catch {}
-    };
-    if (printWin.document.readyState === "complete") setTimeout(doPrint, 500);
-    else printWin.onload = () => setTimeout(doPrint, 400);
-    if (failed) toast(`🖨️ Bitácora lista · ${records.length}/${list.length} capturas · ${failed} omitida${failed === 1 ? "" : "s"}`, 2600);
-    return true;
-  } catch (err) {
-    console.warn("[STUDY_PRINT]", err);
-    try {
-      if (printWin && !printWin.closed) {
-        printWin.document.open();
-        printWin.document.write(`<!doctype html><html><body style="font-family:Arial;padding:24px;color:#111"><h3>No se pudo preparar la bitácora</h3><p>${String(err?.message || "Error desconocido").replace(/[<>&]/g, "")}</p><p>Volvé a la PWA y probá nuevamente.</p></body></html>`);
-        printWin.document.close();
-      }
-    } catch {}
-    toast(`⚠️ No pude preparar la impresión${err?.message ? `: ${err.message}` : ""}`, 2600);
-    return false;
-  }
-}
-
 function ensureStudyCaptureModal() {
   let modal = document.getElementById("studyCaptureModal");
   if (modal) return modal;
@@ -2184,17 +1134,13 @@ function ensureStudyCaptureModal() {
   modal.innerHTML = `
     <div style="width:min(980px,96vw);max-height:94vh;overflow:auto;border-radius:22px;background:#07101d;border:1px solid rgba(255,255,255,.14);box-shadow:0 24px 80px rgba(0,0,0,.55);padding:12px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;">
-        <div style="font-weight:950;color:#eaf2ff;font-size:16px;">📸 Captura de estudio · impresión</div>
+        <div style="font-weight:950;color:#eaf2ff;font-size:16px;">📸 Captura de estudio</div>
         <button id="studyCaptureCloseBtn" class="btn btnGhost" type="button" style="min-width:44px;">✕</button>
       </div>
-      <img id="studyCaptureImg" alt="Captura de estudio" style="display:block;width:100%;height:auto;border-radius:16px;border:1px solid rgba(255,255,255,.18);background:#ffffff;"/>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:10px;padding:8px 10px;border:1px solid rgba(255,255,255,.12);border-radius:12px;font-size:13px;font-weight:850;color:rgba(255,255,255,.9);">
-        <input id="studyCaptureShowResultToggle" type="checkbox"> Mostrar resultado al imprimir
-      </label>
-      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px;">
-        <button id="studyCaptureDownloadBtn" class="btn btnGhost" type="button">⬇️ PNG</button>
+      <img id="studyCaptureImg" alt="Captura de estudio" style="display:block;width:100%;height:auto;border-radius:16px;border:1px solid rgba(255,255,255,.12);background:#020617;"/>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+        <button id="studyCaptureDownloadBtn" class="btn btnGhost" type="button">⬇️ Descargar PNG</button>
         <button id="studyCaptureShareBtn" class="btn btnGhost" type="button">📤 Compartir</button>
-        <button id="studyCapturePrintBtn" class="btn btnGhost" type="button">🖨️ Imprimir</button>
       </div>
     </div>
   `;
@@ -2223,12 +1169,6 @@ async function showStudyCaptureForItem(item) {
   const img = modal.querySelector("#studyCaptureImg");
   const dl = modal.querySelector("#studyCaptureDownloadBtn");
   const sh = modal.querySelector("#studyCaptureShareBtn");
-  const pr = modal.querySelector("#studyCapturePrintBtn");
-  const showResultToggle = modal.querySelector("#studyCaptureShowResultToggle");
-  if (showResultToggle) {
-    showResultToggle.checked = getStudyPrintShowResultPreference();
-    showResultToggle.onchange = () => setStudyPrintShowResultPreference(showResultToggle.checked);
-  }
   modal.style.display = "flex";
   modal.classList.remove("hidden");
   img.removeAttribute("src");
@@ -2244,7 +1184,6 @@ async function showStudyCaptureForItem(item) {
     img.alt = `Captura ${item.symbol || ""} ${item.direction || ""}`;
     const filename = `captura-estudio-${item.symbol || "signal"}-${String(item.time || "").replace(/[^0-9A-Za-z]+/g, "-")}-${getStudyCaptureTradeResult(item) || "trade"}.png`;
     dl.onclick = () => downloadTextFile(filename, rec.dataUrl, "image/png");
-    if (pr) pr.onclick = () => printStudyItems([item], { showResult: !!showResultToggle?.checked });
     sh.onclick = async () => {
       try {
         const blob = dataURLToBlob(rec.dataUrl);
@@ -2264,1208 +1203,6 @@ async function showStudyCaptureForItem(item) {
   }
 }
 
-
-/* =========================
-   II40 · No Touch virtual defensivo
-========================= */
-function virtualNoTouchMoney(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
-}
-function virtualNoTouchFmtPrice(value, symbol = "") {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  const decimals = Math.max(2, Math.min(6, getHighLowBarrierPresetMinDecimals(symbol) || 4));
-  return n.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "");
-}
-function getVirtualNoTouchState(item) {
-  return item?.virtualNoTouch && typeof item.virtualNoTouch === "object" ? item.virtualNoTouch : null;
-}
-function getVirtualNoTouchTradeEntryEpochMs(item) {
-  const trade = item?.trade || {};
-  const candidates = [trade.purchase_time, trade.entry_spot_time, trade.start_time, trade.buy_time];
-  for (const value of candidates) {
-    const n = studyEpochMs(value);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return serverNowMs();
-}
-function getVirtualNoTouchExpiryEpochMs(item) {
-  const trade = item?.trade || {};
-  const candidates = [trade.planned_expiry_time, trade.expiry_time, trade.date_expiry];
-  for (const value of candidates) {
-    const n = studyEpochMs(value);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  const anchor = Number(item?.signalAnchorEpochMs || 0);
-  if (Number.isFinite(anchor) && anchor > 0) return anchor + 120000;
-  const entry = getVirtualNoTouchTradeEntryEpochMs(item);
-  return entry + 60000;
-}
-function getVirtualNoTouchEntryQuote(item, entryEpochMs = getVirtualNoTouchTradeEntryEpochMs(item)) {
-  const trade = item?.trade || {};
-  const direct = [trade.entry_spot, trade.entry_tick, trade.entry_reference_quote, trade.proposal_spot];
-  for (const value of direct) {
-    const q = Number(value);
-    if (Number.isFinite(q) && q > 0) return q;
-  }
-  const symbol = String(item?.symbol || trade.symbol || "");
-  const live = Number(lastQuoteBySymbol?.[symbol]);
-  if (Number.isFinite(live) && live > 0) return live;
-  const anchor = Number(item?.signalAnchorEpochMs || 0);
-  if (Number.isFinite(anchor) && anchor > 0) {
-    const ms = Math.max(0, Math.min(60000, Number(entryEpochMs) - anchor));
-    const q = studyNearestQuoteAtMs(Array.isArray(item?.ticks) ? item.ticks : [], ms, 5000);
-    if (Number.isFinite(q) && q > 0) return q;
-  }
-  const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
-  const last = Number(ticks[ticks.length - 1]?.quote);
-  return Number.isFinite(last) && last > 0 ? last : NaN;
-}
-function getVirtualNoTouchSignalRange(item, entryEpochMs) {
-  const anchor = Number(item?.signalAnchorEpochMs || 0);
-  const maxMs = Number.isFinite(anchor) && anchor > 0
-    ? Math.max(0, Math.min(60000, Number(entryEpochMs) - anchor))
-    : 60000;
-  const qs = (Array.isArray(item?.ticks) ? item.ticks : [])
-    .filter((p) => Number(p?.ms) <= maxMs)
-    .map((p) => Number(p?.quote))
-    .filter(Number.isFinite);
-  if (qs.length < 2) return 0;
-  return Math.max(...qs) - Math.min(...qs);
-}
-function buildVirtualNoTouchLevelCandidates(item, side, entryQuote, entryEpochMs) {
-  const symbol = String(item?.symbol || item?.trade?.symbol || "");
-  const safeSide = normalizeSignalConfirmationSide(side) || String(side || "").toUpperCase();
-  if (!symbol || !["CALL", "PUT"].includes(safeSide) || !Number.isFinite(Number(entryQuote))) return [];
-
-  const currentMinute = Math.floor(Number(entryEpochMs || serverNowMs()) / 60000);
-  const signalRange = Math.max(0, Number(getVirtualNoTouchSignalRange(item, entryEpochMs) || 0));
-  const candles = getGiroPolarityCandles(symbol, currentMinute, VIRTUAL_NOTOUCH_LOOKBACK_CANDLES);
-  const candleRanges = candles
-    .map((c) => Math.abs(Number(c?.high) - Number(c?.low)))
-    .filter((x) => Number.isFinite(x) && x > 0);
-  const avgRange = candleRanges.length ? candleRanges.reduce((a, b) => a + b, 0) / candleRanges.length : signalRange;
-  const tol = Math.max(getGiroPolarityTolerance(symbol, signalRange || avgRange || 0), Math.max(signalRange, avgRange, 1e-9) * 0.02, 1e-9);
-  const distanceUnit = Math.max(avgRange, signalRange, tol * 7, 1e-9);
-  const maxDistance = Math.max(avgRange * 2.75, signalRange * 1.5, tol * 14, 1e-9);
-  const wantedType = safeSide === "PUT" ? "resistance" : "support";
-  const rows = [];
-
-  // Niveles de velas de 1 minuto previas. Solo datos anteriores a la entrada.
-  if (candles.length >= 3) {
-    const raw = [];
-    for (const c of candles) {
-      raw.push({ price: Number(c.high), type: "resistance", minute: Number(c.minute) });
-      raw.push({ price: Number(c.low), type: "support", minute: Number(c.minute) });
-    }
-    const clusters = clusterGiroPolarityLevels(raw, tol * 1.25);
-    for (const cl of clusters) {
-      if (String(cl.originalType || cl.type || "") !== wantedType) continue;
-      const touches = Number(cl.touches || 0);
-      if (touches < VIRTUAL_NOTOUCH_MIN_TOUCHES) continue;
-      const level = Number(cl.price);
-      if (!Number.isFinite(level)) continue;
-      const distance = safeSide === "PUT" ? level - entryQuote : entryQuote - level;
-      if (!(distance > 0) || distance > maxDistance) continue;
-      const ageMin = Math.max(0, currentMinute - Number(cl.lastTouchMinute || currentMinute));
-      const proximity = Math.max(0, 4 - (distance / distanceUnit) * 2.2);
-      const recency = Math.max(0, 2.5 - ageMin / 24);
-      const score = touches * 2.4 + proximity + recency;
-      rows.push({
-        source: "previous_1m_cluster",
-        type: wantedType,
-        level,
-        touches,
-        distance,
-        score,
-        age_minutes: ageMin,
-        tolerance: tol,
-        avg_range: avgRange,
-        signal_range: signalRange,
-      });
-    }
-  }
-
-  // Nivel estructural dentro de la propia formación, sin usar ticks futuros.
-  const anchor = Number(item?.signalAnchorEpochMs || 0);
-  const entrySignalMs = Number.isFinite(anchor) && anchor > 0
-    ? Math.max(0, Math.min(60000, Number(entryEpochMs) - anchor))
-    : Math.min(60000, Number(item?.ticks?.[item.ticks.length - 1]?.ms || 60000));
-  const sourceTicks = (Array.isArray(item?.ticks) ? item.ticks : [])
-    .filter((p) => Number(p?.ms) <= entrySignalMs)
-    .map((p) => ({ ms: Number(p.ms), quote: Number(p.quote) }))
-    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote));
-  if (sourceTicks.length >= 8) {
-    const markerInput = safeSide === "PUT"
-      ? sourceTicks.map((p) => ({ ms: p.ms, quote: -p.quote }))
-      : sourceTicks;
-    const markers = getRecentStructuralSupportMarkers(markerInput, item, entrySignalMs) || [];
-    for (const m of markers) {
-      const level = safeSide === "PUT" ? -Number(m.level) : Number(m.level);
-      if (!Number.isFinite(level)) continue;
-      const distance = safeSide === "PUT" ? level - entryQuote : entryQuote - level;
-      if (!(distance > 0) || distance > maxDistance) continue;
-      const touches = Math.max(1, Number(m.touches || 1));
-      const proximity = Math.max(0, 4 - (distance / distanceUnit) * 2.2);
-      const structuralBonus = String(m.type || "") === "polarity" ? 2.5 : 1.4;
-      const score = 3.2 + touches * 1.6 + Number(m.score || 0) + structuralBonus + proximity;
-      rows.push({
-        source: safeSide === "PUT" ? "formation_resistance" : "formation_support",
-        type: wantedType,
-        level,
-        touches,
-        distance,
-        score,
-        age_minutes: 0,
-        tolerance: tol,
-        avg_range: avgRange,
-        signal_range: signalRange,
-      });
-    }
-  }
-
-  rows.sort((a, b) => {
-    const ds = Number(b.score || 0) - Number(a.score || 0);
-    if (Math.abs(ds) > 0.35) return ds;
-    return Number(a.distance || Infinity) - Number(b.distance || Infinity);
-  });
-  return rows;
-}
-function selectVirtualNoTouchDefensiveLevel(item, side, entryQuote, entryEpochMs) {
-  const candidates = buildVirtualNoTouchLevelCandidates(item, side, entryQuote, entryEpochMs);
-  if (!candidates.length) return null;
-  const best = candidates[0];
-  const symbol = String(item?.symbol || item?.trade?.symbol || "");
-  const safeSide = normalizeSignalConfirmationSide(side) || String(side || "").toUpperCase();
-  const precision = Math.max(0, getHighLowBarrierPresetMinDecimals(symbol));
-  const tickStep = Math.pow(10, -precision);
-  const buffer = Math.max(
-    Number(best.tolerance || 0) * 0.65,
-    Number(best.avg_range || 0) * 0.035,
-    Number(best.signal_range || 0) * 0.025,
-    tickStep * 2,
-    1e-9
-  );
-  let barrier = safeSide === "PUT" ? Number(best.level) + buffer : Number(best.level) - buffer;
-  if (safeSide === "PUT") barrier = Math.max(barrier, Number(entryQuote) + tickStep * 2);
-  else barrier = Math.min(barrier, Number(entryQuote) - tickStep * 2);
-  if (!Number.isFinite(barrier) || barrier <= 0) return null;
-  const barrierText = barrier.toFixed(precision);
-  return {
-    ...best,
-    barrier: Number(barrierText),
-    barrier_text: barrierText,
-    buffer: Number(buffer),
-    precision,
-    candidates_considered: candidates.length,
-  };
-}
-async function requestVirtualNoTouchProposal(item, state) {
-  const symbol = String(state?.symbol || item?.symbol || "");
-  const expirySec = Math.floor(Number(state?.expiry_epoch_ms || 0) / 1000);
-  const stake = Number(state?.no_touch_stake);
-  const barrier = String(state?.barrier_text || state?.barrier || "");
-  if (!symbol || !Number.isFinite(expirySec) || !Number.isFinite(stake) || stake <= 0 || !barrier) {
-    throw new Error("Datos incompletos para cotizar No Touch virtual");
-  }
-  const base = {
-    proposal: 1,
-    amount: stake,
-    basis: "stake",
-    contract_type: "NOTOUCH",
-    currency: DEFAULT_CURRENCY,
-    barrier,
-  };
-  if (isNewPatApiMode()) base.underlying_symbol = symbol;
-  else base.symbol = symbol;
-
-  // Primero intenta mantener exactamente el mismo vencimiento que la operación principal.
-  // Si Deriv no permite un NOTOUCH tan corto, usa como simulación secundaria el mínimo
-  // práctico de 2 minutos, sin comprar nada y dejando explícito que la ventana es distinta.
-  const attempts = [
-    { mode: "same_primary_expiry", req: { ...base, date_expiry: expirySec } },
-    { mode: "duration_2m_fallback", req: { ...base, duration: 2, duration_unit: "m" } },
-  ];
-  const errors = [];
-  for (const attempt of attempts) {
-    try {
-      const res = await wsRequest(attempt.req, VIRTUAL_NOTOUCH_PROPOSAL_TIMEOUT_MS);
-      if (res?.error) throw new Error(res.error.message || res.error.code || "proposal NOTOUCH error");
-      const proposal = res?.proposal;
-      if (!proposal?.id) throw new Error("Deriv no devolvió proposal NOTOUCH");
-      return { res, req: attempt.req, proposal, expiryMode: attempt.mode };
-    } catch (err) {
-      errors.push(`${attempt.mode}: ${String(err?.message || err || "error")}`);
-    }
-  }
-  throw new Error(errors.join(" | ") || "Deriv rechazó las propuestas NOTOUCH");
-}
-function getVirtualNoTouchPrimaryBaselineProfit(item) {
-  const trade = item?.trade || {};
-  const badge = String(trade.badge || "").toUpperCase();
-  const stake = Number(trade.stake);
-  if (!Number.isFinite(stake) || stake <= 0 || !["ITM", "OTM"].includes(badge)) return null;
-  const exactProfit = (trade.profit === null || trade.profit === undefined || trade.profit === "") ? NaN : Number(trade.profit);
-  if (Number.isFinite(exactProfit)) return exactProfit;
-  if (badge === "OTM") return -stake;
-  const pct = Number(trade.actual_return_pct ?? trade.payout_pct);
-  if (Number.isFinite(pct)) return stake * pct / 100;
-  const buy = Number(trade.buy_price);
-  const payout = Number(trade.payout);
-  if (Number.isFinite(buy) && buy > 0 && Number.isFinite(payout)) return payout - buy;
-  return null;
-}
-function recomputeVirtualNoTouchCombined(item) {
-  const state = getVirtualNoTouchState(item);
-  const trade = item?.trade || {};
-  if (!state || state.status !== "resolved") return false;
-  const baseline = getVirtualNoTouchPrimaryBaselineProfit(item);
-  const ntProfit = (state.virtual_profit === null || state.virtual_profit === undefined || state.virtual_profit === "") ? NaN : Number(state.virtual_profit);
-  const actualStake = Number(trade.stake);
-  const primarySimStake = Number(state.primary_sim_stake);
-  if (![baseline, ntProfit, actualStake, primarySimStake].every(Number.isFinite) || actualStake <= 0) return false;
-  const primarySimProfit = baseline * (primarySimStake / actualStake);
-  const combined = primarySimProfit + ntProfit;
-  state.combined = {
-    model: "same_total_risk_split",
-    baseline_primary_only_profit: virtualNoTouchMoney(baseline),
-    primary_sim_stake: virtualNoTouchMoney(primarySimStake),
-    primary_sim_profit: virtualNoTouchMoney(primarySimProfit),
-    no_touch_stake: virtualNoTouchMoney(state.no_touch_stake),
-    no_touch_profit: virtualNoTouchMoney(ntProfit),
-    combined_profit: virtualNoTouchMoney(combined),
-    delta_vs_primary_only: virtualNoTouchMoney(combined - baseline),
-    total_simulated_risk: virtualNoTouchMoney(primarySimStake + Number(state.ask_price || state.no_touch_stake || 0)),
-    calculated_at: Date.now(),
-  };
-  return true;
-}
-function persistVirtualNoTouchState(item, { render = false } = {}) {
-  const state = getVirtualNoTouchState(item);
-  if (!state) return;
-  const signalId = String(item?.id || "");
-  const cid = String(item?.trade?.contract_id || "");
-  let historyChanged = false;
-  if (signalId) {
-    const live = findHistoryItemById(signalId);
-    if (live && live !== item) {
-      live.virtualNoTouch = stripForAnalysisCopy(state);
-      historyChanged = true;
-    } else if (live === item) historyChanged = true;
-  }
-  if (historyChanged || (history || []).includes(item)) {
-    try { saveHistory(history); } catch {}
-  }
-  const idx = (tradesJournal || []).findIndex((entry) =>
-    (cid && String(entry?.trade?.contract_id || "") === cid) ||
-    (signalId && String(entry?.id || "") === signalId)
-  );
-  if (idx >= 0) {
-    tradesJournal[idx].virtualNoTouch = stripForAnalysisCopy(state);
-    tradesJournal[idx].saved_at = Date.now();
-    try { saveTradesJournal(tradesJournal); } catch {}
-  }
-  try {
-    document.querySelectorAll(`.row[data-id="${cssEscape(signalId)}"]`).forEach((row) => updateRowVirtualNoTouchBadgeOnRow(row, item));
-  } catch {}
-  if (render) {
-    try { if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView(); } catch {}
-  }
-}
-function resolveVirtualNoTouchSimulation(item, result, extra = {}) {
-  const state = getVirtualNoTouchState(item);
-  if (!state || state.status === "resolved" || state.status === "unavailable") return false;
-  const normalized = String(result || "").toUpperCase() === "LOSS" ? "LOSS" : "WIN";
-  state.status = "resolved";
-  state.result = normalized;
-  state.resolved_at = Date.now();
-  Object.assign(state, extra || {});
-  const ask = (state.ask_price === null || state.ask_price === undefined || state.ask_price === "") ? NaN : Number(state.ask_price);
-  const payout = (state.payout === null || state.payout === undefined || state.payout === "") ? NaN : Number(state.payout);
-  if (Number.isFinite(ask) && ask > 0) {
-    state.virtual_profit = virtualNoTouchMoney(normalized === "WIN" && Number.isFinite(payout) ? payout - ask : -ask);
-  } else {
-    state.virtual_profit = null;
-  }
-  recomputeVirtualNoTouchCombined(item);
-  persistVirtualNoTouchState(item, { render: true });
-  return true;
-}
-function evaluateVirtualNoTouchOnTick(item, epochMs, quote) {
-  const state = getVirtualNoTouchState(item);
-  if (!state || state.status !== "active") return false;
-  const ep = Number(epochMs), q = Number(quote), barrier = Number(state.barrier);
-  const start = Number(state.virtual_entry_epoch_ms || 0), expiry = Number(state.expiry_epoch_ms || 0);
-  if (![ep, q, barrier, start, expiry].every(Number.isFinite) || ep < start) return false;
-  const side = String(state.side || item?.direction || "").toUpperCase();
-  const touched = side === "PUT" ? q >= barrier : q <= barrier;
-  if (ep <= expiry && touched) {
-    state.touched = true;
-    state.first_touch_epoch_ms = ep;
-    state.first_touch_quote = q;
-    return resolveVirtualNoTouchSimulation(item, "LOSS", { outcome_source: "live_tick_touch" });
-  }
-  if (ep >= expiry) {
-    state.touched = false;
-    return resolveVirtualNoTouchSimulation(item, "WIN", { outcome_source: "live_tick_expiry" });
-  }
-  return false;
-}
-async function hydrateVirtualNoTouchOutcomeFromDerivHistory(item) {
-  const state = getVirtualNoTouchState(item);
-  if (!state || state.status !== "active") return false;
-  const now = serverNowMs();
-  const startMs = Number(state.virtual_entry_epoch_ms || 0);
-  const expiryMs = Number(state.expiry_epoch_ms || 0);
-  const barrier = Number(state.barrier);
-  const symbol = String(state.symbol || item?.symbol || "");
-  if (!symbol || ![startMs, expiryMs, barrier].every(Number.isFinite) || now < expiryMs) return false;
-  try {
-    const res = await wsRequest({
-      ticks_history: symbol,
-      start: Math.floor(startMs / 1000),
-      end: Math.ceil((expiryMs + 2000) / 1000),
-      style: "ticks",
-      count: getHistoryCountMax(),
-      adjust_start_time: 1,
-    }, 12000);
-    const times = res?.history?.times;
-    const prices = res?.history?.prices;
-    if (!Array.isArray(times) || !Array.isArray(prices)) return false;
-    const side = String(state.side || item?.direction || "").toUpperCase();
-    for (let i = 0; i < Math.min(times.length, prices.length); i++) {
-      const ep = Number(times[i]) * 1000;
-      const q = Number(prices[i]);
-      if (!Number.isFinite(ep) || !Number.isFinite(q) || ep < startMs || ep > expiryMs) continue;
-      const touched = side === "PUT" ? q >= barrier : q <= barrier;
-      if (touched) {
-        state.touched = true;
-        state.first_touch_epoch_ms = ep;
-        state.first_touch_quote = q;
-        return resolveVirtualNoTouchSimulation(item, "LOSS", { outcome_source: "ticks_history_touch" });
-      }
-    }
-    state.touched = false;
-    return resolveVirtualNoTouchSimulation(item, "WIN", { outcome_source: "ticks_history_expiry" });
-  } catch (err) {
-    state.last_recovery_error = String(err?.message || err || "");
-    persistVirtualNoTouchState(item, { render: false });
-    return false;
-  }
-}
-async function prepareVirtualNoTouchSimulation(item) {
-  if (!VIRTUAL_NOTOUCH_ENABLED || !item?.trade?.contract_id) return false;
-  const existing = getVirtualNoTouchState(item);
-  if (existing && ["preparing", "active", "resolved"].includes(String(existing.status || ""))) return false;
-  const side = normalizeSignalConfirmationSide(item?.trade?.side || item?.direction);
-  const symbol = String(item?.trade?.symbol || item?.symbol || "");
-  const totalStake = Number(item?.trade?.stake);
-  const primaryEntryEpochMs = getVirtualNoTouchTradeEntryEpochMs(item);
-  const expiryEpochMs = getVirtualNoTouchExpiryEpochMs(item);
-  const entryQuote = getVirtualNoTouchEntryQuote(item, primaryEntryEpochMs);
-  if (!side || !symbol || !Number.isFinite(totalStake) || totalStake <= VIRTUAL_NOTOUCH_MIN_STAKE || !Number.isFinite(entryQuote) || entryQuote <= 0) return false;
-
-  let noTouchStake = Math.max(VIRTUAL_NOTOUCH_MIN_STAKE, Math.round(totalStake * VIRTUAL_NOTOUCH_TARGET_RATIO * 100) / 100);
-  noTouchStake = Math.min(noTouchStake, Math.floor((totalStake - 0.01) * 100) / 100);
-  const primarySimStake = Math.round((totalStake - noTouchStake) * 100) / 100;
-  const baseState = {
-    version: VIRTUAL_NOTOUCH_VERSION,
-    status: "preparing",
-    simulated_only: true,
-    bought: false,
-    symbol,
-    side,
-    defense_role: side === "PUT" ? "resistance" : "support",
-    primary_contract_id: String(item.trade.contract_id || ""),
-    primary_entry_epoch_ms: primaryEntryEpochMs,
-    primary_entry_quote: entryQuote,
-    expiry_epoch_ms: expiryEpochMs,
-    target_split_ratio: VIRTUAL_NOTOUCH_TARGET_RATIO,
-    effective_no_touch_ratio: totalStake > 0 ? noTouchStake / totalStake : null,
-    original_total_stake: totalStake,
-    primary_sim_stake: primarySimStake,
-    no_touch_stake: noTouchStake,
-    prepared_at: Date.now(),
-  };
-  item.virtualNoTouch = baseState;
-  if (primarySimStake <= 0 || expiryEpochMs - serverNowMs() < VIRTUAL_NOTOUCH_MIN_REMAINING_MS) {
-    baseState.status = "unavailable";
-    baseState.reason = primarySimStake <= 0 ? "stake_split_not_possible" : "too_late_for_same_expiry";
-    persistVirtualNoTouchState(item, { render: true });
-    return false;
-  }
-
-  const selected = selectVirtualNoTouchDefensiveLevel(item, side, entryQuote, primaryEntryEpochMs);
-  if (!selected) {
-    baseState.status = "unavailable";
-    baseState.reason = "no_strong_nearby_level";
-    persistVirtualNoTouchState(item, { render: true });
-    toast("🛡️ NT virtual: no encontré un nivel fuerte cercano", 1700);
-    return false;
-  }
-  Object.assign(baseState, {
-    level_source: selected.source,
-    level_type: selected.type,
-    level: selected.level,
-    level_touches: selected.touches,
-    level_score: selected.score,
-    level_distance: selected.distance,
-    level_age_minutes: selected.age_minutes,
-    level_tolerance: selected.tolerance,
-    level_candidates_considered: selected.candidates_considered,
-    barrier: selected.barrier,
-    barrier_text: selected.barrier_text,
-    barrier_buffer: selected.buffer,
-    barrier_precision: selected.precision,
-  });
-  persistVirtualNoTouchState(item, { render: false });
-
-  try {
-    const pack = await requestVirtualNoTouchProposal(item, baseState);
-    const proposal = pack.proposal || {};
-    const ask = (proposal.ask_price === null || proposal.ask_price === undefined || proposal.ask_price === "") ? NaN : Number(proposal.ask_price);
-    const payout = (proposal.payout === null || proposal.payout === undefined || proposal.payout === "") ? NaN : Number(proposal.payout);
-    const spot = (proposal.spot === null || proposal.spot === undefined || proposal.spot === "") ? NaN : Number(proposal.spot);
-    const virtualEntryMs = serverNowMs();
-    baseState.status = "active";
-    baseState.expiry_mode = String(pack.expiryMode || "same_primary_expiry");
-    if (baseState.expiry_mode === "duration_2m_fallback") {
-      baseState.expiry_epoch_ms = virtualEntryMs + 2 * 60 * 1000;
-    }
-    baseState.proposal_id = String(proposal.id || "");
-    baseState.ask_price = Number.isFinite(ask) ? ask : null;
-    if (Number.isFinite(ask) && ask > 0 && ask < totalStake) {
-      baseState.primary_sim_stake = Math.round((totalStake - ask) * 100) / 100;
-      baseState.effective_no_touch_ratio = ask / totalStake;
-      baseState.no_touch_effective_cost = ask;
-    }
-    baseState.payout = Number.isFinite(payout) ? payout : null;
-    baseState.payout_total_pct = Number.isFinite(ask) && ask > 0 && Number.isFinite(payout) ? (payout / ask) * 100 : null;
-    baseState.profit_pct = Number.isFinite(ask) && ask > 0 && Number.isFinite(payout) ? ((payout - ask) / ask) * 100 : null;
-    baseState.proposal_spot = Number.isFinite(spot) ? spot : Number(lastQuoteBySymbol?.[symbol]) || entryQuote;
-    baseState.virtual_entry_epoch_ms = virtualEntryMs;
-    baseState.proposal_received_at = Date.now();
-    baseState.request_payload_mode = isNewPatApiMode() ? "underlying_symbol_absolute_barrier" : "symbol_absolute_barrier";
-    baseState.touched = false;
-    persistVirtualNoTouchState(item, { render: true });
-    const roleTxt = side === "PUT" ? "RES" : "SOP";
-    const payoutTxt = Number.isFinite(baseState.profit_pct) ? ` · +${Math.round(baseState.profit_pct)}%` : "";
-    toast(`🛡️ NT virtual listo · ${roleTxt} ${virtualNoTouchFmtPrice(baseState.level, symbol)}${payoutTxt}`, 1800);
-    return true;
-  } catch (err) {
-    baseState.status = "unavailable";
-    baseState.reason = "proposal_failed";
-    baseState.proposal_error = String(err?.message || err || "");
-    persistVirtualNoTouchState(item, { render: true });
-    toast("🛡️ NT virtual: Deriv no devolvió cotización", 1800);
-    return false;
-  }
-}
-function scheduleVirtualNoTouchSimulation(item) {
-  if (!VIRTUAL_NOTOUCH_ENABLED || !item?.trade?.contract_id) return;
-  setTimeout(() => { prepareVirtualNoTouchSimulation(item).catch(() => {}); }, VIRTUAL_NOTOUCH_PREPARE_DELAY_MS);
-}
-function getVirtualNoTouchBadgeInfo(item) {
-  const state = getVirtualNoTouchState(item);
-  if (!state) return { visible: false, label: "", title: "", key: "" };
-  const symbol = String(state.symbol || item?.symbol || "");
-  const levelTxt = virtualNoTouchFmtPrice(state.level, symbol);
-  const barrierTxt = virtualNoTouchFmtPrice(state.barrier, symbol);
-  const role = String(state.defense_role || "") === "resistance" ? "resistencia" : "soporte";
-  const profitPctValue = (state.profit_pct === null || state.profit_pct === undefined || state.profit_pct === "") ? NaN : Number(state.profit_pct);
-  const pctTxt = Number.isFinite(profitPctValue) ? ` · payout neto +${Math.round(profitPctValue)}%` : "";
-  const expiryTxt = String(state.expiry_mode || "") === "duration_2m_fallback" ? " · ventana NT 2m" : " · mismo vencimiento";
-  if (state.status === "preparing") return { visible: true, key: "preparing", label: "🛡️ NT…", title: `No Touch virtual: buscando/cotizando ${role}.` };
-  if (state.status === "unavailable") return { visible: true, key: "unavailable", label: "🛡️ NT —", title: `No Touch virtual no disponible: ${String(state.reason || "sin dato")}.` };
-  if (state.status === "active") return { visible: true, key: "active", label: "🛡️ NT VIRTUAL", title: `${role} ${levelTxt} · barrera ${barrierTxt} · stake virtual $${Number(state.no_touch_stake || 0).toFixed(2)}${pctTxt}${expiryTxt}. No se compró: simulación.` };
-  const result = String(state.result || "").toUpperCase();
-  const delta = Number(state?.combined?.delta_vs_primary_only);
-  const deltaTxt = Number.isFinite(delta) ? ` · Δ combinado ${delta >= 0 ? "+" : ""}$${delta.toFixed(2)}` : "";
-  return {
-    visible: true,
-    key: result === "WIN" ? "win" : "loss",
-    label: result === "WIN" ? "🛡️ NT ✓" : "🛡️ NT ✕",
-    title: `${result === "WIN" ? "No Touch virtual ganador" : "No Touch virtual perdedor"} · ${role} ${levelTxt} · barrera ${barrierTxt}${pctTxt}${expiryTxt}${deltaTxt}.`,
-  };
-}
-function updateRowVirtualNoTouchBadgeOnRow(row, item) {
-  if (!row) return;
-  const el = row.querySelector(".virtualNoTouchBadge");
-  if (!el) return;
-  const info = getVirtualNoTouchBadgeInfo(item);
-  if (!info.visible) {
-    el.classList.add("hidden");
-    el.textContent = "";
-    el.title = "";
-    return;
-  }
-  el.classList.remove("hidden");
-  el.textContent = info.label;
-  el.title = info.title;
-  el.style.display = "inline-flex";
-  el.style.alignItems = "center";
-  el.style.justifyContent = "center";
-  el.style.padding = "4px 7px";
-  el.style.borderRadius = "999px";
-  el.style.fontSize = "10px";
-  el.style.fontWeight = "950";
-  el.style.whiteSpace = "nowrap";
-  if (info.key === "win") {
-    el.style.border = "1px solid rgba(34,197,94,.60)";
-    el.style.background = "rgba(34,197,94,.12)";
-    el.style.color = "#bbf7d0";
-  } else if (info.key === "loss") {
-    el.style.border = "1px solid rgba(248,113,113,.55)";
-    el.style.background = "rgba(248,113,113,.10)";
-    el.style.color = "#fecaca";
-  } else {
-    el.style.border = "1px solid rgba(56,189,248,.46)";
-    el.style.background = "rgba(14,165,233,.10)";
-    el.style.color = "#bae6fd";
-  }
-}
-function getVirtualNoTouchPortfolioStats(entries) {
-  const rows = (entries || []).map((e) => getVirtualNoTouchState(e)).filter(Boolean);
-  const resolved = rows.filter((s) => s.status === "resolved");
-  const priced = resolved.filter((s) => Number.isFinite(Number(s?.combined?.combined_profit)) && Number.isFinite(Number(s?.combined?.baseline_primary_only_profit)));
-  const sum = (key) => priced.reduce((acc, s) => acc + Number(s.combined?.[key] || 0), 0);
-  return {
-    total: rows.length,
-    active: rows.filter((s) => s.status === "active" || s.status === "preparing").length,
-    unavailable: rows.filter((s) => s.status === "unavailable").length,
-    resolved: resolved.length,
-    wins: resolved.filter((s) => String(s.result || "") === "WIN").length,
-    losses: resolved.filter((s) => String(s.result || "") === "LOSS").length,
-    priced: priced.length,
-    baseline: sum("baseline_primary_only_profit"),
-    combined: sum("combined_profit"),
-    delta: sum("delta_vs_primary_only"),
-  };
-}
-async function recoverPendingVirtualNoTouchSimulations() {
-  if (virtualNoTouchRecoveryRunning || !ws || ws.readyState !== 1) return false;
-  if (Date.now() - virtualNoTouchRecoveryLastAt < VIRTUAL_NOTOUCH_RECOVERY_COOLDOWN_MS) return false;
-  virtualNoTouchRecoveryRunning = true;
-  virtualNoTouchRecoveryLastAt = Date.now();
-  let changed = false;
-  try {
-    const now = serverNowMs();
-    const candidates = (tradesJournal || []).filter((entry) => {
-      const st = getVirtualNoTouchState(entry);
-      return st?.status === "active" && Number(st.expiry_epoch_ms || 0) > 0 && now >= Number(st.expiry_epoch_ms);
-    }).slice(0, 40);
-    for (const entry of candidates) {
-      const live = entry.id ? findHistoryItemById(String(entry.id)) : null;
-      const target = live || buildModalItemFromTradeEntry(entry);
-      if (!target) continue;
-      target.virtualNoTouch = stripForAnalysisCopy(entry.virtualNoTouch || target.virtualNoTouch || null);
-      const ok = await hydrateVirtualNoTouchOutcomeFromDerivHistory(target);
-      if (ok) changed = true;
-      await sleep(REHYDRATE_SLEEP_MS);
-    }
-  } catch {}
-  finally { virtualNoTouchRecoveryRunning = false; }
-  if (changed) {
-    try { if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView(); } catch {}
-  }
-  return changed;
-}
-function scheduleVirtualNoTouchRecovery() {
-  if (virtualNoTouchRecoveryRunning) return;
-  if (Date.now() - virtualNoTouchRecoveryLastAt < VIRTUAL_NOTOUCH_RECOVERY_COOLDOWN_MS) return;
-  setTimeout(() => { recoverPendingVirtualNoTouchSimulations().catch(() => {}); }, 0);
-}
-
-/* =========================
-   II41 · Barrera máxima ganadora s120
-   - Backtest retrospectivo: NO cambia la barrera real ni compra nada.
-   - Usa el precio real de entrada y el cierre canónico ancla+s120.
-   - Calcula la barrera relativa más lejana representable que todavía habría ganado.
-========================= */
-function isHighLowTradeForMaxBarrierStudy(item) {
-  const trade = item?.trade || {};
-  const mode = `${String(trade.exec_mode || "")} ${String(trade.contract_type || "")} ${String(trade.api_contract_type || "")}`.toUpperCase();
-  if (mode.includes("HIGHLOW") || mode.includes("HIGHER") || mode.includes("LOWER")) return true;
-  const barrierText = String(trade.barrier || "").trim();
-  return /^[-+]\d/.test(barrierText);
-}
-function getMaxBarrierStudySide(item) {
-  const tradeSide = normalizeSignalConfirmationSide(item?.trade?.side);
-  if (tradeSide) return tradeSide;
-  return normalizeSignalConfirmationSide(item?.direction);
-}
-function getMaxBarrierStudyEntryQuote(item) {
-  const trade = item?.trade || {};
-  const direct = [
-    trade.entry_spot,
-    trade.entry_reference_quote,
-    trade.entry_tick,
-    trade.proposal_spot,
-    trade.late_entry_trigger_price,
-  ];
-  for (const raw of direct) {
-    const q = Number(raw);
-    if (Number.isFinite(q) && q > 0) return { quote: q, source: raw === trade.entry_spot ? "trade_entry_spot" : "trade_entry_fallback" };
-  }
-  try {
-    const timeline = getStudyCaptureTimeline(item);
-    const entryMs = Number(timeline?.entryMs);
-    const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
-    const q = Number.isFinite(entryMs) ? studyNearestQuoteAtMs(ticks, entryMs, 3500) : null;
-    if (Number.isFinite(Number(q)) && Number(q) > 0) return { quote: Number(q), source: "saved_tick_near_entry" };
-  } catch {}
-  return { quote: null, source: "missing" };
-}
-function getMaxBarrierStudyClose120Quote(item) {
-  try {
-    if (isFloatingSignalItem(item)) syncCanonicalSignal60FromStoredTicks(item);
-  } catch {}
-  const r = item?.signalResult60 || {};
-  const canonical = Number(r?.endQuote);
-  if (Number.isFinite(canonical) && canonical > 0 && normalizeSignalResult60Outcome(r?.outcome)) {
-    return { quote: canonical, source: "signal_result_s120", epochMs: Number(r?.endEpochMs || r?.deadlineEpochMs || 0) || null };
-  }
-
-  // Fallback únicamente si el cierre real del contrato está alineado con ancla+s120.
-  try {
-    const trade = item?.trade || {};
-    const anchor = Number(getStudyCaptureAnchorEpochMs(item) || 0);
-    const expected = anchor > 0 ? anchor + 120000 : 0;
-    const exitEpoch = studyEpochMs(trade.exit_spot_time ?? trade.expiry_time ?? trade.sold_time);
-    const exitQuote = Number(trade.exit_spot);
-    if (Number.isFinite(exitQuote) && exitQuote > 0 && expected > 0 && Number.isFinite(exitEpoch) && Math.abs(exitEpoch - expected) <= 5000) {
-      return { quote: exitQuote, source: "contract_exit_aligned_s120", epochMs: exitEpoch };
-    }
-  } catch {}
-  return { quote: null, source: "pending" };
-}
-function getMaxBarrierStudyPrecision(item) {
-  const symbol = String(item?.symbol || item?.trade?.symbol || "");
-  let requested = null;
-  try {
-    const parsed = parseRelativeBarrierString(item?.trade?.barrier);
-    if (parsed && Number.isFinite(Number(parsed.precision))) requested = Number(parsed.precision);
-  } catch {}
-  return getHighLowEffectiveBarrierPrecision(symbol, requested);
-}
-function getMaxSafeBarrierDistanceStrict(favorableMove, step) {
-  const move = Number(favorableMove);
-  const unit = Number(step);
-  if (!Number.isFinite(move) || !Number.isFinite(unit) || move <= 0 || unit <= 0) return 0;
-  let ratio = move / unit;
-  const nearest = Math.round(ratio);
-  if (Math.abs(ratio - nearest) < 1e-7) ratio = nearest;
-  const steps = Math.max(0, Math.ceil(ratio) - 1); // estrictamente dentro del cierre, no igual.
-  return steps * unit;
-}
-function formatMaxBarrierDistance(symbol, value, { signedSide = "" } = {}) {
-  const precision = getHighLowEffectiveBarrierPrecision(symbol);
-  const n = Math.max(0, Number(value || 0));
-  const body = n.toFixed(precision);
-  if (signedSide === "CALL") return `+${body}`;
-  if (signedSide === "PUT") return `-${body}`;
-  return body;
-}
-function getMaxBarrierStudyUsedNetProfitPct(item) {
-  const trade = item?.trade || {};
-  const candidates = [
-    [trade.payout_pct, "trade_payout_pct"],
-    [trade.actual_return_pct, "trade_actual_return_pct"],
-    [Number.isFinite(Number(trade.payout_total_pct)) ? Number(trade.payout_total_pct) - 100 : null, "trade_payout_total_pct"],
-  ];
-  for (const [value, source] of candidates) {
-    const n = Number(value);
-    if (Number.isFinite(n) && n > 0) return { pct: n, source, exact: true };
-  }
-  const buy = Number(trade.buy_price);
-  const payout = Number(trade.payout);
-  if (Number.isFinite(buy) && buy > 0 && Number.isFinite(payout) && payout > buy) {
-    return { pct: ((payout - buy) / buy) * 100, source: "buy_price_payout", exact: true };
-  }
-  const target = Number(trade.target_profit_pct ?? item?.signalAutoEntry?.target_profit_pct ?? AUTO_TARGET_RETURN_PCT);
-  if (Number.isFinite(target) && target > 0) return { pct: target, source: "strategy_target", exact: false };
-  return { pct: null, source: "missing", exact: false };
-}
-function getMaxBarrierPayoutCurveState(item) {
-  const tradeCurve = item?.trade?.max_barrier_payout_curve;
-  const itemCurve = item?.maxBarrierPayoutCurve;
-  const curve = tradeCurve && typeof tradeCurve === "object" ? tradeCurve : (itemCurve && typeof itemCurve === "object" ? itemCurve : null);
-  return curve ? { ...curve, samples: Array.isArray(curve.samples) ? curve.samples.map((x) => ({ ...x })) : [] } : null;
-}
-function normalizeMaxBarrierPayoutCurveSample(sample) {
-  if (!sample || typeof sample !== "object") return null;
-  const distance = Math.abs(Number(sample.distance));
-  const pct = Number(sample.net_profit_pct);
-  if (!Number.isFinite(distance) || distance <= 0 || !Number.isFinite(pct) || pct <= 0) return null;
-  return {
-    ...sample,
-    distance,
-    net_profit_pct: pct,
-    payout_total_pct: Number.isFinite(Number(sample.payout_total_pct)) ? Number(sample.payout_total_pct) : pct + 100,
-  };
-}
-function persistMaxBarrierPayoutCurve(item, curve, { journal = false } = {}) {
-  if (!item || !curve) return;
-  item.maxBarrierPayoutCurve = { ...curve, samples: Array.isArray(curve.samples) ? curve.samples.map((x) => ({ ...x })) : [] };
-  item.trade ||= {};
-  item.trade.max_barrier_payout_curve = { ...item.maxBarrierPayoutCurve };
-  try { saveHistory(history); } catch {}
-  if (journal) {
-    try { upsertTradeJournalFromSignal(item); } catch {}
-    try {
-      if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView();
-    } catch {}
-  }
-}
-function addMaxBarrierPayoutCurveSample(item, sample, { journal = false } = {}) {
-  const row = normalizeMaxBarrierPayoutCurveSample(sample);
-  if (!item || !row) return null;
-  const current = getMaxBarrierPayoutCurveState(item) || {
-    version: MAX_BARRIER_PAYOUT_CURVE_VERSION,
-    status: "preparing",
-    simulated_only: true,
-    bought: false,
-    symbol: String(item?.symbol || item?.trade?.symbol || ""),
-    side: getMaxBarrierStudySide(item) || "",
-    samples: [],
-    started_at: Date.now(),
-  };
-  const precision = getHighLowEffectiveBarrierPrecision(current.symbol || item?.symbol || "");
-  const tolerance = Math.pow(10, -precision) / 2;
-  const samples = Array.isArray(current.samples) ? current.samples.map((x) => ({ ...x })) : [];
-  const idx = samples.findIndex((x) => Math.abs(Number(x?.distance) - row.distance) <= tolerance);
-  if (idx >= 0) {
-    const prev = samples[idx] || {};
-    // Preferimos la compra real como ancla; después, una cotización absoluta sobre una relativa.
-    const rank = (x) => String(x?.source || "") === "bought_barrier" ? 3 : String(x?.barrier_mode || "") === "absolute" ? 2 : 1;
-    if (rank(row) >= rank(prev)) samples[idx] = { ...prev, ...row };
-  } else {
-    samples.push(row);
-  }
-  samples.sort((a, b) => Number(a.distance) - Number(b.distance));
-  current.samples = samples.slice(0, 16);
-  current.updated_at = Date.now();
-  persistMaxBarrierPayoutCurve(item, current, { journal });
-  return current;
-}
-function getMaxBarrierPayoutEstimateFromCurve(item, targetDistance) {
-  const target = Math.abs(Number(targetDistance));
-  const curve = getMaxBarrierPayoutCurveState(item);
-  const samples = (curve?.samples || []).map(normalizeMaxBarrierPayoutCurveSample).filter(Boolean).sort((a, b) => a.distance - b.distance);
-  if (!Number.isFinite(target) || target <= 0 || !samples.length) {
-    return { available: false, status: samples.length ? "invalid_target" : "no_curve", samples: samples.length };
-  }
-  const symbol = String(curve?.symbol || item?.symbol || item?.trade?.symbol || "");
-  const precision = getHighLowEffectiveBarrierPrecision(symbol);
-  const tol = Math.pow(10, -precision) / 2;
-  const exact = samples.find((x) => Math.abs(x.distance - target) <= tol);
-  if (exact) {
-    return {
-      available: true,
-      status: "measured",
-      pct: exact.net_profit_pct,
-      source: exact.source || "quoted_curve",
-      lower: exact,
-      upper: exact,
-      samples: samples.length,
-    };
-  }
-  let lower = null, upper = null;
-  for (const row of samples) {
-    if (row.distance < target) lower = row;
-    if (row.distance > target) { upper = row; break; }
-  }
-  if (lower && upper && upper.distance > lower.distance) {
-    const ratio = (target - lower.distance) / (upper.distance - lower.distance);
-    const pct = lower.net_profit_pct + ratio * (upper.net_profit_pct - lower.net_profit_pct);
-    if (Number.isFinite(pct) && pct > 0) {
-      return { available: true, status: "interpolated", pct, lower, upper, samples: samples.length };
-    }
-  }
-  if (lower && !upper) {
-    return {
-      available: true,
-      status: "above_curve",
-      pct: lower.net_profit_pct,
-      lower,
-      upper: null,
-      samples: samples.length,
-      lower_bound: true,
-    };
-  }
-  if (!lower && upper) {
-    return {
-      available: true,
-      status: "below_curve",
-      pct: upper.net_profit_pct,
-      lower: null,
-      upper,
-      samples: samples.length,
-      upper_bound: true,
-    };
-  }
-  return { available: false, status: "insufficient_curve", samples: samples.length };
-}
-function initMaxBarrierPayoutCurveFromBoughtTrade(item) {
-  if (!item?.trade || !isHighLowTradeForMaxBarrierStudy(item)) return null;
-  const side = getMaxBarrierStudySide(item);
-  const symbol = String(item?.symbol || item?.trade?.symbol || "");
-  const parsed = parseRelativeBarrierString(item?.trade?.barrier);
-  const distance = Math.abs(Number(parsed?.barrierNum));
-  const profit = getMaxBarrierStudyUsedNetProfitPct(item);
-  const entry = getMaxBarrierStudyEntryQuote(item);
-  if (!side || !symbol || !Number.isFinite(distance) || distance <= 0 || !Number.isFinite(Number(profit.pct))) return null;
-  const curve = {
-    version: MAX_BARRIER_PAYOUT_CURVE_VERSION,
-    status: "preparing",
-    simulated_only: true,
-    bought: false,
-    symbol,
-    side,
-    entry_quote: Number.isFinite(Number(entry.quote)) ? Number(entry.quote) : null,
-    entry_quote_source: entry.source,
-    fixed_expiry_epoch_sec: Number(item?.trade?.planned_expiry_time || getHighLowFixedExpiryEpochSec(item) || 0) || null,
-    used_distance: distance,
-    started_at: Date.now(),
-    samples: [],
-  };
-  persistMaxBarrierPayoutCurve(item, curve, { journal: false });
-  return addMaxBarrierPayoutCurveSample(item, {
-    distance,
-    barrier: String(item.trade.barrier || ""),
-    net_profit_pct: Number(profit.pct),
-    payout_total_pct: Number(profit.pct) + 100,
-    source: "bought_barrier",
-    exact: !!profit.exact,
-    quoted_at: Number(item?.trade?.entry_buy_request_sent_at || Date.now()),
-    barrier_mode: String(item?.trade?.proposal_barrier_mode || "bought"),
-    api_barrier: String(item?.trade?.proposal_api_barrier || ""),
-  }, { journal: false });
-}
-async function prepareMaxBarrierPayoutCalibration(item) {
-  if (!item?.trade?.contract_id || !isHighLowTradeForMaxBarrierStudy(item)) return false;
-  const key = String(item.trade.contract_id || item.id || "");
-  if (!key || maxBarrierPayoutCalibrationInFlight.has(key)) return false;
-  maxBarrierPayoutCalibrationInFlight.add(key);
-  try {
-    initMaxBarrierPayoutCurveFromBoughtTrade(item);
-    let curve = getMaxBarrierPayoutCurveState(item);
-    const side = getMaxBarrierStudySide(item);
-    const symbol = String(item?.symbol || item?.trade?.symbol || "");
-    const parsed = parseRelativeBarrierString(item?.trade?.barrier);
-    const usedDistance = Math.abs(Number(parsed?.barrierNum));
-    const stake = Number(item?.trade?.stake || getEffectiveTradeStake());
-    const entry = getMaxBarrierStudyEntryQuote(item);
-    const entryQuote = Number(entry.quote);
-    const precision = getHighLowEffectiveBarrierPrecision(symbol, parsed?.precision);
-    const step = Math.pow(10, -precision);
-    if (!side || !symbol || !Number.isFinite(usedDistance) || usedDistance <= 0 || !Number.isFinite(stake) || stake <= 0 || !Number.isFinite(entryQuote) || entryQuote <= 0) {
-      if (curve) { curve.status = "unavailable"; curve.reason = "missing_entry_or_barrier"; persistMaxBarrierPayoutCurve(item, curve, { journal: true }); }
-      return false;
-    }
-
-    const expirySec = Number(item?.trade?.planned_expiry_time || getHighLowFixedExpiryEpochSec(item) || 0);
-    for (const mult of MAX_BARRIER_PAYOUT_CALIBRATION_MULTIPLIERS) {
-      if (tradeInFlight || autoPreProposalInFlight.size > 0 || highLowCooldownRemainingMs() > 0) {
-        curve = getMaxBarrierPayoutCurveState(item) || curve;
-        if (curve) { curve.status = "partial"; curve.reason = "aborted_to_protect_trading"; persistMaxBarrierPayoutCurve(item, curve, { journal: true }); }
-        return false;
-      }
-      if (expirySec > 0 && expirySec * 1000 - serverNowMs() < MAX_BARRIER_PAYOUT_CALIBRATION_MIN_REMAIN_MS) break;
-      let distance = Math.round((usedDistance * Number(mult)) / step) * step;
-      distance = Number(distance.toFixed(precision));
-      if (!Number.isFinite(distance) || distance <= usedDistance || distance <= 0) continue;
-      const existing = (getMaxBarrierPayoutCurveState(item)?.samples || []).some((x) => Math.abs(Number(x?.distance) - distance) <= step / 2);
-      if (existing) continue;
-      const candidate = makeBarrierCandidateFromAbsolute(side, distance, precision);
-      if (!candidate?.barrier) continue;
-      try {
-        const quoteSpot = Number(lastQuoteBySymbol?.[symbol]);
-        const plan = await getHighLowProposalQuote(
-          symbol,
-          side,
-          candidate,
-          precision,
-          stake,
-          MAX_BARRIER_PAYOUT_CALIBRATION_TIMEOUT_MS,
-          "",
-          entryQuote,
-          item,
-          false
-        );
-        if (plan && Number.isFinite(Number(plan.profitPct)) && Number(plan.profitPct) > 0) {
-          addMaxBarrierPayoutCurveSample(item, {
-            distance,
-            barrier: String(plan.barrier || candidate.barrier || ""),
-            net_profit_pct: Number(plan.profitPct),
-            payout_total_pct: Number(plan.payoutTotalPct || Number(plan.profitPct) + 100),
-            ask_price: Number.isFinite(Number(plan.askPrice)) ? Number(plan.askPrice) : null,
-            payout: Number.isFinite(Number(plan.payout)) ? Number(plan.payout) : null,
-            source: "post_entry_virtual_quote",
-            exact: true,
-            multiplier: Number(mult),
-            quoted_at: Date.now(),
-            quote_spot: Number.isFinite(quoteSpot) ? quoteSpot : null,
-            entry_reference_quote: entryQuote,
-            barrier_mode: String(plan.barrierMode || ""),
-            api_barrier: String(plan.apiBarrier || ""),
-            fixed_expiry_epoch_sec: Number(plan.fixedExpiryEpochSec || expirySec || 0) || null,
-          }, { journal: false });
-        }
-      } catch (err) {
-        curve = getMaxBarrierPayoutCurveState(item) || curve;
-        if (curve) {
-          curve.last_quote_error = String(err?.message || err || "");
-          curve.last_quote_error_at = Date.now();
-          persistMaxBarrierPayoutCurve(item, curve, { journal: false });
-        }
-        if (highLowCooldownRemainingMs() > 0) break;
-      }
-      await sleep(MAX_BARRIER_PAYOUT_CALIBRATION_BETWEEN_MS);
-    }
-    curve = getMaxBarrierPayoutCurveState(item) || curve;
-    if (curve) {
-      curve.status = (curve.samples || []).length >= 2 ? "ready" : "partial";
-      curve.completed_at = Date.now();
-      persistMaxBarrierPayoutCurve(item, curve, { journal: true });
-    }
-    return true;
-  } finally {
-    maxBarrierPayoutCalibrationInFlight.delete(key);
-  }
-}
-function scheduleMaxBarrierPayoutCalibration(item) {
-  if (!item?.trade?.contract_id || !isHighLowTradeForMaxBarrierStudy(item)) return;
-  initMaxBarrierPayoutCurveFromBoughtTrade(item);
-  setTimeout(() => {
-    const live = item?.id ? (findHistoryItemById(String(item.id)) || item) : item;
-    prepareMaxBarrierPayoutCalibration(live).catch(() => {});
-  }, MAX_BARRIER_PAYOUT_CALIBRATION_START_DELAY_MS);
-}
-
-function formatMaxBarrierProfitPct(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return "—";
-  const rounded = Math.abs(n - Math.round(n)) < 0.05 ? Math.round(n).toFixed(0) : n.toFixed(1);
-  return `${n >= 0 ? "+" : ""}${rounded}%`;
-}
-function getMaxWinningBarrierS120Info(item) {
-  if (!item || !isHighLowTradeForMaxBarrierStudy(item)) return { eligible: false, status: "not_highlow" };
-  const side = getMaxBarrierStudySide(item);
-  const symbol = String(item?.symbol || item?.trade?.symbol || "");
-  if (!side || !symbol) return { eligible: false, status: "missing_side_symbol" };
-
-  const entry = getMaxBarrierStudyEntryQuote(item);
-  const close = getMaxBarrierStudyClose120Quote(item);
-  if (!Number.isFinite(Number(entry.quote)) || !Number.isFinite(Number(close.quote))) {
-    return {
-      eligible: true,
-      status: "pending",
-      side,
-      symbol,
-      entry_quote: Number.isFinite(Number(entry.quote)) ? Number(entry.quote) : null,
-      close_s120_quote: Number.isFinite(Number(close.quote)) ? Number(close.quote) : null,
-      entry_source: entry.source,
-      close_source: close.source,
-    };
-  }
-
-  const entryQuote = Number(entry.quote);
-  const closeQuote = Number(close.quote);
-  const favorableMove = side === "CALL" ? closeQuote - entryQuote : entryQuote - closeQuote;
-  const precision = getMaxBarrierStudyPrecision(item);
-  const step = Math.pow(10, -precision);
-  const theoreticalDistance = Math.max(0, favorableMove);
-  const maxSafeDistance = getMaxSafeBarrierDistanceStrict(theoreticalDistance, step);
-  const maxSigned = side === "CALL" ? maxSafeDistance : -maxSafeDistance;
-
-  let usedDistance = null;
-  let usedSigned = null;
-  try {
-    const parsed = parseRelativeBarrierString(item?.trade?.barrier);
-    if (parsed && Number.isFinite(Number(parsed.barrierNum))) {
-      usedSigned = Number(parsed.barrierNum);
-      usedDistance = Math.abs(usedSigned);
-    }
-  } catch {}
-  const marginVsUsed = Number.isFinite(usedDistance) ? maxSafeDistance - usedDistance : null;
-  const usedWouldWin = Number.isFinite(usedDistance) ? favorableMove > usedDistance : null;
-  const usedProfitInfo = getMaxBarrierStudyUsedNetProfitPct(item);
-  const maxPayoutEstimate = maxSafeDistance > 0 ? getMaxBarrierPayoutEstimateFromCurve(item, maxSafeDistance) : { available: false, status: "no_positive_distance" };
-
-  return {
-    eligible: true,
-    status: "resolved",
-    version: "MAX_WINNING_BARRIER_S120_V1",
-    symbol,
-    side,
-    precision,
-    step,
-    entry_quote: entryQuote,
-    entry_source: entry.source,
-    close_s120_quote: closeQuote,
-    close_source: close.source,
-    close_s120_epoch_ms: Number(close.epochMs || 0) || null,
-    favorable_move: favorableMove,
-    favorable_direction: favorableMove > 0,
-    theoretical_max_distance: theoreticalDistance,
-    max_safe_distance: maxSafeDistance,
-    max_safe_barrier: maxSigned,
-    used_barrier: usedSigned,
-    used_distance: usedDistance,
-    margin_vs_used: marginVsUsed,
-    used_would_win_at_s120: usedWouldWin,
-    used_net_profit_pct: usedProfitInfo.pct,
-    used_net_profit_pct_source: usedProfitInfo.source,
-    used_net_profit_pct_exact: usedProfitInfo.exact,
-    max_barrier_net_profit_pct: maxPayoutEstimate.available ? Number(maxPayoutEstimate.pct) : null,
-    max_barrier_net_profit_pct_status: String(maxPayoutEstimate.status || ""),
-    max_barrier_net_profit_pct_samples: Number(maxPayoutEstimate.samples || 0),
-    max_barrier_net_profit_pct_lower_bound: !!maxPayoutEstimate.lower_bound,
-    max_barrier_payout_curve: getMaxBarrierPayoutCurveState(item),
-    strategy_target_profit_pct: AUTO_TARGET_RETURN_PCT,
-  };
-}
-function quantileSortedMaxBarrier(values, q) {
-  const arr = (values || []).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
-  if (!arr.length) return null;
-  if (arr.length === 1) return arr[0];
-  const pos = Math.max(0, Math.min(1, Number(q))) * (arr.length - 1);
-  const lo = Math.floor(pos), hi = Math.ceil(pos);
-  if (lo === hi) return arr[lo];
-  const frac = pos - lo;
-  return arr[lo] + (arr[hi] - arr[lo]) * frac;
-}
-function avgMaxBarrier(values) {
-  const arr = (values || []).map(Number).filter(Number.isFinite);
-  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
-}
-function getMaxWinningBarrierPortfolioStats(entries) {
-  const groups = new Map();
-  let totalEligible = 0, resolved = 0, pending = 0, noPositive = 0;
-  for (const entry of entries || []) {
-    const item = buildModalItemFromTradeEntry(entry) || entry;
-    const info = getMaxWinningBarrierS120Info(item);
-    if (!info?.eligible) continue;
-    totalEligible += 1;
-    if (info.status !== "resolved") { pending += 1; continue; }
-    resolved += 1;
-    const symbol = String(info.symbol || "—");
-    if (!groups.has(symbol)) groups.set(symbol, { symbol, resolved: 0, positive: [], used: [], margins: [], usedProfitPct: [], maxProfitPct: [], maxProfitPctMeasured: 0, noPositive: 0 });
-    const g = groups.get(symbol);
-    g.resolved += 1;
-    if (Number(info.max_safe_distance) > 0) {
-      g.positive.push(Number(info.max_safe_distance));
-      if (Number.isFinite(Number(info.used_distance))) g.used.push(Number(info.used_distance));
-      if (Number.isFinite(Number(info.margin_vs_used))) g.margins.push(Number(info.margin_vs_used));
-      if (Number.isFinite(Number(info.used_net_profit_pct))) g.usedProfitPct.push(Number(info.used_net_profit_pct));
-      if (Number.isFinite(Number(info.max_barrier_net_profit_pct))) {
-        g.maxProfitPct.push(Number(info.max_barrier_net_profit_pct));
-        if (String(info.max_barrier_net_profit_pct_status) === "measured") g.maxProfitPctMeasured += 1;
-      }
-    } else {
-      g.noPositive += 1;
-      noPositive += 1;
-    }
-  }
-  const bySymbol = Array.from(groups.values()).map((g) => {
-    const vals = g.positive.slice().sort((a, b) => a - b);
-    return {
-      symbol: g.symbol,
-      resolved: g.resolved,
-      positive_count: vals.length,
-      no_positive: g.noPositive,
-      average_max: avgMaxBarrier(vals),
-      median_max: quantileSortedMaxBarrier(vals, 0.5),
-      survive_75: quantileSortedMaxBarrier(vals, 0.25), // 75% de casos queda por encima de este umbral.
-      survive_80: quantileSortedMaxBarrier(vals, 0.20),
-      survive_90: quantileSortedMaxBarrier(vals, 0.10),
-      average_used: avgMaxBarrier(g.used),
-      average_margin_vs_used: avgMaxBarrier(g.margins),
-      average_used_net_profit_pct: avgMaxBarrier(g.usedProfitPct),
-      average_max_net_profit_pct: avgMaxBarrier(g.maxProfitPct),
-      max_profit_pct_count: g.maxProfitPct.length,
-      max_profit_pct_measured_count: g.maxProfitPctMeasured,
-    };
-  }).sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
-  return { totalEligible, resolved, pending, noPositive, bySymbol };
-}
-function getMaxWinningBarrierBadgeInfo(item) {
-  const info = getMaxWinningBarrierS120Info(item);
-  if (!info?.eligible) return { visible: false };
-  if (info.status !== "resolved") return { visible: true, key: "pending", label: "🎯 MAX…", title: "Barrera máxima s120: esperando cierre canónico/entrada." };
-  const symbol = String(info.symbol || item?.symbol || "");
-  if (!(Number(info.max_safe_distance) > 0)) {
-    return {
-      visible: true,
-      key: "zero",
-      label: "🎯 MAX 0",
-      title: `Al cierre s120 el precio no terminó a favor de ${info.side}; no existía una barrera positiva alejada de la entrada que ganara. Entrada ${virtualNoTouchFmtPrice(info.entry_quote, symbol)} · cierre s120 ${virtualNoTouchFmtPrice(info.close_s120_quote, symbol)}.`,
-    };
-  }
-  const maxTxt = formatMaxBarrierDistance(symbol, info.max_safe_distance, { signedSide: info.side });
-  const usedTxt = Number.isFinite(Number(info.used_distance)) ? formatMaxBarrierDistance(symbol, info.used_distance, { signedSide: info.side }) : "—";
-  const maxProfitStatus = String(info.max_barrier_net_profit_pct_status || "");
-  const maxProfitValue = Number(info.max_barrier_net_profit_pct);
-  const maxProfitAvailable = Number.isFinite(maxProfitValue) && maxProfitValue > 0;
-  const maxProfitPrefix = maxProfitStatus === "measured" ? "" : maxProfitStatus === "above_curve" ? "≥" : "≈";
-  const maxProfitTxt = maxProfitAvailable ? `${maxProfitPrefix}${formatMaxBarrierProfitPct(maxProfitValue)}` : "—";
-  const maxProfitExplain = maxProfitStatus === "measured"
-    ? "cotización medida para esa distancia"
-    : maxProfitStatus === "interpolated"
-      ? "estimación interpolada entre dos cotizaciones reales de esa operación"
-      : maxProfitStatus === "above_curve"
-        ? "límite inferior: la barrera MAX quedó más lejos que la mayor cotización de la curva"
-        : "sin curva histórica suficiente";
-  const margin = Number(info.margin_vs_used);
-  const marginTxt = Number.isFinite(margin)
-    ? `${margin >= 0 ? "margen extra" : "exceso"} ${formatMaxBarrierDistance(symbol, Math.abs(margin))}`
-    : "barrera usada no disponible";
-  return {
-    visible: true,
-    key: Number.isFinite(margin) && margin < 0 ? "too_far" : "ok",
-    label: `🎯 MAX ${maxTxt} · ${maxProfitTxt}`,
-    title: `Máxima barrera relativa representable que todavía habría ganado en s120: ${maxTxt}. Ganancia neta estimada/medida para esa MAX: ${maxProfitTxt} (${maxProfitExplain}; ${Number(info.max_barrier_net_profit_pct_samples || 0)} puntos de curva). Entrada ${virtualNoTouchFmtPrice(info.entry_quote, symbol)} · cierre s120 ${virtualNoTouchFmtPrice(info.close_s120_quote, symbol)} · barrera usada ${usedTxt} · ${marginTxt}. El cálculo de barrera exige cierre estrictamente del lado ganador, no igualdad.`,
-  };
-}
-function updateRowMaxWinningBarrierBadgeOnRow(row, item) {
-  if (!row) return;
-  const el = row.querySelector(".maxWinningBarrierBadge");
-  if (!el) return;
-  const info = getMaxWinningBarrierBadgeInfo(item);
-  if (!info?.visible) {
-    el.classList.add("hidden");
-    el.textContent = "";
-    el.title = "";
-    return;
-  }
-  el.classList.remove("hidden");
-  el.textContent = info.label;
-  el.title = info.title || "";
-  el.style.display = "inline-flex";
-  el.style.alignItems = "center";
-  el.style.justifyContent = "center";
-  el.style.padding = "4px 7px";
-  el.style.borderRadius = "999px";
-  el.style.fontSize = "10px";
-  el.style.fontWeight = "950";
-  el.style.whiteSpace = "nowrap";
-  if (info.key === "too_far") {
-    el.style.border = "1px solid rgba(248,113,113,.55)";
-    el.style.background = "rgba(248,113,113,.10)";
-    el.style.color = "#fecaca";
-  } else if (info.key === "zero") {
-    el.style.border = "1px solid rgba(148,163,184,.40)";
-    el.style.background = "rgba(71,85,105,.12)";
-    el.style.color = "#e2e8f0";
-  } else {
-    el.style.border = "1px solid rgba(250,204,21,.42)";
-    el.style.background = "rgba(250,204,21,.09)";
-    el.style.color = "#fef3c7";
-  }
-}
 
 /* =========================
    Trades Journal persistence
@@ -3785,12 +1522,6 @@ const MODE_ALCISTA_IRREGULAR_25S = "ALCISTA IRREGULAR QUIEBRES 30S";
 const MODE_ALCISTA_REDUCCION_30S = "ALCISTA REDUCCIÓN 30S";
 const MODE_REDUCCION_VISUAL_25S = "REDUCCIÓN VISUAL 25S";
 const MODE_REDUCCION_CONSTRUCTIVA_CONTINUA = "INICIO INAMOVIBLE";
-// II6: interruptor maestro. La variante no ejecuta detectores, confirmaciones,
-// autoentradas, SNR, polaridad, GIRO++ ni rutas históricas en paralelo.
-const INICIO_INAMOVIBLE_ONLY_RUNTIME = true;
-// Solo el detector nuevo analiza. La operativa usa el flujo guiado PGP:
-// una rama de continuidad bloquea la señal y una rama de giro requiere autorización final explícita antes de AUTO 58.
-const INICIO_INAMOVIBLE_OPERATIONS_RUNTIME = true;
 const ANALYSIS_MODE_KEY = "analysisMode_v1";
 
 const GIRO_LOGIC_VERSION = "GIRO_RAMA_REEMPLAZO_20260421";
@@ -3807,7 +1538,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_V113_33_II43_20260825";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_PMG_LATERALES_MENORES_S15_25_V113_33_II1_20260729";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -4469,7 +2200,6 @@ function makeJournalIdFromSignal(it) {
 // guarda/actualiza snapshot de trade: PENDING entra inmediatamente; ITM/OTM actualizan resultado.
 function upsertTradeJournalFromSignal(it) {
   if (!it?.trade?.badge) return;
-  try { annotateTradeOtmEntryPoint(it); } catch {}
   const b = String(it.trade.badge || "").toUpperCase();
   if (b !== "PENDING" && b !== "ITM" && b !== "OTM") return;
 
@@ -4495,7 +2225,6 @@ function upsertTradeJournalFromSignal(it) {
     signalDetectedEpochMs: it.signalDetectedEpochMs || null,
     signalResult60: it.signalResult60 && typeof it.signalResult60 === "object" ? { ...it.signalResult60 } : null,
     giroPlus: it.giroPlus && typeof it.giroPlus === "object" ? stripForAnalysisCopy(it.giroPlus) : null,
-    virtualNoTouch: it.virtualNoTouch && typeof it.virtualNoTouch === "object" ? stripForAnalysisCopy(it.virtualNoTouch) : null,
 
     // snapshot trade
     trade: { ...(it.trade || {}) },
@@ -4522,7 +2251,6 @@ function upsertTradeJournalFromSignal(it) {
       comment: prev.comment || "",
       feedback_at: prev.feedback_at || 0,
       feedback_source: prev.feedback_source || "",
-      virtualNoTouch: entry.virtualNoTouch || prev.virtualNoTouch || null,
       account_mode: entry.account_mode || prev.account_mode || getTradeJournalAccountMode(prev) || getCurrentAccountScope(),
       account_label: entry.account_label || prev.account_label || ((entry.account_mode || prev.account_mode) === ACCOUNT_MODE_REAL ? "REAL" : "DEMO"),
     };
@@ -4567,8 +2295,6 @@ function setTradeBadge(item, badge /* 'PENDING'|'ITM'|'OTM'|'' */, extra = {}) {
   item.trade ||= {};
   item.trade.badge = badge || "";
   if (extra && typeof extra === "object") Object.assign(item.trade, extra);
-  try { annotateTradeOtmEntryPoint(item); } catch {}
-  try { if (badge === "ITM" || badge === "OTM") recomputeVirtualNoTouchCombined(item); } catch {}
   saveHistory(history);
   updateRowTradeBadge(item);
 
@@ -4698,11 +2424,6 @@ let signalConfirmBuyBtnEl = null;
 let signalConfirmSellBtnEl = null;
 let signalConfirmUndoBtnEl = null;
 let signalConfirmHintEl = null;
-let signalFlowPathEl = null;
-let signalFlowQuestionEl = null;
-let signalFlowActionsEl = null;
-let signalFlowBackBtnEl = null;
-let signalFlowResetBtnEl = null;
 let giroAprendizajePanelEl = null;
 let giroAprendizajeCountEl = null;
 let giroAprendizajeHintEl = null;
@@ -4729,30 +2450,15 @@ const SIGNAL_AUTO_PREPROPOSAL_TTL_MS = 20000;
 // hace microajustes del mismo lado del spot: CALL siempre + y PUT siempre -.
 // Nunca cruza por cero durante la preparación final. Si Deriv informa que el
 // mercado se movió, conserva una única recotización y segundo buy antes de 58.9s.
-// II18: la barrera de entrada se recalibra ANTES de la autorización manual. La dirección
-// ya se conoce por la señal de giro, así que no hay motivo para esperar al 2/2 ni buscar ambos lados.
-const SIGNAL_HIGHLOW_BARRIER_LOCK_START_MS = 50000;
-const SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS = 56000;
-const SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS = 57900;
-const SIGNAL_HIGHLOW_FINAL_PLAN_MAX_AGE_MS = 2200;
-const SIGNAL_HIGHLOW_FINAL_REFRESH_MAX_ATTEMPTS = 6;
-// Rescate solo al final: si la grilla real del símbolo salta sobre el rango 225–235,
-// aceptamos el candidato más cercano hasta ±6 puntos del objetivo 230 (124–136% neto).
-const SIGNAL_HIGHLOW_FINAL_NEAREST_MAX_DISTANCE_PCT = 6.0;
+const SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS = 57250;
+const SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS = 57950;
+const SIGNAL_HIGHLOW_FINAL_PLAN_MAX_AGE_MS = 900;
 const SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS = 58900;
 const SIGNAL_HIGHLOW_LATE_CONFIRMATION_MAX_MS = 58300;
 const SIGNAL_HIGHLOW_LATE_PLAN_MAX_AGE_MS = 750;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_MAX_MS = 58550;
 const SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_DISTANCE_PCT = 1.5;
 const SIGNAL_AUTO_TIMER_DELAY_WARN_MS = 350;
-// II21: recuperación tardía favorable. II32 permite terminar PGP hasta s65 y esperar entrada favorable hasta s70.
-// Usa referencia real s60 tanto para fallos AUTO58 como para autorización 2/2 posterior a s58.
-const SIGNAL_LATE_ANALYSIS_END_MS = 65000;
-const SIGNAL_LATE_RECOVERY_START_MS = 60000;
-const SIGNAL_LATE_RECOVERY_END_MS = 70000;
-const SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS = 220;
-const SIGNAL_LATE_RECOVERY_MAX_QUOTES = 4;
-const SIGNAL_LATE_RECOVERY_PRICE_EPS = 1e-12;
 // V112.1: modo estricto. Si al tick 58 no hay proposal válida, se cancela.
 // Nunca se pide una proposal nueva después de 58 porque eso genera entradas tardías.
 const SIGNAL_AUTO_REQUIRE_PREPROPOSAL_STRICT = true;
@@ -5142,20 +2848,7 @@ let modalLive = false;
 let modalDrawRaf = null;
 let modalLastDrawAt = 0;
 let modalChartView = "line"; // "line" | "candles1m"
-let modalReplayState = {
-  open: false,
-  playing: false,
-  speed: 1,
-  currentMs: 0,
-  lastFrameTs: 0,
-  raf: null,
-  source: "manual",
-  autoCatchUp: false,
-  liveFollow: false,
-  controlledByAudio: false,
-  itemId: "",
-  liveToastShown: false,
-};
+let modalReplayState = { open: false, playing: false, speed: 1, currentMs: 0, lastFrameTs: 0, raf: null };
 const MODAL_DRAW_MIN_INTERVAL_MS = 120;
 
 let liveReplaySymbol = loadLiveReplaySymbol();
@@ -5167,7 +2860,7 @@ let liveAutoEntryState = { minuteKey: "", attempted: false, status: "idle", side
 const autoPreProposalInFlight = new Set();
 const liveAutoPreProposalCache = new Map();
 const LIVE_REPLAY_DRAW_MIN_INTERVAL_MS = 120;
-const CONSTRUCTIVE_FLOATING_WINDOW_MS = 30000;
+const CONSTRUCTIVE_FLOATING_WINDOW_MS = 25000;
 const CONSTRUCTIVE_ROLLING_KEEP_MS = 95000;
 const CONSTRUCTIVE_SCAN_MIN_WINDOW_MS = 15000;
 const CONSTRUCTIVE_SCAN_STEP_MS = 1400;
@@ -5308,9 +3001,8 @@ function setCompactModalHeader(item, ticksCount = null) {
       if (item?.minuteComplete && outcomeValue) signalOrResultTxt = formatNextCandleOutcomeLabel(item, true).replace("PROX VELA", "RESULTADO");
       else signalOrResultTxt = formatNextCandleDirectionLabel(item.direction);
     }
-    const gpSub = INICIO_INAMOVIBLE_ONLY_RUNTIME ? "" : getGiroPlusModalSummary(item);
-    const autoTxt = INICIO_INAMOVIBLE_ONLY_RUNTIME ? "" : ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`;
-    modalSub.textContent = `${item.time || "—"} · ${mode} · ticks ${n}${autoTxt}${signalOrResultTxt ? " · " + signalOrResultTxt : ""}${gpSub ? " · " + gpSub : ""}${live}`;
+    const gpSub = getGiroPlusModalSummary(item);
+    modalSub.textContent = `${item.time || "—"} · ${mode} · ticks ${n} · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s${signalOrResultTxt ? " · " + signalOrResultTxt : ""}${gpSub ? " · " + gpSub : ""}${live}`;
   }
 }
 
@@ -6192,39 +3884,48 @@ function ensureExecutionModeButton() {
    Timing de entrada Rise/Fall
    - AUTO post-58 cierre 60: espera el tick real >=58s, envía después de ese tick,
      intenta programar inicio en la próxima vela y fija el cierre al segundo 60.
-   - II15: el modo de cierre visual en 58 queda eliminado. Rise/Fall inicia en la
-     próxima vela y vence exactamente 60 segundos después, en su segundo 60.
+   - V94: Cierre visual (vela) ON/OFF: misma entrada, pero vencimiento next_start+58
+     para probar acople con el gráfico de velas visual de Deriv.
    - V66: la proposal se prepara desde 56s para que al post-58 la compra sea inmediata.
 ========================= */
 function normalizeEntryTimingMode(mode) {
-  // II15: ignoramos cualquier preferencia anterior guardada. El vencimiento queda fijo en s60.
+  const m = String(mode || "").toUpperCase().trim();
+  // V94: dejamos solo ON/OFF para Cierre visual (vela).
+  // Si venía guardado el modo viejo duration_1m, lo tratamos como OFF (cierre 60s).
+  if (m === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY) return ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
   return ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
 }
 function loadEntryTimingMode() {
-  entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
-  saveEntryTimingMode();
+  try {
+    entryTimingMode = normalizeEntryTimingMode(localStorage.getItem(ENTRY_TIMING_MODE_KEY) || ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY);
+  } catch {
+    entryTimingMode = ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
+  }
 }
 function saveEntryTimingMode() {
-  try { localStorage.setItem(ENTRY_TIMING_MODE_KEY, ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY); } catch {}
+  try { localStorage.setItem(ENTRY_TIMING_MODE_KEY, normalizeEntryTimingMode(entryTimingMode)); } catch {}
 }
 function isEntryTimingVisual58() {
-  return false;
+  return normalizeEntryTimingMode(entryTimingMode) === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
 }
 function isNextCandleExpiryTiming() {
-  // Rise/Fall conserva su rama de timing propia. Higher/Lower II17 usa
-  // date_expiry absoluto dentro de su motor, sin alterar el disparo AUTO 58.
-  return !shouldUseAutoHighLowExecution();
+  // High/Low usa barreras/proposals propios; este timing aplica a Rise/Fall.
+  const m = normalizeEntryTimingMode(entryTimingMode);
+  return (m === ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY || m === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY) && !shouldUseAutoHighLowExecution();
 }
 function isEntryTimingStoredNextCandle() {
-  return true;
+  const m = normalizeEntryTimingMode(entryTimingMode);
+  return m === ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY || m === ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
 }
 function getEntryTimingModeLabel() {
-  return "⏱️ Cierre fijo en s60";
+  const visualOn = isEntryTimingVisual58();
+  if (shouldUseAutoHighLowExecution()) return visualOn ? "⏱️ Cierre visual (vela) ON · solo RF" : "⏱️ Cierre visual (vela) OFF · solo RF";
+  return visualOn ? "⏱️ Cierre visual (vela) ON" : "⏱️ Cierre visual (vela) OFF";
 }
 function getEntryTimingShortText() {
-  return shouldUseAutoHighLowExecution()
-    ? "Higher/Lower · vencimiento fijo en s60"
-    : "Rise/Fall · vencimiento fijo en s60";
+  const visualOn = isEntryTimingVisual58();
+  if (shouldUseAutoHighLowExecution()) return visualOn ? "Cierre visual (vela) 58s · solo Rise/Fall" : "Cierre 60s · solo Rise/Fall";
+  return visualOn ? "AUTO prearmado · cierre visual (vela) 58s" : "AUTO prearmado · cierre 60s";
 }
 function buildNextCandleTimingPlan(item = null) {
   const anchorMs = Number(item?.signalAnchorEpochMs || 0);
@@ -6235,47 +3936,23 @@ function buildNextCandleTimingPlan(item = null) {
     : (Number.isFinite(itemMinute) && itemMinute > 0 ? itemMinute : currentServerMinute());
   const currentStartEpochSec = hasFloatingAnchor ? Math.floor(anchorMs / 1000) : baseMinute * 60;
   const nextStartEpochSec = currentStartEpochSec + 60;
-  const visual58 = false;
-  const nextExpiryEpochSec = nextStartEpochSec + 60;
+  const visual58 = isEntryTimingVisual58();
+  const nextExpiryEpochSec = nextStartEpochSec + (visual58 ? 58 : 60);
   const nowEpochSec = Math.floor(serverNowMs() / 1000);
   return {
-    mode: ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY,
+    mode: visual58 ? ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY : ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY,
     current_minute: baseMinute,
     current_start_epoch_sec: currentStartEpochSec,
     next_start_epoch_sec: nextStartEpochSec,
     next_expiry_epoch_sec: nextExpiryEpochSec,
     now_epoch_sec: nowEpochSec,
-    planned_duration_sec: 60,
-    visual_candle_sync: false,
-    visual_candle_expiry_second: 60,
-    expected_contract_duration_if_bought_at_58: 62,
+    planned_duration_sec: nextExpiryEpochSec - nextStartEpochSec,
+    visual_candle_sync: visual58,
+    visual_candle_expiry_second: visual58 ? 58 : 60,
+    expected_contract_duration_if_bought_at_58: visual58 ? 60 : 62,
     floating_anchor: hasFloatingAnchor,
     anchor_epoch_ms: hasFloatingAnchor ? anchorMs : null,
   };
-}
-
-// II17: Higher/Lower usa el mismo vencimiento absoluto que Rise/Fall.
-// Si la compra se envía cerca de s58, el contrato dura ~62 s y vence exactamente
-// en el s60 de la vela objetivo, en lugar de 1 minuto después de la compra.
-function getHighLowFixedExpiryEpochSec(item = null) {
-  const expiry = Number(buildNextCandleTimingPlan(item).next_expiry_epoch_sec || 0);
-  return Number.isFinite(expiry) && expiry > 0 ? Math.floor(expiry) : 0;
-}
-function applyHighLowFixedExpiryToRequest(req = {}, item = null) {
-  const expiry = getHighLowFixedExpiryEpochSec(item);
-  if (!expiry) throw new Error("Higher/Lower sin vencimiento s60 calculable.");
-  const now = Math.floor(serverNowMs() / 1000);
-  if (expiry <= now + 1) throw new Error("Higher/Lower: el vencimiento s60 ya pasó.");
-  delete req.duration;
-  delete req.duration_unit;
-  req.date_expiry = expiry;
-  return expiry;
-}
-function isHighLowPlanExpiryAligned(plan, item = null) {
-  if (!plan) return false;
-  const expected = getHighLowFixedExpiryEpochSec(item);
-  const actual = Number(plan.fixedExpiryEpochSec || plan.dateExpiry || plan.expiryEpochSec || 0);
-  return !!expected && Number.isFinite(actual) && Math.floor(actual) === Math.floor(expected);
 }
 const RISE_FALL_ALLOW_EQUALS_ENABLED = true;
 function getRiseFallDerivContractType(side) {
@@ -6379,10 +4056,6 @@ function buildNewApiRiseFallProposalAttempts(variants, side, symbol, stake, item
     }
   }
 
-  // II15: para garantizar el cierre en el segundo 60 no aceptamos fallbacks por duración.
-  // Un duration 2s cerraría cerca del s60 de la vela actual y duration 1m podría cerrar en s58.
-  if (ENTRY_TIMING_FORCE_SECOND_60) return out;
-
   // 2) Fallback seguro para post-58: duration 2s.
   // La proposal se prearma 56-58s, pero se compra después del tick >=58s.
   // Con duración 2s el cierre queda pegado al segundo 60 aprox.
@@ -6466,7 +4139,8 @@ function buildRiseFallTimingVariants(side, symbol, stake, item = null) {
     ? "entrada al cierre operativo de la formación (58s) y vencimiento 60s después"
     : "cierre fijo al segundo 60";
 
-  // Rama histórica de cierre visual. En II15 no se alcanza porque visual_candle_sync es siempre false.
+  // V112.1: con cierre visual 58 no usamos date_start. La operación debe comenzar
+  // cuando se envía buy al tick 58, no dos segundos más tarde en el segundo 60.
   if (plan.visual_candle_sync) {
     return [{
       label: `AUTO58_DATE_EXPIRY_ONLY_${suffix}`,
@@ -6647,7 +4321,7 @@ function getValidAutoPreProposal(item, side, symbol, stake) {
     ppVariant.includes("AUTO58_NEW_API_DURATION");
   // V112.1: en AUTO 58 visual no aceptamos fallbacks de 2s/1m como preproposal.
   // El contrato debe empezar al cierre de la formación y vencer exactamente en el objetivo.
-  if ((ENTRY_TIMING_FORCE_SECOND_60 || isEntryTimingVisual58()) && isDurationFallback) return null;
+  if (isEntryTimingVisual58() && isDurationFallback) return null;
   if (!isDurationFallback && ppExpiry && planExpiry && ppExpiry !== planExpiry) return null;
   if (Date.now() - Number(pp.prepared_at || 0) > SIGNAL_AUTO_PREPROPOSAL_TTL_MS) return null;
   return pp;
@@ -6659,7 +4333,7 @@ function markAutoPreProposalOnItem(item, payload) {
   try { if (modalCurrentItem && item.id && modalCurrentItem.id === item.id) updateSignalConfirmationUI(); } catch {}
 }
 async function prepareRiseFallAutoPreProposal(item, side, reason = "auto_preproposal") {
-  if (isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item)) return false;
+  if (isInicioInamovibleStudyOnlySignal(item)) return false;
   const safeSide = normalizeSignalConfirmationSide(side);
   if (!item || !safeSide) return false;
   if (!isNextCandleExpiryTiming() || shouldUseAutoHighLowExecution()) return false;
@@ -6694,8 +4368,8 @@ async function prepareRiseFallAutoPreProposal(item, side, reason = "auto_preprop
     const pack = await requestRiseFallProposalWithTiming(safeSide, symbol, stake, item, 9000);
     const proposal = pack?.res?.proposal;
     const timingVariant = String(pack?.timing?.variant || pack?.timing?.mode || "");
-    if ((ENTRY_TIMING_FORCE_SECOND_60 || isEntryTimingVisual58()) && (timingVariant.includes("duration_2s") || timingVariant.includes("duration_1m") || timingVariant.includes("AUTO58_NEW_API_DURATION"))) {
-      throw new Error("Deriv no devolvió una proposal con vencimiento exacto en el segundo 60");
+    if (isEntryTimingVisual58() && (timingVariant.includes("duration_2s") || timingVariant.includes("duration_1m") || timingVariant.includes("AUTO58_NEW_API_DURATION"))) {
+      throw new Error("Deriv no devolvió una proposal con vencimiento exacto para AUTO 58");
     }
     const proposalId = proposal?.id ? String(proposal.id) : "";
     const askPrice = Number(proposal?.ask_price);
@@ -6761,7 +4435,6 @@ function cancelSignalAutoEntryNoPreProposal(item, side, readiness, reason = "AUT
   return true;
 }
 function scanSignalAutoPreProposals() {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) return false;
   try {
     if (areSignalsPaused()) return false;
     if (!isNextCandleExpiryTiming() || shouldUseAutoHighLowExecution()) return false;
@@ -6819,10 +4492,12 @@ async function prepareLiveAutoPreProposalIfNeeded(reason = "live_preproposal") {
 function applyEntryTimingModeUI() {
   const btn = pickEl("entryTimingModeBtn");
   if (!btn) return;
-  entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
+  const visualOn = isEntryTimingVisual58();
   btn.textContent = getEntryTimingModeLabel();
-  btn.classList.add("active");
-  btn.title = "II18: cierre s60 en Rise/Fall y Higher/Lower; la barrera +130% se prearma antes de s58 solo en la dirección de giro.";
+  btn.classList.toggle("active", visualOn && !shouldUseAutoHighLowExecution());
+  btn.title = visualOn
+    ? "Cierre visual (vela) ON: compra post-58 como ahora, entrada en la próxima vela y vencimiento next_start+58 para probar acople con el gráfico de velas visual de Deriv. Solo aplica a Rise/Fall."
+    : "Cierre visual (vela) OFF: compra post-58 como ahora, entrada en la próxima vela y vencimiento next_start+60. Solo aplica a Rise/Fall.";
 }
 function ensureEntryTimingModeButton() {
   let btn = pickEl("entryTimingModeBtn");
@@ -6842,11 +4517,13 @@ function ensureEntryTimingModeButton() {
     else host.appendChild(btn);
   }
   btn.onclick = () => {
-    entryTimingMode = ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY;
+    entryTimingMode = isEntryTimingVisual58()
+      ? ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY
+      : ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY;
     saveEntryTimingMode();
     applyEntryTimingModeUI();
     updateModalCandleStatusUI();
-    toast("⏱️ Cierre fijado en el segundo 60", 1900);
+    toast(isEntryTimingVisual58() ? "⏱️ Cierre visual (vela) ON" : "⏱️ Cierre visual (vela) OFF", 1900);
   };
   applyEntryTimingModeUI();
   return btn;
@@ -6925,49 +4602,13 @@ function readHighLowBarrierPrecisionCache() {
     return raw && typeof raw === "object" ? raw : {};
   } catch { return {}; }
 }
-function getHighLowBarrierPresetMinDecimals(symbol) {
-  const key = normalizeHighLowSymbolKey(symbol);
-  const preset = Number(HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL[key]);
-  return Number.isFinite(preset)
-    ? Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(preset)))
-    : HIGHLOW_API_MAX_BARRIER_DECIMALS;
-}
 function getHighLowBarrierMaxDecimals(symbol) {
   const key = normalizeHighLowSymbolKey(symbol);
-  const preset = getHighLowBarrierPresetMinDecimals(key);
-  const entry = readHighLowBarrierPrecisionCache()[key];
-
-  // II26: los valores numéricos viejos son cache legado. Algunas versiones podían
-  // guardar 0 al haber cotizado una barrera entera y luego R_100/R_10 quedaban
-  // atrapados en saltos -1/+1. Un cache legado nunca puede bajar el piso conocido
-  // del símbolo. Solo una entrada marcada explicit:true, proveniente de un error
-  // real de decimales devuelto por Deriv, puede reducir ese límite.
-  if (entry && typeof entry === "object") {
-    const cached = Number(entry.precision);
-    if (Number.isFinite(cached)) {
-      const safe = Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(cached)));
-      // II30: para los índices conocidos de esta PWA el piso por símbolo gana
-      // incluso sobre un cache explícito viejo. La precisión efectiva jamás puede
-      // degradarse por debajo de R_10/R_25=3, R_50/R_75=4, R_100=2.
-      return Math.max(preset, safe);
-    }
-  }
-
-  const legacy = Number(entry);
-  if (Number.isFinite(legacy)) {
-    const safeLegacy = Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(legacy)));
-    return Math.max(preset, safeLegacy);
-  }
-  return preset;
-}
-function getHighLowEffectiveBarrierPrecision(symbol, requestedPrecision = null) {
-  const floor = getHighLowBarrierPresetMinDecimals(symbol);
-  const cached = getHighLowBarrierMaxDecimals(symbol);
-  const requested = Number(requestedPrecision);
-  const safeRequested = Number.isFinite(requested)
-    ? Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(requested)))
-    : floor;
-  return Math.max(floor, cached, safeRequested);
+  const cached = Number(readHighLowBarrierPrecisionCache()[key]);
+  if (Number.isFinite(cached)) return Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(cached)));
+  const preset = Number(HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL[key]);
+  if (Number.isFinite(preset)) return Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(preset)));
+  return HIGHLOW_API_MAX_BARRIER_DECIMALS;
 }
 function rememberHighLowBarrierMaxDecimals(symbol, precision) {
   const key = normalizeHighLowSymbolKey(symbol);
@@ -6975,40 +4616,12 @@ function rememberHighLowBarrierMaxDecimals(symbol, precision) {
   if (!key || !Number.isFinite(p)) return;
   try {
     const raw = readHighLowBarrierPrecisionCache();
-    const prev = raw[key];
-    const prevExplicit = !!(prev && typeof prev === "object" && prev.explicit === true);
-    const prevPrecision = prevExplicit ? Number(prev.precision) : NaN;
-    // Esta función solo se llama después de un error explícito de cantidad de
-    // decimales de Deriv. Desde II26 lo guardamos con fuente para distinguirlo de
-    // los números legados defectuosos y respetarlo en futuras sesiones.
-    const next = prevExplicit && Number.isFinite(prevPrecision) ? Math.min(prevPrecision, p) : p;
-    raw[key] = {
-      precision: next,
-      explicit: true,
-      source: "deriv_decimal_limit_error",
-      updatedAt: Date.now(),
-    };
+    const old = Number(raw[key]);
+    // Nunca volvemos a subir automáticamente un límite que Deriv ya rechazó.
+    raw[key] = Number.isFinite(old) ? Math.min(old, p) : p;
     localStorage.setItem(HIGHLOW_BARRIER_PRECISION_CACHE_KEY, JSON.stringify(raw));
   } catch {}
 }
-function repairHighLowBarrierPrecisionLegacyCache() {
-  try {
-    const raw = readHighLowBarrierPrecisionCache();
-    let changed = false;
-    for (const [key, presetRaw] of Object.entries(HIGHLOW_DEFAULT_MAX_BARRIER_DECIMALS_BY_SYMBOL || {})) {
-      const preset = Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(Number(presetRaw))));
-      const entry = raw[key];
-      if (entry && typeof entry === "object" && entry.explicit === true) continue;
-      const legacy = Number(entry);
-      if (!Number.isFinite(legacy) || legacy < preset) {
-        raw[key] = preset;
-        changed = true;
-      }
-    }
-    if (changed) localStorage.setItem(HIGHLOW_BARRIER_PRECISION_CACHE_KEY, JSON.stringify(raw));
-  } catch {}
-}
-repairHighLowBarrierPrecisionLegacyCache();
 function parseHighLowBarrierDecimalLimit(message) {
   const txt = String(message || "");
   const match = txt.match(/barrier[^.]*?up to\s+(\d+)\s+decimal place/i);
@@ -7038,10 +4651,9 @@ function normalizeHighLowBarrierForApi(rawBarrier, side = "CALL", symbol = "", f
   const abs = Math.abs(Number(parsed[2]));
   if (!Number.isFinite(abs) || abs <= 0) return "";
   const hasForcedPrecision = forcedPrecision !== null && forcedPrecision !== undefined && String(forcedPrecision).trim() !== "" && Number.isFinite(Number(forcedPrecision));
-  const maxPrecision = getHighLowEffectiveBarrierPrecision(
-    symbol,
-    hasForcedPrecision ? forcedPrecision : getHighLowBarrierMaxDecimals(symbol)
-  );
+  const maxPrecision = hasForcedPrecision
+    ? Math.max(0, Math.min(HIGHLOW_API_MAX_BARRIER_DECIMALS, Math.trunc(Number(forcedPrecision))))
+    : getHighLowBarrierMaxDecimals(symbol);
   const formatted = formatBarrierAbsWithPrecision(abs, maxPrecision);
   if (!formatted) return "";
   return `${sign >= 0 ? "+" : "-"}${formatted}`;
@@ -7092,57 +4704,6 @@ function makeHighLowFixedBarrierCandidate(symbol, side) {
     relativeBarrier: true,
     fixedBarrier: true,
     source: "fixed_by_symbol",
-  };
-}
-
-// II23: si s50/s56 no consiguieron dejar una proposal final, AUTO58 no cancela
-// inmediatamente. Construye una semilla RELATIVA de emergencia con precisión real
-// del símbolo y deja que el mismo bucle de cotización fresca de AUTO58 la afine.
-function makeHighLowAuto58EmergencySeed(item, side, stake) {
-  const symbol = String(item?.symbol || "");
-  if (!symbol) return null;
-  const requiredSign = getHighLowRequiredBarrierSign(side);
-  const precision = getHighLowBarrierMaxDecimals(symbol);
-  const minStep = Math.pow(10, -Math.max(0, precision));
-
-  const currentSeed = getBestCurrentSignalHighLowSeedPlan(item, side);
-  const currentSeedCandidate = makeHighLowCandidateFromPlan(currentSeed, side);
-  const currentAbs = Math.abs(Number(currentSeedCandidate?.barrierNum || 0));
-  const fixed = makeHighLowFixedBarrierCandidate(symbol, side);
-  const hint = getExecutionBarrierHint(symbol, side);
-  const hintAbs = Math.abs(Number(hint?.barrierNum || hint?.barrierAbs || 0));
-  const fixedAbs = Math.abs(Number(fixed?.barrierNum || 0));
-  const latest = Number(getLatestSignalQuoteForBarrier(item));
-
-  // II29 prioridad: 1) distancia que YA dio payout válido en esta misma señal;
-  // 2) hint aprendido; 3) preset genérico del símbolo; 4) escala mínima del spot.
-  // La semilla solo guía una proposal fresca: nunca se compra directamente.
-  let abs = Number.isFinite(currentAbs) && currentAbs > 0 ? currentAbs : NaN;
-  if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(hintAbs) && hintAbs > 0) abs = hintAbs;
-  if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(fixedAbs) && fixedAbs > 0) abs = fixedAbs;
-  if ((!Number.isFinite(abs) || abs <= 0) && Number.isFinite(latest) && latest > 0) abs = latest * 0.000145;
-  if (!Number.isFinite(abs) || abs <= 0) return null;
-  abs = Math.max(abs, Number.isFinite(minStep) && minStep > 0 ? minStep : HIGHLOW_API_MIN_RELATIVE_BARRIER);
-
-  const candidate = makeBarrierCandidateFromSignedValue(requiredSign * abs, precision);
-  if (!candidate?.barrier) return null;
-  return {
-    ...candidate,
-    proposalId: "",
-    askPrice: Number(stake),
-    payoutTotalPct: null,
-    profitPct: null,
-    source: Number.isFinite(currentAbs) && currentAbs > 0
-      ? "auto58_emergency_seed_current_signal"
-      : "auto58_emergency_seed_no_preplan",
-    targetSearch: true,
-    targetPayoutTotalPct: HIGHLOW_TARGET_PAYOUT_TOTAL_PCT,
-    fixedExpiryEpochSec: getHighLowFixedExpiryEpochSec(item),
-    expiryMode: "fixed_s60_absolute",
-    finalPreparedAt: Date.now(),
-    finalPreparedMs: Math.round(getSignalConfirmationMs(item)),
-    emergencySeedOnly: true,
-    searchAcceptable: false,
   };
 }
 function dedupeBarrierCandidates(candidates) {
@@ -7338,13 +4899,6 @@ function isHighLowPlanAcceptable(plan) {
   const pct = Number(plan?.payoutTotalPct);
   return !!plan && Number.isFinite(pct) && pct >= HIGHLOW_TARGET_ACCEPT_MIN_PCT && pct <= HIGHLOW_TARGET_ACCEPT_MAX_PCT;
 }
-function isHighLowFinalEntryPlanAcceptable(plan) {
-  if (isHighLowPlanAcceptable(plan)) return true;
-  const pct = Number(plan?.payoutTotalPct);
-  const distance = getHighLowTargetDistance(plan);
-  return !!plan && Number.isFinite(pct) && pct > 0 && Number.isFinite(distance)
-    && distance <= SIGNAL_HIGHLOW_FINAL_NEAREST_MAX_DISTANCE_PCT;
-}
 function getHighLowAcceptableRangeText() {
   const minProfit = HIGHLOW_TARGET_ACCEPT_MIN_PCT - 100;
   const maxProfit = HIGHLOW_TARGET_ACCEPT_MAX_PCT - 100;
@@ -7389,14 +4943,13 @@ function buildHighLowAbsoluteBarrier(relativeBarrier, spotHint) {
   return absolute.toFixed(getHighLowAbsoluteBarrierDecimals(spotHint));
 }
 
-async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, allowLegacy = true, preferredUnderlyingSymbol = "", spotHint = NaN, item = null, preferRelativeBarrier = false) {
+async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, allowLegacy = true, preferredUnderlyingSymbol = "", spotHint = NaN) {
   const allErrors = [];
   const auditRows = [];
   const safeSymbol = String(symbol || "").trim();
   const safeSide = normalizeSignalConfirmationSide(side) || normalizeTradeDirection(side) || "CALL";
   const primaryType = getHighLowPrimaryApiContractType(safeSide);
-  const precisionFloor = getHighLowBarrierPresetMinDecimals(safeSymbol);
-  let activePrecision = barrier ? getHighLowEffectiveBarrierPrecision(safeSymbol, getHighLowBarrierMaxDecimals(safeSymbol)) : null;
+  let activePrecision = barrier ? getHighLowBarrierMaxDecimals(safeSymbol) : null;
   let precisionRetries = 0;
 
   while (true) {
@@ -7434,11 +4987,28 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
           continue;
         }
 
-        // II21: en el rescate tardío priorizamos la barrera RELATIVA (+/- distancia).
-        // Así Deriv ajusta la barrera respecto del entry spot y un salto entre proposal y buy
-        // no deja una barrera absoluta vieja demasiado lejos. Fuera del rescate se conserva
-        // el orden anterior (absoluta primero) para no alterar la operativa normal.
-        const relativePrimaryAttempt = {
+        // La API nueva documenta barreras relativas y, para índices sintéticos,
+        // también absolutas. Probamos ambas con el contrato Higher/Lower real.
+        if (absoluteBarrier) {
+          attempts.push({
+            req: {
+              proposal: 1,
+              amount: Number(stake),
+              basis: "stake",
+              contract_type: primaryType,
+              currency: DEFAULT_CURRENCY,
+              duration: Number(DEFAULT_DURATION) || 1,
+              duration_unit: DEFAULT_DURATION_UNIT || "m",
+              underlying_symbol: underlyingSymbol,
+              barrier: absoluteBarrier,
+            },
+            apiContractType: primaryType,
+            underlyingSymbol,
+            payloadMode: "new_underlying_symbol_highlow_absolute_barrier",
+            barrierMode: "absolute",
+          });
+        }
+        attempts.push({
           req: {
             proposal: 1,
             amount: Number(stake),
@@ -7454,53 +5024,10 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
           underlyingSymbol,
           payloadMode: "new_underlying_symbol_highlow_relative_barrier",
           barrierMode: "relative",
-        };
-        const absolutePrimaryAttempt = absoluteBarrier ? {
-          req: {
-            proposal: 1,
-            amount: Number(stake),
-            basis: "stake",
-            contract_type: primaryType,
-            currency: DEFAULT_CURRENCY,
-            duration: Number(DEFAULT_DURATION) || 1,
-            duration_unit: DEFAULT_DURATION_UNIT || "m",
-            underlying_symbol: underlyingSymbol,
-            barrier: absoluteBarrier,
-          },
-          apiContractType: primaryType,
-          underlyingSymbol,
-          payloadMode: "new_underlying_symbol_highlow_absolute_barrier",
-          barrierMode: "absolute",
-        } : null;
-        if (preferRelativeBarrier) {
-          // En rescate tardío NO hacemos fallback a barrera absoluta: si el mercado
-          // se mueve entre proposal y entrada, queremos que la distancia +/- siga
-          // referida al entry spot y no a un precio absoluto viejo.
-          attempts.push(relativePrimaryAttempt);
-        } else {
-          if (absolutePrimaryAttempt) attempts.push(absolutePrimaryAttempt);
-          attempts.push(relativePrimaryAttempt);
-        }
+        });
 
         if (allowLegacy) {
-          const relativeLegacyAttempt = {
-            req: {
-              proposal: 1,
-              amount: Number(stake),
-              basis: "stake",
-              contract_type: legacyType,
-              currency: DEFAULT_CURRENCY,
-              duration: Number(DEFAULT_DURATION) || 1,
-              duration_unit: DEFAULT_DURATION_UNIT || "m",
-              underlying_symbol: underlyingSymbol,
-              barrier: safeBarrier,
-            },
-            apiContractType: legacyType,
-            underlyingSymbol,
-            payloadMode: "new_underlying_symbol_callput_relative_barrier",
-            barrierMode: "relative",
-          };
-          if (!preferRelativeBarrier && absoluteBarrier) {
+          if (absoluteBarrier) {
             attempts.push({
               req: {
                 proposal: 1,
@@ -7519,7 +5046,23 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
               barrierMode: "absolute",
             });
           }
-          attempts.push(relativeLegacyAttempt);
+          attempts.push({
+            req: {
+              proposal: 1,
+              amount: Number(stake),
+              basis: "stake",
+              contract_type: legacyType,
+              currency: DEFAULT_CURRENCY,
+              duration: Number(DEFAULT_DURATION) || 1,
+              duration_unit: DEFAULT_DURATION_UNIT || "m",
+              underlying_symbol: underlyingSymbol,
+              barrier: safeBarrier,
+            },
+            apiContractType: legacyType,
+            underlyingSymbol,
+            payloadMode: "new_underlying_symbol_callput_relative_barrier",
+            barrierMode: "relative",
+          });
         }
       }
     } else {
@@ -7540,13 +5083,6 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
       }
     }
 
-    // II17: todas las proposals Higher/Lower de esta señal usan date_expiry absoluto.
-    // No hay fallback a duration=1m: si Deriv no acepta el s60 exacto, se cancela la entrada.
-    const fixedExpiryEpochSec = getHighLowFixedExpiryEpochSec(item);
-    for (const attempt of attempts) {
-      applyHighLowFixedExpiryToRequest(attempt.req, item);
-    }
-
     let retryWithPrecision = null;
     const roundErrors = [];
     for (const attempt of attempts) {
@@ -7559,8 +5095,6 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
         underlying_symbol: underlyingSymbol,
         sent_barrier: String(req.barrier || ""),
         relative_candidate: String(safeBarrier || ""),
-        date_expiry: Number(req.date_expiry || fixedExpiryEpochSec || 0) || null,
-        expiry_mode: "fixed_s60_absolute",
       };
       try {
         window.DerivDebug?.log?.("HIGHLOW_PROPOSAL_ATTEMPT", {
@@ -7570,8 +5104,6 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
           underlyingSymbol,
           barrier: String(req.barrier || "default"),
           relativeCandidate: String(safeBarrier || ""),
-          dateExpiry: Number(req.date_expiry || fixedExpiryEpochSec || 0) || null,
-          expiryMode: "fixed_s60_absolute",
         });
         const res = await wsRequest(req, timeoutMs);
         const proposal = res?.proposal || null;
@@ -7588,9 +5120,7 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
 
         if (proposalId && complete && legacyBarrierProven) {
           const parsedBarrier = safeBarrier ? parseRelativeBarrierString(safeBarrier) : null;
-          // II23: una proposal exitosa con una barrera gruesa (p. ej. +1) NO demuestra
-          // que el símbolo solo admita 0 decimales. La precisión máxima se reduce
-          // únicamente cuando Deriv devuelve un error explícito de decimales.
+          if (parsedBarrier && barrierMode === "relative") rememberHighLowBarrierMaxDecimals(safeSymbol, parsedBarrier.precision);
           auditRows.push({ ...auditBase, status: "ok", proposal_id: proposalId, ask_price: askPrice, payout });
           saveHighLowProposalAttemptAudit(safeSymbol, safeSide, auditRows);
           window.DerivDebug?.log?.("HIGHLOW_PROPOSAL_OK", {
@@ -7610,8 +5140,6 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
             barrier: safeBarrier,
             apiBarrier: String(req.barrier || ""),
             barrierPrecision: parsedBarrier?.precision ?? 0,
-            fixedExpiryEpochSec: Number(req.date_expiry || fixedExpiryEpochSec || 0) || null,
-            expiryMode: "fixed_s60_absolute",
           };
         }
 
@@ -7675,7 +5203,7 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
 
     saveHighLowProposalAttemptAudit(safeSymbol, safeSide, auditRows);
     allErrors.push(...roundErrors);
-    if (safeBarrier && Number.isFinite(Number(retryWithPrecision)) && retryWithPrecision >= precisionFloor && retryWithPrecision < activePrecision && precisionRetries < HIGHLOW_API_MAX_BARRIER_DECIMALS) {
+    if (safeBarrier && Number.isFinite(Number(retryWithPrecision)) && retryWithPrecision >= 0 && retryWithPrecision < activePrecision && precisionRetries < HIGHLOW_API_MAX_BARRIER_DECIMALS) {
       rememberHighLowBarrierMaxDecimals(safeSymbol, retryWithPrecision);
       window.DerivDebug?.log?.("HIGHLOW_BARRIER_PRECISION_RETRY", {
         symbol: safeSymbol,
@@ -7691,8 +5219,8 @@ async function requestHighLowProposalRaw(symbol, side, stake, barrier = "", time
   }
 }
 
-async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, item = null) {
-  const raw = await requestHighLowProposalRaw(symbol, side, stake, "", timeoutMs, false, "", NaN, item);
+async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS) {
+  const raw = await requestHighLowProposalRaw(symbol, side, stake, "", timeoutMs, false);
   const plan = parseProposalToExecution({
     proposal: raw?.res?.proposal,
     defaultBarrier: true,
@@ -7703,71 +5231,41 @@ async function getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs = A
   if (plan) {
     plan.symbolDefaultBarrier = true;
     plan.source = "symbol_default";
-    plan.fixedExpiryEpochSec = Number(raw?.fixedExpiryEpochSec || 0) || null;
-    plan.expiryMode = String(raw?.expiryMode || "fixed_s60_absolute");
   }
   return isHighLowPlanWithinPayoutCap(plan) ? plan : null;
 }
-async function getHighLowProposalQuote(symbol, side, barrierCandidate, precisionIgnored, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, preferredUnderlyingSymbol = "", spotHint = NaN, item = null, preferRelativeBarrier = false) {
-  const rawCandidate = typeof barrierCandidate === "object" && barrierCandidate
+async function getHighLowProposalQuote(symbol, side, barrierCandidate, precisionIgnored, stake, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, preferredUnderlyingSymbol = "", spotHint = NaN) {
+  const candidate = typeof barrierCandidate === "object" && barrierCandidate
     ? barrierCandidate
     : makeBarrierCandidateFromAbsolute(side, Math.abs(Number(barrierCandidate || 0)));
-  if (!rawCandidate?.barrier) return null;
-  const effectivePrecision = getHighLowEffectiveBarrierPrecision(
-    symbol,
-    rawCandidate?.precision ?? precisionIgnored
-  );
-  const candidate = makeBarrierCandidateFromSignedValue(
-    Number(rawCandidate.barrierNum || parseRelativeBarrierString(rawCandidate.barrier)?.barrierNum || 0),
-    effectivePrecision
-  ) || { ...rawCandidate, precision: effectivePrecision };
   if (!candidate?.barrier) return null;
-  const normalizedBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol, effectivePrecision);
-  const raw = await requestHighLowProposalRaw(symbol, side, stake, normalizedBarrier, timeoutMs, true, preferredUnderlyingSymbol, spotHint, item, preferRelativeBarrier);
+  const normalizedBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol);
+  const raw = await requestHighLowProposalRaw(symbol, side, stake, normalizedBarrier, timeoutMs, true, preferredUnderlyingSymbol, spotHint);
   const effectiveBarrier = String(raw?.barrier || normalizedBarrier);
   const normalizedParsed = parseRelativeBarrierString(effectiveBarrier);
-  const effectivePlanPrecision = getHighLowEffectiveBarrierPrecision(
-    symbol,
-    normalizedParsed?.precision ?? raw?.barrierPrecision ?? candidate.precision
-  );
   const plan = parseProposalToExecution({
     proposal: raw?.res?.proposal,
     barrierNum: normalizedParsed?.barrierNum ?? candidate.barrierNum,
-    precision: effectivePlanPrecision,
+    precision: normalizedParsed?.precision ?? raw?.barrierPrecision ?? candidate.precision,
     barrier: effectiveBarrier,
     apiContractType: raw?.apiContractType,
     underlyingSymbol: raw?.underlyingSymbol,
     payloadMode: raw?.payloadMode,
     barrierMode: raw?.barrierMode,
     apiBarrier: raw?.apiBarrier,
-  }, side, effectivePlanPrecision);
-  if (plan) {
-    plan.precision = effectivePlanPrecision;
-    plan.effectiveBarrierPrecision = effectivePlanPrecision;
-    plan.precisionFloorApplied = effectivePlanPrecision > Number(normalizedParsed?.precision ?? candidate.precision ?? 0);
-    plan.fixedExpiryEpochSec = Number(raw?.fixedExpiryEpochSec || 0) || null;
-    plan.expiryMode = String(raw?.expiryMode || "fixed_s60_absolute");
-  }
+  }, side, normalizedParsed?.precision ?? candidate.precision);
   return isHighLowPlanWithinPayoutCap(plan) ? plan : null;
 }
 
 
-function makeHighLowCandidateFromPlan(plan, side, symbolHint = "") {
-  const symbol = String(
-    symbolHint || plan?.underlyingSymbol || plan?.apiUnderlyingSymbol || plan?.api_underlying_symbol || plan?.symbol || ""
-  );
+function makeHighLowCandidateFromPlan(plan, side) {
   const parsed = parseRelativeBarrierString(plan?.barrier);
   if (parsed && Number.isFinite(Number(parsed.barrierNum)) && Math.abs(Number(parsed.barrierNum)) > 0) {
-    const precision = symbol
-      ? getHighLowEffectiveBarrierPrecision(symbol, plan?.precision ?? parsed.precision)
-      : Math.max(0, Number(plan?.precision ?? parsed.precision ?? 0));
-    return makeBarrierCandidateFromSignedValue(Number(parsed.barrierNum), precision);
+    return makeBarrierCandidateFromSignedValue(Number(parsed.barrierNum), Number(parsed.precision || 0));
   }
   const signed = Number(plan?.barrierNum || 0);
   if (!Number.isFinite(signed) || Math.abs(signed) <= 0) return null;
-  const requested = Number(plan?.precision ?? getBarrierPrecisionForAbs(Math.abs(signed)));
-  const precision = symbol ? getHighLowEffectiveBarrierPrecision(symbol, requested) : requested;
-  return makeBarrierCandidateFromSignedValue(signed, precision);
+  return makeBarrierCandidateFromSignedValue(signed, Number(plan?.precision || getBarrierPrecisionForAbs(Math.abs(signed))));
 }
 
 function getHighLowRequiredBarrierSign(side) {
@@ -7845,14 +5343,6 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   let quotesUsed = 0;
   let best = null;
   let lastError = "";
-  const shouldAbortForEntry = () => {
-    if (!!opts.abortOnEntryBuy && isHighLowEntryBuyActive(item)) return true;
-    if (!!opts.abortOnFinalPriority) {
-      const c = item?.id ? executionPlanCache.get(String(item.id)) : null;
-      if (c?.finalRefreshExclusive || c?.finalRefreshRunning) return true;
-    }
-    return false;
-  };
 
   const remember = (plan, candidate = null) => {
     if (!plan) return null;
@@ -7864,8 +5354,6 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     if (!plan.barrier && candidate?.barrier) plan.barrier = candidate.barrier;
     if (!Number.isFinite(Number(plan.barrierNum)) && candidate && Number.isFinite(Number(candidate.barrierNum))) plan.barrierNum = Number(candidate.barrierNum);
     if (!Number.isFinite(Number(plan.precision)) && candidate && Number.isFinite(Number(candidate.precision))) plan.precision = Number(candidate.precision);
-    plan.precision = getHighLowEffectiveBarrierPrecision(symbol, plan.precision ?? candidate?.precision);
-    plan.effectiveBarrierPrecision = plan.precision;
     samples.push(plan);
     // Solo una propuesta con barrera reproducible sirve como candidato de entrada.
     if (makeHighLowCandidateFromPlan(plan, side)) {
@@ -7875,24 +5363,17 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   };
 
   const quoteCandidate = async (candidate) => {
-    if (shouldAbortForEntry()) return { kind: "aborted", candidate };
     if (!candidate?.barrier || quotesUsed >= maxQuotes || isHighLowProposalCooldownActive()) return { kind: "skip", candidate };
     const apiBarrier = normalizeHighLowBarrierForApi(candidate.barrier, side, symbol);
     if (!apiBarrier || seen.has(apiBarrier)) return { kind: "skip", candidate };
     seen.add(apiBarrier);
     const parsedApiBarrier = parseRelativeBarrierString(apiBarrier);
     const effectiveCandidate = parsedApiBarrier
-      ? {
-          ...candidate,
-          ...parsedApiBarrier,
-          barrier: apiBarrier,
-          precision: getHighLowEffectiveBarrierPrecision(symbol, parsedApiBarrier.precision ?? candidate.precision),
-        }
-      : { ...candidate, precision: getHighLowEffectiveBarrierPrecision(symbol, candidate.precision) };
+      ? { ...candidate, ...parsedApiBarrier, barrier: apiBarrier }
+      : candidate;
     quotesUsed++;
     try {
-      const plan = await getHighLowProposalQuote(symbol, side, effectiveCandidate, effectiveCandidate.precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
-      if (shouldAbortForEntry()) return { kind: "aborted", candidate: effectiveCandidate };
+      const plan = await getHighLowProposalQuote(symbol, side, effectiveCandidate, effectiveCandidate.precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item));
       return { kind: "plan", plan: remember(plan, effectiveCandidate), candidate: effectiveCandidate };
     } catch (e) {
       const msg = e?.message || String(e || "");
@@ -7909,9 +5390,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   // Deriv exponga una barrera reproducible y ya quede dentro de 125–135% de ganancia neta (225–235% total).
   let defaultPlan = null;
   try {
-    if (shouldAbortForEntry()) return null;
-    defaultPlan = await getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs, item);
-    if (shouldAbortForEntry()) return null;
+    defaultPlan = await getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs);
     if (defaultPlan) remember(defaultPlan, null);
     if (defaultPlan && isHighLowPlanAcceptable(defaultPlan) && makeHighLowCandidateFromPlan(defaultPlan, side)) {
       rememberExecutionBarrierHint(symbol, side, defaultPlan, defaultPlan.precision || 0);
@@ -7926,10 +5405,8 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   const defaultCandidate = makeHighLowCandidateFromPlan(defaultPlan, side);
   const latestQuote = getLatestSignalQuoteForBarrier(item);
   const baseOptions = [
-    // II23: la semilla por símbolo tiene prioridad para abrir la horquilla. Un hint
-    // viejo puede haber quedado lejos tras un cambio brusco de mercado.
-    fixedRaw,
     Math.abs(Number(hint?.barrierNum || hint?.barrierAbs || 0)),
+    fixedRaw,
     Math.abs(Number(defaultCandidate?.barrierNum || 0)),
     Number.isFinite(latestQuote) && latestQuote > 0 ? Math.abs(latestQuote * 0.000145) : 0,
     Number.isFinite(latestQuote) && latestQuote > 0 ? Math.abs(latestQuote * 0.00010) : 0,
@@ -7956,7 +5433,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
 
   // 1) Busca el límite difícil con el signo tradicional: LOWER abajo / HIGHER arriba.
   let hardProbeU = -baseAbs;
-  while (quotesUsed < maxQuotes && hardU === null && !isHighLowProposalCooldownActive() && !shouldAbortForEntry()) {
+  while (quotesUsed < maxQuotes && hardU === null && !isHighLowProposalCooldownActive()) {
     const r = await quoteU(hardProbeU);
     if (r.kind === "plan" && r.plan) {
       if (isHighLowPlanAcceptable(r.plan)) {
@@ -7983,7 +5460,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   // 2) Busca el límite fácil. “No return” es un dato útil: la barrera ya pasó
   // del objetivo y permite cerrar la horquilla sin probar formatos alternativos.
   let easyProbeU = baseAbs;
-  while (quotesUsed < maxQuotes && easyU === null && !isHighLowProposalCooldownActive() && !shouldAbortForEntry()) {
+  while (quotesUsed < maxQuotes && easyU === null && !isHighLowProposalCooldownActive()) {
     const r = await quoteU(easyProbeU);
     if (r.kind === "no_return") {
       easyU = easyProbeU;
@@ -8024,7 +5501,6 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     easyU !== null &&
     easyU > hardU &&
     !isHighLowProposalCooldownActive() &&
-    !shouldAbortForEntry() &&
     bisectionIterations < bisectionIterationLimit
   ) {
     bisectionIterations++;
@@ -8091,7 +5567,6 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   // redondeo de la barrera, usa pasos reales del símbolo. Ejemplo R_50:
   // -0.0100 puede dar 224.4%; ahora también prueba -0.0101/-0.0102 en vez de
   // abandonar por una diferencia de solo décimas.
-  if (shouldAbortForEntry()) return null;
   if (best && quotesUsed < maxQuotes) {
     const bestPct = Number(best.payoutTotalPct);
     const bestCandidate = makeHighLowCandidateFromPlan(best, side);
@@ -8139,7 +5614,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   return null;
 }
 
-async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPlan, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS, item = null, preferRelativeBarrier = false) {
+async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPlan, timeoutMs = AUTO_FULL_PROPOSAL_TIMEOUT_MS) {
   // Las recotizaciones de entrada siempre respetan el lado del contrato:
   // HIGHER/CALL usa barrera positiva y LOWER/PUT usa barrera negativa.
   const candidate = makeHighLowSameSideCandidate(barrierPlan, side, symbol);
@@ -8152,9 +5627,7 @@ async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPla
     stake,
     timeoutMs,
     String(barrierPlan?.underlyingSymbol || ""),
-    Number(lastQuoteBySymbol?.[symbol]) || getLatestSignalQuoteForBarrier(item || { symbol }),
-    item,
-    preferRelativeBarrier
+    Number(lastQuoteBySymbol?.[symbol]) || getLatestSignalQuoteForBarrier({ symbol })
   );
   if (!plan?.proposalId || !Number.isFinite(Number(plan.askPrice))) {
     throw new Error(`${side === "CALL" ? "HIGHER" : "LOWER"}: Deriv no devolvió una proposal válida.`);
@@ -8172,52 +5645,9 @@ async function requestFreshHighLowPlanForBarrier(symbol, side, stake, barrierPla
 }
 
 
-// II29: para recotizar en s56/AUTO58/rescate, una proposal vieja aceptable
-// del MISMO signal sigue siendo una excelente semilla de DISTANCIA aunque su
-// proposalId ya no sea comprable. Priorizamos la distancia que realmente estuvo
-// dentro de 225–235% en esta señal antes que presets genéricos del símbolo.
-function getBestCurrentSignalHighLowSeedPlan(item, side) {
-  if (!item?.id) return null;
-  const safeSide = normalizeSignalConfirmationSide(side);
-  if (!safeSide) return null;
-  const cache = executionPlanCache.get(String(item.id)) || null;
-  const candidates = safeSide === "CALL"
-    ? [cache?.finalEntryCall, item?.autoHighLow?.finalEntryCall, cache?.call, item?.autoHighLow?.call, cache?.callCandidate, item?.autoHighLow?.callCandidate]
-    : [cache?.finalEntryPut, item?.autoHighLow?.finalEntryPut, cache?.put, item?.autoHighLow?.put, cache?.putCandidate, item?.autoHighLow?.putCandidate];
-
-  const usable = candidates
-    .filter((plan) => plan && makeHighLowCandidateFromPlan(plan, safeSide) && isHighLowBarrierOnRequiredSide(plan, safeSide))
-    .map((plan) => ({
-      plan,
-      acceptable: isHighLowPlanAcceptable(plan),
-      distance: getHighLowTargetDistance(plan),
-      updatedAt: Number(plan.updatedAt || plan.finalPreparedAt || 0) || 0,
-    }))
-    .sort((a, b) =>
-      Number(b.acceptable) - Number(a.acceptable) ||
-      a.distance - b.distance ||
-      b.updatedAt - a.updatedAt
-    );
-  if (!usable.length) return null;
-  const picked = usable[0];
-  return {
-    ...picked.plan,
-    source: picked.acceptable ? "current_signal_best_accepted_seed" : "current_signal_best_candidate_seed",
-    seedOnly: true,
-    seedWasAcceptable: !!picked.acceptable,
-    seedTargetDistancePct: Number.isFinite(picked.distance) ? picked.distance : null,
-  };
-}
-
 function getHighLowProvisionalBarrierPlan(item, side) {
   const symbol = String(item?.symbol || "");
   const cache = item?.id ? executionPlanCache.get(String(item.id)) : null;
-
-  const bestCurrentSeed = getBestCurrentSignalHighLowSeedPlan(item, side);
-  if (bestCurrentSeed && bestCurrentSeed.seedWasAcceptable) {
-    return { ...bestCurrentSeed, source: "entry_current_signal_accepted_seed" };
-  }
-
   const candidateFromCache = side === "CALL" ? cache?.callCandidate : cache?.putCandidate;
   if (candidateFromCache && makeHighLowCandidateFromPlan(candidateFromCache, side)) {
     return { ...candidateFromCache, source: candidateFromCache.source || "entry_best_candidate" };
@@ -8233,10 +5663,7 @@ function getHighLowProvisionalBarrierPlan(item, side) {
     const hintSigned = Number.isFinite(Number(hint.barrierNum)) && Math.abs(Number(hint.barrierNum)) > 0
       ? Number(hint.barrierNum)
       : (side === "CALL" ? 1 : -1) * Math.abs(Number(hint.barrierAbs));
-    const c = makeBarrierCandidateFromSignedValue(
-      hintSigned,
-      getHighLowEffectiveBarrierPrecision(symbol, hint.precision)
-    );
+    const c = makeBarrierCandidateFromSignedValue(hintSigned, Number(hint.precision || 0));
     if (c?.barrier) {
       return {
         ...c,
@@ -8337,9 +5764,18 @@ function makeHighLowEntryBisectionCandidate(hardPlan, easyPlan, side, triedBarri
 function getSignalSideEnabledAtMs(item, wantedSide) {
   const wanted = normalizeSignalConfirmationSide(wantedSide);
   if (!item || !wanted) return null;
-  const flow = derivePGPDecisionFlow(item);
-  if (flow.result !== "authorized" || flow.authorizedSide !== wanted) return null;
-  return Number.isFinite(Number(flow.authorizedAtMs)) ? Number(flow.authorizedAtMs) : null;
+  let score = 0;
+  for (const ev of getSignalConfirmationEvents(item)) {
+    const side = normalizeSignalConfirmationSide(ev?.side);
+    if (side === "CALL") score += 1;
+    else if (side === "PUT") score -= 1;
+    const enabled = score >= SIGNAL_CONFIRM_MIN ? "CALL" : score <= -SIGNAL_CONFIRM_MIN ? "PUT" : "";
+    if (enabled === wanted) {
+      const ms = Number(ev?.ms);
+      return Number.isFinite(ms) ? ms : null;
+    }
+  }
+  return null;
 }
 
 function getHighLowFinalEntryPlan(item, side, stake, maxAgeMs = SIGNAL_HIGHLOW_FINAL_PLAN_MAX_AGE_MS) {
@@ -8348,8 +5784,7 @@ function getHighLowFinalEntryPlan(item, side, stake, maxAgeMs = SIGNAL_HIGHLOW_F
   const key = side === "CALL" ? "finalEntryCall" : "finalEntryPut";
   const persistedKey = side === "CALL" ? "finalEntryCall" : "finalEntryPut";
   let plan = cache?.[key] || item?.autoHighLow?.[persistedKey] || null;
-  if (!plan || !isHighLowFinalEntryPlanAcceptable(plan) || !plan.proposalId || !isHighLowBarrierOnRequiredSide(plan, side)) return null;
-  if (!isHighLowPlanExpiryAligned(plan, item)) return null;
+  if (!plan || !isHighLowPlanAcceptable(plan) || !plan.proposalId || !isHighLowBarrierOnRequiredSide(plan, side)) return null;
   const ask = Number(plan.askPrice);
   if (!Number.isFinite(ask) || ask <= 0 || Math.abs(ask - Number(stake)) > 0.02) return null;
   const preparedAt = Number(plan.finalPreparedAt || plan.updatedAt || 0);
@@ -8363,17 +5798,12 @@ function saveHighLowFinalEntryPlan(item, side, plan, reason = "pre58_final_refre
   const cache = getOrCreateExecutionPlan(item);
   const finalPlan = {
     ...plan,
-    source: isHighLowPlanAcceptable(plan) ? "pre58_final_target_profit_130" : "pre58_final_nearest_grid_rescue",
+    source: "pre58_final_target_profit_130",
     finalPreparedAt: Date.now(),
     finalPreparedMs: Math.round(getSignalConfirmationMs(item)),
     finalRefreshReason: String(reason || "pre58_final_refresh"),
     searchAcceptable: true,
-    finalRangeRescue: !isHighLowPlanAcceptable(plan),
-    finalTargetDistancePct: getHighLowTargetDistance(plan),
   };
-  // II18: el último nivel que funcionó cerca de la entrada se vuelve la mejor semilla
-  // para la siguiente señal del mismo símbolo y dirección.
-  try { rememberExecutionBarrierHint(item?.symbol, side, finalPlan, finalPlan.precision || 0); } catch {}
   if (side === "CALL") cache.finalEntryCall = finalPlan;
   else cache.finalEntryPut = finalPlan;
   cache.finalRefreshStatus = {
@@ -8396,24 +5826,12 @@ function saveHighLowFinalEntryPlan(item, side, plan, reason = "pre58_final_refre
 async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_final_refresh") {
   const safeSide = normalizeSignalConfirmationSide(side);
   if (!shouldUseAutoHighLowExecution() || !item?.id || !safeSide) return false;
-  if (!isTradeEntryOpen(item) || isSignalAnchorReturnBlocked(item) || item?.trade?.badge || item?.signalAutoEntry?.attempted) return false;
+  if (!isTradeEntryOpen(item) || item?.trade?.badge || item?.signalAutoEntry?.attempted) return false;
   const ms = getSignalConfirmationMs(item);
   if (ms < SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS - 250 || ms > SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS) return false;
-  const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
-  // II18: preparar NO autoriza una compra. Solo precalcula la dirección que ya marca
-  // el detector. La compra sigue exigiendo el flujo PGP 2/2 en trySignalAutoEntryAt57().
-  if (safeSide !== signalSide) return false;
+  if (getSignalEnabledTradeSide(item) !== safeSide) return false;
 
   const cache = getOrCreateExecutionPlan(item);
-  if (cache.entryBuyActive) return false;
-  // II24: desde s56 esta es la única preparación autorizada. La fase s50 queda
-  // definitivamente cerrada para que no reinicie ni lance proposals en paralelo.
-  cache.finalRefreshExclusive = true;
-  cache.finalRefreshPhaseScheduled = true;
-  if (cache.barrierLockTimer) {
-    try { clearTimeout(cache.barrierLockTimer); } catch {}
-    cache.barrierLockTimer = null;
-  }
   const stake = Number(getEffectiveTradeStake().toFixed(2));
   const existing = getHighLowFinalEntryPlan(item, safeSide, stake);
   if (existing) return true;
@@ -8433,13 +5851,6 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
   cache.finalRefreshRunning = (async () => {
     try {
       await ensureAuthorized();
-      // Si la recalibración de s50 todavía está terminando, esperamos un instante y
-      // reutilizamos su barrera; nunca lanzamos dos tandas de proposals a la vez.
-      if (cache.barrierLockRunning) {
-        try {
-          await Promise.race([cache.barrierLockRunning, new Promise((resolve) => setTimeout(resolve, 700))]);
-        } catch {}
-      }
       if (cache.running) {
         try {
           await Promise.race([cache.running, new Promise((resolve) => setTimeout(resolve, 250))]);
@@ -8461,18 +5872,15 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
       let closest = null;
       const tried = new Set();
       // Primera consulta: misma distancia relativa aceptada, recalculada con el spot actual.
-      // II18 permite varios microajustes porque empieza antes; sigue siendo un solo lado y
-      // una zona local alrededor de la barrera ya aprendida, no una búsqueda amplia.
-      for (let attempt = 1; attempt <= SIGNAL_HIGHLOW_FINAL_REFRESH_MAX_ATTEMPTS; attempt++) {
-        if (cache.entryBuyActive) return false;
+      // Luego se permiten hasta dos microajustes del mismo lado; nunca una búsqueda amplia.
+      for (let attempt = 1; attempt <= 3; attempt++) {
         const nowMs = getSignalConfirmationMs(item);
         if (nowMs > SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS + 250) break;
         if (!candidate?.barrier || tried.has(String(candidate.barrier))) break;
         tried.add(String(candidate.barrier));
 
         const remaining = Math.max(300, Math.min(800, SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS + 250 - nowMs + 120));
-        const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, remaining, item);
-        if (cache.entryBuyActive) return false;
+        const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, remaining);
         if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
         if (plan && isHighLowPlanAcceptable(plan)) {
           const finalPlan = saveHighLowFinalEntryPlan(item, safeSide, plan, reason);
@@ -8500,35 +5908,11 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
         candidate = adjusted;
       }
 
-      // Si la precisión real del índice hace imposible caer dentro de 225–235 (por ejemplo,
-      // un salto 235.4 → 209.x), no dejamos perder la operación por unas décimas: usamos el
-      // candidato más cercano solo dentro del rescate final acotado.
-      if (closest && isHighLowFinalEntryPlanAcceptable(closest)) {
-        const finalPlan = saveHighLowFinalEntryPlan(item, safeSide, closest, "pre58_nearest_grid_rescue");
-        finalPlan.signLocked = true;
-        finalPlan.finalRefreshAttempt = SIGNAL_HIGHLOW_FINAL_REFRESH_MAX_ATTEMPTS;
-        const regularCache = getOrCreateExecutionPlan(item);
-        if (safeSide === "CALL") regularCache.call = finalPlan;
-        else regularCache.put = finalPlan;
-        regularCache.updatedAt = Date.now();
-        regularCache.finalRefreshStatus = {
-          ...(regularCache.finalRefreshStatus || {}),
-          status: "ready_nearest_grid",
-          sign_lock: safeSide === "CALL" ? "+" : "-",
-          nearest_grid_rescue: true,
-          target_distance_pct: getHighLowTargetDistance(finalPlan),
-        };
-        item.autoHighLow ||= {};
-        item.autoHighLow[safeSide === "CALL" ? "finalEntryCall" : "finalEntryPut"] = { ...finalPlan };
-        item.autoHighLow.finalRefreshStatus = { ...regularCache.finalRefreshStatus };
-        return true;
-      }
-
       const pctTxt = Number.isFinite(Number(closest?.payoutTotalPct))
         ? `; mejor ${Number(closest.payoutTotalPct).toFixed(1)}% total`
         : "";
       const barrierTxt = closest?.barrier ? ` con barrera ${closest.barrier}` : "";
-      throw new Error(`No se obtuvo proposal final suficientemente cerca de 130% antes de 58s${pctTxt}${barrierTxt}.`);
+      throw new Error(`No se obtuvo proposal final dentro del rango antes de 58s sin cruzar el spot${pctTxt}${barrierTxt}.`);
     } catch (e) {
       cache.finalRefreshStatus = {
         status: "error",
@@ -8551,172 +5935,28 @@ async function prepareHighLowFinalEntryProposal(item, side, reason = "pre58_fina
 }
 
 
-async function prepareHighLowBarrierLock(item, side, reason = "pre58_barrier_lock") {
-  const safeSide = normalizeSignalConfirmationSide(side);
-  if (!shouldUseAutoHighLowExecution() || !item?.id || !safeSide) return false;
-  if (!isTradeEntryOpen(item) || isSignalAnchorReturnBlocked(item) || item?.trade?.badge || item?.signalAutoEntry?.attempted) return false;
-  const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
-  if (safeSide !== signalSide) return false;
-  const cache = getOrCreateExecutionPlan(item);
-  if (cache.entryBuyActive || cache.finalRefreshExclusive || cache.finalRefreshRunning) return false;
-  if (getSignalConfirmationMs(item) >= SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS) {
-    cache.barrierLockStatus = {
-      status: "stopped_for_final_refresh",
-      side: safeSide,
-      reason: "s56_final_priority",
-      at: Date.now(),
-      ms: Math.round(getSignalConfirmationMs(item)),
-    };
-    item.autoHighLow ||= {};
-    item.autoHighLow.barrierLockStatus = { ...cache.barrierLockStatus };
-    return false;
-  }
-  if (cache.barrierLockRunning) return cache.barrierLockRunning;
-  const stake = Number(getEffectiveTradeStake().toFixed(2));
-  cache.barrierLockStatus = {
-    status: "preparing",
-    side: safeSide,
-    reason: String(reason || "pre58_barrier_lock"),
-    started_at: Date.now(),
-    started_ms: Math.round(getSignalConfirmationMs(item)),
-  };
-  item.autoHighLow ||= {};
-  item.autoHighLow.barrierLockStatus = { ...cache.barrierLockStatus };
-
-  cache.barrierLockRunning = (async () => {
-    try {
-      await ensureAuthorized();
-      const plan = await findHighLowPlanNear130(item, safeSide, {
-        fast: false,
-        maxQuotes: 7,
-        timeoutMs: 1800,
-        stake,
-        abortOnEntryBuy: true,
-        abortOnFinalPriority: true,
-      });
-      if (cache.finalRefreshExclusive || cache.finalRefreshRunning) {
-        cache.barrierLockStatus = { status: "stopped_for_final_refresh", side: safeSide, reason: "s56_final_priority", at: Date.now(), ms: Math.round(getSignalConfirmationMs(item)) };
-        return false;
-      }
-      if (cache.entryBuyActive) {
-        cache.barrierLockStatus = { status: "stopped_for_entry", side: safeSide, reason: "auto58_buy_started", at: Date.now(), ms: Math.round(getSignalConfirmationMs(item)) };
-        return false;
-      }
-      if (plan && makeHighLowCandidateFromPlan(plan, safeSide)) {
-        if (safeSide === "CALL") cache.callCandidate = { ...plan };
-        else cache.putCandidate = { ...plan };
-        if (isHighLowPlanAcceptable(plan)) {
-          if (safeSide === "CALL") cache.call = { ...plan };
-          else cache.put = { ...plan };
-          rememberExecutionBarrierHint(item.symbol, safeSide, plan, plan.precision || 0);
-        }
-        cache.updatedAt = Date.now();
-        item.autoHighLow[safeSide === "CALL" ? "callCandidate" : "putCandidate"] = { ...plan };
-        if (isHighLowPlanAcceptable(plan)) item.autoHighLow[safeSide === "CALL" ? "call" : "put"] = { ...plan };
-        item.autoHighLow.updatedAt = cache.updatedAt;
-        cache.barrierLockStatus = {
-          status: isHighLowPlanAcceptable(plan) ? "ready" : "candidate",
-          side: safeSide,
-          reason: String(reason || "pre58_barrier_lock"),
-          prepared_at: Date.now(),
-          prepared_ms: Math.round(getSignalConfirmationMs(item)),
-          barrier: String(plan.barrier || ""),
-          payout_total_pct: Number(plan.payoutTotalPct || 0),
-          target_distance_pct: getHighLowTargetDistance(plan),
-        };
-      } else {
-        cache.barrierLockStatus = {
-          status: "no_candidate",
-          side: safeSide,
-          reason: String(reason || "pre58_barrier_lock"),
-          at: Date.now(),
-          ms: Math.round(getSignalConfirmationMs(item)),
-        };
-      }
-    } catch (e) {
-      cache.barrierLockStatus = {
-        status: "error",
-        side: safeSide,
-        reason: String(reason || "pre58_barrier_lock"),
-        error: e?.message || String(e),
-        at: Date.now(),
-        ms: Math.round(getSignalConfirmationMs(item)),
-      };
-    } finally {
-      item.autoHighLow ||= {};
-      item.autoHighLow.barrierLockStatus = { ...cache.barrierLockStatus };
-      try { saveHistory(history); } catch {}
-      cache.barrierLockRunning = null;
-    }
-    return true;
-  })();
-  return cache.barrierLockRunning;
-}
-
 function scheduleHighLowFinalEntryTimers(item) {
-  if (isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item)) return false;
+  if (isInicioInamovibleStudyOnlySignal(item)) return false;
   if (!shouldUseAutoHighLowExecution() || !item?.id || !isTradeEntryOpen(item) || item?.signalAutoEntry?.attempted) return;
   const cache = getOrCreateExecutionPlan(item);
   const ms = getSignalConfirmationMs(item);
 
-  const signalSide = String(item?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
-
-  // II29 watchdog s56: si el timer programado se perdió/demoró pero seguimos dentro
-  // de la ventana final, arrancamos la preparación final inmediatamente. Esto evita
-  // finalRefreshStatus=null. Es idempotente porque prepareHighLowFinalEntryProposal
-  // bloquea duplicados con finalRefreshRunning/finalRefreshExclusive.
-  const existingFinalStatus = cache.finalRefreshStatus || item?.autoHighLow?.finalRefreshStatus || null;
-  const existingFinalPlan = signalSide === "CALL"
-    ? (cache.finalEntryCall || item?.autoHighLow?.finalEntryCall)
-    : (cache.finalEntryPut || item?.autoHighLow?.finalEntryPut);
-  if (
-    ms >= SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS &&
-    ms <= SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS &&
-    !cache.entryBuyActive &&
-    !cache.finalRefreshRunning &&
-    !existingFinalStatus &&
-    !existingFinalPlan
-  ) {
-    cache.finalRefreshPhaseScheduled = true;
-    cache.finalRefreshExclusive = true;
-    if (cache.barrierLockTimer) {
-      try { clearTimeout(cache.barrierLockTimer); } catch {}
-      cache.barrierLockTimer = null;
-    }
-    void prepareHighLowFinalEntryProposal(item, signalSide, "s56_watchdog_missing_status");
-  }
-
-  // II24 fase s50: se programa UNA sola vez. Si la señal ya llegó a s56, esta fase
-  // se omite por completo: la búsqueda final tiene prioridad absoluta.
-  if (!cache.barrierLockPhaseScheduled && !cache.barrierLockTimer && ms < SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS) {
-    const lockDelay = Math.max(0, SIGNAL_HIGHLOW_BARRIER_LOCK_START_MS - ms);
-    cache.barrierLockTimer = setTimeout(() => {
-      cache.barrierLockTimer = null;
-      const current = findHistoryItemById(item.id) || item;
-      const currentCache = getOrCreateExecutionPlan(current);
-      currentCache.barrierLockPhaseScheduled = true;
-      if (currentCache.finalRefreshExclusive || getSignalConfirmationMs(current) >= SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS) return;
-      const side = String(current?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
-      void prepareHighLowBarrierLock(current, side, "exact_timer_50_barrier_lock");
-    }, lockDelay);
-  }
-
-  // II24 fase s56: también se programa UNA sola vez y, al comenzar, cierra
-  // definitivamente la fase s50. No se permiten búsquedas de barrera paralelas.
-  if (!cache.finalRefreshPhaseScheduled && !cache.finalRefreshTimer && ms <= SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS) {
+  if (!cache.finalRefreshTimer && ms <= SIGNAL_HIGHLOW_FINAL_REFRESH_END_MS) {
     const delay = Math.max(0, SIGNAL_HIGHLOW_FINAL_REFRESH_START_MS - ms);
     cache.finalRefreshTimer = setTimeout(() => {
       cache.finalRefreshTimer = null;
       const current = findHistoryItemById(item.id) || item;
-      const currentCache = getOrCreateExecutionPlan(current);
-      currentCache.finalRefreshPhaseScheduled = true;
-      currentCache.finalRefreshExclusive = true;
-      if (currentCache.barrierLockTimer) {
-        try { clearTimeout(currentCache.barrierLockTimer); } catch {}
-        currentCache.barrierLockTimer = null;
+      const side = normalizeSignalConfirmationSide(getSignalEnabledTradeSide(current));
+      if (side) void prepareHighLowFinalEntryProposal(current, side, "exact_timer_57_25");
+      else {
+        cache.finalRefreshStatus = {
+          status: "waiting_points",
+          side: "",
+          reason: "exact_timer_57_25",
+          at: Date.now(),
+          ms: Math.round(getSignalConfirmationMs(current)),
+        };
       }
-      const side = String(current?.direction || "CALL").toUpperCase() === "PUT" ? "PUT" : "CALL";
-      void prepareHighLowFinalEntryProposal(current, side, "exact_timer_56_prearmed_giro");
     }, delay);
   }
 
@@ -8742,7 +5982,7 @@ function promoteFreshHighLowPlanForLateConfirmation(item, side, stake) {
     ? [cache?.call, cache?.callCandidate, item?.autoHighLow?.call, item?.autoHighLow?.callCandidate]
     : [cache?.put, cache?.putCandidate, item?.autoHighLow?.put, item?.autoHighLow?.putCandidate];
   const usable = candidates
-    .filter((plan) => plan && isHighLowFinalEntryPlanAcceptable(plan) && plan.proposalId && isHighLowBarrierOnRequiredSide(plan, side))
+    .filter((plan) => plan && isHighLowPlanAcceptable(plan) && plan.proposalId && isHighLowBarrierOnRequiredSide(plan, side))
     .map((plan) => {
       const preparedAt = Number(plan.updatedAt || 0);
       const age = Date.now() - preparedAt;
@@ -8816,7 +6056,7 @@ async function rescueNearRangeHighLowPlanAtEntry(item, side, stake) {
     if (!candidate?.barrier) continue;
     try {
       const remaining = Math.max(250, Math.min(650, SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_MAX_MS - nowMs + 80));
-      const plan = await requestFreshHighLowPlanForBarrier(item.symbol, side, stake, candidate, remaining, item);
+      const plan = await requestFreshHighLowPlanForBarrier(item.symbol, side, stake, candidate, remaining);
       if (plan && getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest)) closest = plan;
       if (plan && isHighLowPlanAcceptable(plan)) {
         plan.source = "entry_near_range_fine_precision_rescue";
@@ -8882,116 +6122,10 @@ function getHighLowEntryDiagnostics(item, side) {
     best_candidate: summarize(candidate),
     recent_proposal_attempts: readHighLowProposalAttemptAudit(item?.symbol, side),
     final_entry_plan: summarize(side === "CALL" ? (cache?.finalEntryCall || item?.autoHighLow?.finalEntryCall) : (cache?.finalEntryPut || item?.autoHighLow?.finalEntryPut)),
-    barrier_lock_status: cache?.barrierLockStatus || item?.autoHighLow?.barrierLockStatus || null,
     final_refresh_status: cache?.finalRefreshStatus || item?.autoHighLow?.finalRefreshStatus || null,
     points_enabled_at_ms: getSignalSideEnabledAtMs(item, side),
     cache_error: String(cache?.error || ""),
   };
-}
-
-async function buyLateRecoveryHighLow(item, side, stake) {
-  const safeSide = normalizeSignalConfirmationSide(side);
-  const state = item?.lateEntryRecovery;
-  if (!item?.id || !safeSide || !state || String(state.status || "") !== "sending") throw new Error("Rescate tardío no armado.");
-  const symbol = String(item.symbol || "");
-  const startedElapsed = getSignalElapsedMsRaw(item);
-  if (startedElapsed < SIGNAL_LATE_RECOVERY_START_MS || startedElapsed > SIGNAL_LATE_RECOVERY_END_MS) {
-    throw new Error(`Rescate fuera de ventana (${(startedElapsed / 1000).toFixed(2)}s).`);
-  }
-  if (getSignalEnabledTradeSide(item) !== safeSide) throw new Error("Rescate cancelado: PGP 2/2 ya no autoriza esa dirección.");
-  if (isSignalAnchorReturnBlocked(item)) throw new Error("Rescate cancelado: retorno al ancla.");
-
-  const cache = getOrCreateExecutionPlan(item);
-  const rawSeeds = safeSide === "CALL"
-    ? [cache?.finalEntryCall, item?.autoHighLow?.finalEntryCall, cache?.call, item?.autoHighLow?.call, cache?.callCandidate, item?.autoHighLow?.callCandidate]
-    : [cache?.finalEntryPut, item?.autoHighLow?.finalEntryPut, cache?.put, item?.autoHighLow?.put, cache?.putCandidate, item?.autoHighLow?.putCandidate];
-  let prepared = getBestCurrentSignalHighLowSeedPlan(item, safeSide)
-    || rawSeeds.find((x) => x && makeHighLowCandidateFromPlan(x, safeSide))
-    || getHighLowProvisionalBarrierPlan(item, safeSide);
-  if (!prepared || !makeHighLowCandidateFromPlan(prepared, safeSide)) throw new Error("Rescate sin barrera +130% preparada.");
-
-  let closest = null;
-  let candidate = makeHighLowSameSideCandidate(prepared, safeSide, symbol);
-  const tried = new Set();
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= SIGNAL_LATE_RECOVERY_MAX_QUOTES; attempt++) {
-    const elapsedBeforeQuote = getSignalElapsedMsRaw(item);
-    const left = SIGNAL_LATE_RECOVERY_END_MS - elapsedBeforeQuote;
-    if (left < SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS) break;
-    if (!candidate?.barrier || tried.has(String(candidate.barrier))) break;
-    tried.add(String(candidate.barrier));
-
-    try {
-      const timeout = Math.max(250, Math.min(850, left));
-      const quoteAtRequest = Number(lastQuoteBySymbol?.[symbol]);
-      state.quote_at_request = Number.isFinite(quoteAtRequest) ? quoteAtRequest : null;
-      state.quote_request_elapsed_ms = Math.round(elapsedBeforeQuote);
-      const plan = await requestFreshHighLowPlanForBarrier(symbol, safeSide, stake, candidate, timeout, item, true);
-      if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
-      if (plan && isHighLowFinalEntryPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
-        const elapsedBeforeBuy = getSignalElapsedMsRaw(item);
-        if (elapsedBeforeBuy > SIGNAL_LATE_RECOVERY_END_MS) throw new Error("La proposal del rescate llegó después de s70.");
-        const current = Number(lastQuoteBySymbol?.[symbol]);
-        const ref = getLateRecoveryReferencePrice(item);
-        if (!isLateRecoveryPriceFavorable(safeSide, current, ref)) {
-          throw new Error("El precio dejó de ser favorable mientras se refrescaba la proposal.");
-        }
-
-        state.barrier = String(plan.barrier || "");
-        state.proposal_barrier_mode = String(plan.barrierMode || "");
-        state.proposal_api_barrier = String(plan.apiBarrier || "");
-        state.proposal_quote_price = Number.isFinite(quoteAtRequest) ? quoteAtRequest : null;
-        state.proposal_live_price_before_buy = Number.isFinite(current) ? current : null;
-        state.payout_total_pct = Number(plan.payoutTotalPct || 0);
-        state.proposal_id = String(plan.proposalId || "");
-        state.proposal_attempt = attempt;
-        state.buy_request_elapsed_ms = Math.round(elapsedBeforeBuy);
-        state.buy_request_price = Number.isFinite(current) ? current : null;
-        state.expiry_time = Number(plan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(item) || 0) || null;
-        state.final_range_rescue = !isHighLowPlanAcceptable(plan);
-        try { rememberExecutionBarrierHint(symbol, safeSide, plan, plan.precision || 0); } catch {}
-        try { saveHistory(history); } catch {}
-
-        const buyPayload = { buy: String(plan.proposalId), price: Number(plan.askPrice) };
-        const res = await wsRequest(buyPayload, 10000);
-        if (res?.buy?.contract_id) {
-          return {
-            res,
-            plan,
-            attempt,
-            preparedPlan: prepared,
-            usedFinalPreproposal: false,
-            repriceUsed: attempt > 1,
-            lateRecoveryUsed: true,
-            lateRecoveryReferencePrice: ref,
-            lateRecoveryTriggerPrice: Number(state.trigger_price),
-            lateRecoveryTriggerElapsedMs: Number(state.trigger_elapsed_ms),
-          };
-        }
-        const msg = String(res?.error?.message || "Deriv no confirmó el buy del rescate.");
-        const moved = /underlying market has moved too much|contract payout has changed/i.test(msg);
-        if (!moved) throw new Error(msg);
-        lastError = new Error(msg);
-        candidate = makeHighLowSameSideCandidate(plan, safeSide, symbol);
-        continue;
-      }
-
-      if (!plan) break;
-      const adjusted = adjustHighLowBarrierSameSideTowardTarget(plan, safeSide, symbol);
-      if (!adjusted?.barrier || tried.has(String(adjusted.barrier))) break;
-      candidate = adjusted;
-    } catch (e) {
-      lastError = e instanceof Error ? e : new Error(String(e || "Error rescate Higher/Lower"));
-      if (/dejó de ser favorable/.test(String(lastError.message || ""))) throw lastError;
-      if (getSignalElapsedMsRaw(item) >= SIGNAL_LATE_RECOVERY_END_MS) break;
-    }
-  }
-
-  if (closest) {
-    throw new Error(`Rescate ${safeSide === "CALL" ? "HIGHER" : "LOWER"} sin barrera válida: mejor ${Number(closest.payoutTotalPct || 0).toFixed(1)}% total.`);
-  }
-  throw lastError || new Error("No se pudo obtener proposal +130% para el rescate tardío.");
 }
 
 async function buyFreshHighLowLikeWindows(item, side, stake) {
@@ -9040,28 +6174,6 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
     item.signalAutoEntry.auto_trigger_delay_ms = Math.max(0, Math.round(triggerMs - SIGNAL_AUTO_ENTRY_MS));
     item.signalAutoEntry.trigger_timing = triggerMs - SIGNAL_AUTO_ENTRY_MS > SIGNAL_AUTO_TIMER_DELAY_WARN_MS ? "timer_delayed" : "on_time";
 
-    if (finalPlan && !isHighLowPlanExpiryAligned(finalPlan, item)) finalPlan = null;
-
-    // II23 fallback rápido: si la preparación previa no encontró una proposal dentro
-    // del rango, todavía podemos usar una distancia semilla con la precisión real
-    // del símbolo y hacer la búsqueda fina RELATIVA directamente en AUTO58. No compra
-    // esta semilla; el bucle de abajo siempre exige una proposal fresca y aceptable.
-    if (!finalPlan && triggerMs <= SIGNAL_AUTO_POST58_MAX_MS) {
-      const emergencySeed = makeHighLowAuto58EmergencySeed(item, side, stake);
-      if (emergencySeed) {
-        finalPlan = emergencySeed;
-        item.signalAutoEntry.auto58_emergency_seed = {
-          used: true,
-          barrier: String(emergencySeed.barrier || ""),
-          precision: Number(emergencySeed.precision || 0),
-          source: String(emergencySeed.source || ""),
-          preferred_current_signal_seed: String(getBestCurrentSignalHighLowSeedPlan(item, side)?.barrier || ""),
-          at_ms: Math.round(getSignalConfirmationMs(item)),
-        };
-        try { saveHistory(history); } catch {}
-      }
-    }
-
     if (!finalPlan) {
       const diagnosis = classifyHighLowAutoTimingFailure(item, side);
       item.signalAutoEntry.timing_diagnosis = diagnosis;
@@ -9082,226 +6194,200 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
       throw new Error(`AUTO ${side === "CALL" ? "HIGHER" : "LOWER"} cancelado: ${diagnosis.message}`);
     }
 
-    const entryCache = beginHighLowEntryBuy(item, side, "auto58_relative_fresh");
     const diagnosisBase = {
       points_enabled_at_ms: getSignalSideEnabledAtMs(item, side),
       auto_trigger_ms: Math.round(triggerMs),
       auto_trigger_delay_ms: Math.max(0, Math.round(triggerMs - SIGNAL_AUTO_ENTRY_MS)),
-      seed_plan_prepared_ms: Number(finalPlan.finalPreparedMs || null),
-      seed_plan_age_ms: Math.round(finalPlan.finalPlanAgeMs || 0),
-      seed_barrier: String(finalPlan.barrier || ""),
-      seed_payout_total_pct: Number(finalPlan.payoutTotalPct || 0),
-      entry_quote_mode: finalPlan?.emergencySeedOnly ? "relative_fine_fallback_at_auto58" : "relative_fresh_at_auto58",
-      emergency_seed_used: !!finalPlan?.emergencySeedOnly,
-      seed_precision: Number(finalPlan?.precision || 0),
+      final_plan_prepared_ms: Number(finalPlan.finalPreparedMs || null),
+      final_plan_age_ms: Math.round(finalPlan.finalPlanAgeMs || 0),
+      barrier: String(finalPlan.barrier || ""),
+      payout_total_pct: Number(finalPlan.payoutTotalPct || 0),
     };
     const saveDiagnosis = (patch) => {
       item.signalAutoEntry.timing_diagnosis = { ...diagnosisBase, ...(patch || {}) };
       try { saveHistory(history); } catch {}
     };
 
-    // II22: la proposal de s56 NO se compra. Solo aporta la distancia +/- que suele
-    // dar ~130%. En AUTO58 recotizamos esa misma distancia como barrera RELATIVA,
-    // para que Deriv la calcule contra el spot vivo del instante de entrada.
-    let candidate = makeHighLowSameSideCandidate(finalPlan, side, symbol);
-    if (!candidate?.barrier) {
-      saveDiagnosis({ code: "AUTO58_RELATIVE_SEED_MISSING", message: "La proposal prearmada no dejó una distancia relativa utilizable." });
-      throw new Error(`AUTO ${side === "CALL" ? "HIGHER" : "LOWER"} cancelado: sin distancia relativa preparada.`);
-    }
+    const firstBuyPayload = { buy: String(finalPlan.proposalId), price: Number(finalPlan.askPrice) };
+    const latePromotedPlan = !!finalPlan.promotedAfterLateConfirmation;
+    saveDiagnosis({
+      code: latePromotedPlan
+        ? "LATE_CONFIRMATION_FRESH_PLAN_BUY_SENT"
+        : (triggerMs - SIGNAL_AUTO_ENTRY_MS > SIGNAL_AUTO_TIMER_DELAY_WARN_MS ? "TIMER_DELAYED_PREPARED_BUY_SENT" : "PREPARED_BUY_SENT"),
+      message: latePromotedPlan
+        ? "Confirmación tardía recuperada con una proposal válida y fresca ya disponible."
+        : "Buy enviado con la proposal final preparada cerca del segundo 58; esperando aceptación de Deriv.",
+      first_proposal_id: String(finalPlan.proposalId || ""),
+    });
+    window.DerivDebug?.log?.("HIGHLOW_PRE58_PREPARED_BUY_ATTEMPT", {
+      proposal_id: firstBuyPayload.buy,
+      price: firstBuyPayload.price,
+      side,
+      symbol,
+      barrier: finalPlan.barrier,
+      payoutTotalPct: finalPlan.payoutTotalPct,
+      triggerMs,
+      finalPlanAgeMs: finalPlan.finalPlanAgeMs,
+    });
 
-    let closest = null;
-    let freshPlan = null;
-    let firstQuoteError = "";
-    const tried = new Set();
-    // Con semilla de emergencia permitimos hasta 4 puntos finos; el límite temporal
-    // SIGNAL_AUTO_POST58_MAX_MS sigue mandando y corta el bucle antes de comprar tarde.
-    const maxFreshQuotes = finalPlan?.emergencySeedOnly ? 4 : 3;
-
-    for (let attempt = 1; attempt <= maxFreshQuotes; attempt++) {
-      const beforeQuoteMs = getSignalConfirmationMs(item);
-      if (beforeQuoteMs > SIGNAL_AUTO_POST58_MAX_MS) break;
-      if (!candidate?.barrier || tried.has(String(candidate.barrier))) break;
-      tried.add(String(candidate.barrier));
-      const liveBeforeQuote = Number(lastQuoteBySymbol?.[symbol]);
+    const firstRes = await wsRequest(firstBuyPayload, 20000);
+    if (firstRes?.buy?.contract_id) {
       saveDiagnosis({
-        code: attempt === 1 ? "AUTO58_RELATIVE_FRESH_QUOTE_STARTED" : "AUTO58_RELATIVE_MICROADJUST_QUOTE_STARTED",
-        message: attempt === 1
-          ? "AUTO58: recotizando la distancia prearmada como barrera relativa con el spot vivo."
-          : "AUTO58: microajuste local de barrera relativa para acercar el payout a 130%.",
-        fresh_quote_attempt: attempt,
-        live_price_before_quote: Number.isFinite(liveBeforeQuote) ? liveBeforeQuote : null,
-        requested_relative_barrier: String(candidate.barrier || ""),
-        quote_started_ms: Math.round(beforeQuoteMs),
-      });
-      try {
-        const remaining = Math.max(300, Math.min(850, SIGNAL_AUTO_POST58_MAX_MS - beforeQuoteMs + 120));
-        const plan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, candidate, remaining, item, true);
-        if (plan && (!closest || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closest))) closest = plan;
-        if (plan && isHighLowFinalEntryPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
-          freshPlan = plan;
-          freshPlan.source = "auto58_relative_fresh_target_profit_130";
-          freshPlan.auto58RelativeFresh = true;
-          freshPlan.auto58FreshAttempt = attempt;
-          freshPlan.seedBarrier = String(finalPlan.barrier || "");
-          freshPlan.seedProposalId = String(finalPlan.proposalId || "");
-          freshPlan.seedPlanAgeMs = Math.round(finalPlan.finalPlanAgeMs || 0);
-          break;
-        }
-        if (!plan) break;
-        const adjusted = adjustHighLowBarrierSameSideTowardTarget(plan, side, symbol);
-        if (!adjusted?.barrier || tried.has(String(adjusted.barrier))) break;
-        candidate = adjusted;
-      } catch (e) {
-        firstQuoteError = e?.message || String(e || "Error recotizando AUTO58");
-        break;
-      }
-    }
-
-    if (!freshPlan) {
-      const pct = Number(closest?.payoutTotalPct);
-      const pctTxt = Number.isFinite(pct) ? `${pct.toFixed(1)}% total` : "sin proposal válida";
-      saveDiagnosis({
-        code: "AUTO58_RELATIVE_FRESH_NOT_READY",
-        message: firstQuoteError || `No se obtuvo barrera relativa fresca suficientemente cerca de 130% (${pctTxt}).`,
-        best_fresh_payout_total_pct: Number.isFinite(pct) ? pct : null,
-        best_fresh_barrier: String(closest?.barrier || ""),
-      });
-      throw new Error(`AUTO ${side === "CALL" ? "HIGHER" : "LOWER"} cancelado: ${firstQuoteError || `barrera fresca ${pctTxt}`}.`);
-    }
-
-    const readyMs = getSignalConfirmationMs(item);
-    if (readyMs > SIGNAL_AUTO_POST58_MAX_MS) {
-      saveDiagnosis({
-        code: "AUTO58_RELATIVE_FRESH_READY_TOO_LATE",
-        message: `La proposal relativa fresca llegó a ${(readyMs / 1000).toFixed(2)}s.`,
-        fresh_proposal_id: String(freshPlan.proposalId || ""),
-        fresh_barrier: String(freshPlan.barrier || ""),
-        fresh_payout_total_pct: Number(freshPlan.payoutTotalPct || 0),
-      });
-      throw new Error("La proposal relativa fresca llegó fuera de la ventana segura de entrada.");
-    }
-
-    const buyOnce = async (plan, attemptNo, priorError = "") => {
-      const buySentMs = getSignalConfirmationMs(item);
-      const liveBeforeBuy = Number(lastQuoteBySymbol?.[symbol]);
-      saveDiagnosis({
-        code: attemptNo === 1 ? "AUTO58_RELATIVE_FRESH_BUY_SENT" : "AUTO58_RELATIVE_REQUOTE_BUY_SENT",
-        message: attemptNo === 1
-          ? "Buy enviado con proposal relativa fresca generada en AUTO58."
-          : "Segundo buy enviado con una nueva proposal relativa después de movimiento de mercado.",
-        fresh_proposal_id: String(plan.proposalId || ""),
-        fresh_barrier: String(plan.barrier || ""),
-        fresh_api_barrier: String(plan.apiBarrier || ""),
-        fresh_barrier_mode: String(plan.barrierMode || ""),
-        fresh_payout_total_pct: Number(plan.payoutTotalPct || 0),
-        live_price_before_buy: Number.isFinite(liveBeforeBuy) ? liveBeforeBuy : null,
-        buy_sent_ms: Math.round(buySentMs),
-        prior_buy_error: priorError || "",
-      });
-      window.DerivDebug?.log?.("HIGHLOW_AUTO58_RELATIVE_FRESH_BUY_ATTEMPT", {
-        proposal_id: String(plan.proposalId || ""),
-        price: Number(plan.askPrice),
-        side,
-        symbol,
-        relativeBarrier: String(plan.barrier || ""),
-        apiBarrier: String(plan.apiBarrier || ""),
-        barrierMode: String(plan.barrierMode || ""),
-        payoutTotalPct: Number(plan.payoutTotalPct || 0),
-        livePriceBeforeBuy: Number.isFinite(liveBeforeBuy) ? liveBeforeBuy : null,
-        buySentMs,
-        attemptNo,
-      });
-      const res = await wsRequest({ buy: String(plan.proposalId), price: Number(plan.askPrice) }, 20000);
-      return { res, buySentMs, liveBeforeBuy };
-    };
-
-    const first = await buyOnce(freshPlan, 1);
-    if (first.res?.buy?.contract_id) {
-      saveDiagnosis({
-        code: "AUTO58_RELATIVE_FRESH_BUY_ACCEPTED",
-        message: "Deriv aceptó la compra con barrera relativa fresca de AUTO58.",
+        code: latePromotedPlan ? "LATE_CONFIRMATION_FRESH_PLAN_BUY_ACCEPTED" : "PREPARED_BUY_ACCEPTED",
+        message: latePromotedPlan
+          ? "Deriv aceptó la compra recuperada después de una confirmación tardía, usando una proposal fresca."
+          : "Deriv aceptó la compra con la proposal final fresca preparada antes del segundo 58.",
         accepted_at_ms: Math.round(getSignalConfirmationMs(item)),
+        first_proposal_id: String(finalPlan.proposalId || ""),
       });
       return {
-        res: first.res,
-        plan: freshPlan,
+        res: firstRes,
+        plan: finalPlan,
         attempt: 1,
         preparedPlan: finalPlan,
-        usedFinalPreproposal: false,
+        usedFinalPreproposal: true,
         repriceUsed: false,
         finalPlanAgeMs: Math.round(finalPlan.finalPlanAgeMs || 0),
-        auto58RelativeFreshUsed: true,
       };
     }
 
-    const firstError = String(first.res?.error?.message || "Deriv no confirmó el buy con la proposal relativa fresca.");
+    const firstError = String(firstRes?.error?.message || "Deriv no confirmó la compra con la proposal final pre-58.");
     const marketMoved = /underlying market has moved too much|contract payout has changed/i.test(firstError);
     if (!marketMoved) {
-      saveDiagnosis({ code: "AUTO58_RELATIVE_FRESH_BUY_REJECTED", message: firstError, first_error: firstError });
+      saveDiagnosis({
+        code: "PREPARED_BUY_REJECTED",
+        message: firstError,
+        first_proposal_id: String(finalPlan.proposalId || ""),
+      });
       throw new Error(firstError);
     }
 
-    const afterRejectMs = getSignalConfirmationMs(item);
-    if (afterRejectMs > SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS) {
+    const afterFirstBuyMs = getSignalConfirmationMs(item);
+    if (afterFirstBuyMs > SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS) {
       saveDiagnosis({
-        code: "AUTO58_RELATIVE_REQUOTE_TOO_LATE",
-        message: `El mercado se movió y el rechazo llegó a ${(afterRejectMs / 1000).toFixed(2)}s; no hay tiempo seguro para otra proposal.`,
+        code: "MARKET_MOVED_REPRICE_TOO_LATE",
+        message: `Deriv rechazó la proposal porque cambió el mercado y ya eran ${(afterFirstBuyMs / 1000).toFixed(2)}s; no se reintentó tarde.`,
         first_error: firstError,
-        first_reject_ms: Math.round(afterRejectMs),
+        first_proposal_id: String(finalPlan.proposalId || ""),
+        first_reject_ms: Math.round(afterFirstBuyMs),
       });
       throw new Error(`Compra rechazada por movimiento del mercado y sin tiempo seguro para recotizar: ${firstError}`);
     }
 
+    saveDiagnosis({
+      code: "MARKET_MOVED_REPRICE_STARTED",
+      message: "Deriv rechazó la proposal por movimiento del mercado; recotizando una vez con el spot actual.",
+      first_error: firstError,
+      first_proposal_id: String(finalPlan.proposalId || ""),
+      first_reject_ms: Math.round(afterFirstBuyMs),
+    });
+
     let retryPlan = null;
     try {
-      const remaining = Math.max(300, Math.min(700, SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS - afterRejectMs + 100));
-      retryPlan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, freshPlan, remaining, item, true);
+      const remaining = Math.max(350, Math.min(850, SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS - afterFirstBuyMs + 120));
+      retryPlan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, finalPlan, remaining);
       if (retryPlan) {
-        retryPlan.source = "auto58_relative_fresh_market_moved_requote";
-        retryPlan.auto58RelativeFresh = true;
-        retryPlan.repricedFromProposalId = String(freshPlan.proposalId || "");
+        retryPlan.source = "market_moved_reprice_profit_130";
+        retryPlan.repricedFromProposalId = String(finalPlan.proposalId || "");
+        retryPlan.repricedAtMs = Math.round(getSignalConfirmationMs(item));
       }
     } catch (e) {
       const msg = e?.message || String(e);
-      saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_ERROR", message: msg, first_error: firstError });
-      throw new Error(`No se pudo recotizar la barrera relativa después del movimiento del mercado: ${msg}`);
+      saveDiagnosis({
+        code: "MARKET_MOVED_REPRICE_PROPOSAL_ERROR",
+        message: msg,
+        first_error: firstError,
+        first_proposal_id: String(finalPlan.proposalId || ""),
+        reprice_error_at_ms: Math.round(getSignalConfirmationMs(item)),
+      });
+      throw new Error(`No se pudo recotizar después del movimiento del mercado: ${msg}`);
     }
 
     const retryReadyMs = getSignalConfirmationMs(item);
-    if (!retryPlan || !isHighLowFinalEntryPlanAcceptable(retryPlan) || !isHighLowPlanExpiryAligned(retryPlan, item)) {
-      const pct = Number(retryPlan?.payoutTotalPct);
-      const pctTxt = Number.isFinite(pct) ? `${pct.toFixed(1)}% total` : "sin pago válido";
-      saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_OUT_OF_RANGE", message: `Recotización fuera de rango: ${pctTxt}.`, first_error: firstError });
-      throw new Error(`Recotización relativa fuera de rango: ${pctTxt}.`);
+    if (!retryPlan || !isHighLowPlanAcceptable(retryPlan)) {
+      const retryPct = Number(retryPlan?.payoutTotalPct);
+      const pctTxt = Number.isFinite(retryPct) ? `${retryPct.toFixed(1)}% total` : "sin pago válido";
+      saveDiagnosis({
+        code: "MARKET_MOVED_REPRICE_OUT_OF_RANGE",
+        message: `La recotización quedó fuera del rango: ${pctTxt}.`,
+        first_error: firstError,
+        first_proposal_id: String(finalPlan.proposalId || ""),
+        retry_proposal_id: String(retryPlan?.proposalId || ""),
+        retry_payout_total_pct: Number.isFinite(retryPct) ? retryPct : null,
+        retry_ready_ms: Math.round(retryReadyMs),
+      });
+      throw new Error(`Recotización fuera del rango ${getHighLowAcceptableRangeText()}: ${pctTxt}.`);
     }
     if (retryReadyMs > SIGNAL_HIGHLOW_REPRICE_BUY_MAX_MS) {
-      saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_READY_TOO_LATE", message: `La recotización llegó a ${(retryReadyMs / 1000).toFixed(2)}s.` });
-      throw new Error("La recotización relativa llegó después del límite seguro de 58.9s.");
+      saveDiagnosis({
+        code: "MARKET_MOVED_REPRICE_READY_TOO_LATE",
+        message: `La recotización válida llegó a ${(retryReadyMs / 1000).toFixed(2)}s; no se envió un buy tardío.`,
+        first_error: firstError,
+        first_proposal_id: String(finalPlan.proposalId || ""),
+        retry_proposal_id: String(retryPlan.proposalId || ""),
+        retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
+        retry_ready_ms: Math.round(retryReadyMs),
+      });
+      throw new Error("La recotización llegó después del límite seguro de 58.9s.");
     }
 
-    const second = await buyOnce(retryPlan, 2, firstError);
-    if (second.res?.buy?.contract_id) {
+    const retryBuyPayload = { buy: String(retryPlan.proposalId), price: Number(retryPlan.askPrice) };
+    saveDiagnosis({
+      code: "MARKET_MOVED_REPRICE_BUY_SENT",
+      message: "Recotización válida; segundo buy enviado antes de 58.9s.",
+      first_error: firstError,
+      first_proposal_id: String(finalPlan.proposalId || ""),
+      retry_proposal_id: String(retryPlan.proposalId || ""),
+      retry_barrier: String(retryPlan.barrier || ""),
+      retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
+      retry_buy_sent_ms: Math.round(retryReadyMs),
+    });
+    window.DerivDebug?.log?.("HIGHLOW_MARKET_MOVED_REPRICE_BUY_ATTEMPT", {
+      proposal_id: retryBuyPayload.buy,
+      price: retryBuyPayload.price,
+      side,
+      symbol,
+      barrier: retryPlan.barrier,
+      payoutTotalPct: retryPlan.payoutTotalPct,
+      retryReadyMs,
+      firstError,
+    });
+
+    const retryRes = await wsRequest(retryBuyPayload, 20000);
+    if (retryRes?.buy?.contract_id) {
       saveDiagnosis({
-        code: "AUTO58_RELATIVE_REQUOTE_BUY_ACCEPTED",
-        message: "Deriv aceptó el segundo buy con una nueva barrera relativa fresca.",
-        accepted_at_ms: Math.round(getSignalConfirmationMs(item)),
+        code: "MARKET_MOVED_REPRICE_BUY_ACCEPTED",
+        message: "Deriv aceptó la compra después de una recotización inmediata con el spot actual.",
         first_error: firstError,
+        first_proposal_id: String(finalPlan.proposalId || ""),
+        retry_proposal_id: String(retryPlan.proposalId || ""),
+        retry_barrier: String(retryPlan.barrier || ""),
+        retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
+        retry_buy_sent_ms: Math.round(retryReadyMs),
+        accepted_at_ms: Math.round(getSignalConfirmationMs(item)),
       });
       return {
-        res: second.res,
+        res: retryRes,
         plan: retryPlan,
         attempt: 2,
         preparedPlan: finalPlan,
-        usedFinalPreproposal: false,
+        usedFinalPreproposal: true,
         repriceUsed: true,
         firstBuyError: firstError,
         finalPlanAgeMs: Math.round(finalPlan.finalPlanAgeMs || 0),
-        auto58RelativeFreshUsed: true,
       };
     }
 
-    const retryError = String(second.res?.error?.message || "Deriv no confirmó el segundo buy relativo.");
-    saveDiagnosis({ code: "AUTO58_RELATIVE_REQUOTE_BUY_REJECTED", message: retryError, first_error: firstError });
+    const retryError = String(retryRes?.error?.message || "Deriv no confirmó el segundo buy.");
+    saveDiagnosis({
+      code: "MARKET_MOVED_REPRICE_BUY_REJECTED",
+      message: retryError,
+      first_error: firstError,
+      first_proposal_id: String(finalPlan.proposalId || ""),
+      retry_proposal_id: String(retryPlan.proposalId || ""),
+      retry_payout_total_pct: Number(retryPlan.payoutTotalPct || 0),
+      retry_buy_sent_ms: Math.round(retryReadyMs),
+    });
     throw new Error(retryError);
   }
 
@@ -9355,12 +6441,12 @@ async function buyFreshHighLowLikeWindows(item, side, stake) {
 
     try {
       const remainingMs = Math.max(450, SIGNAL_AUTO_POST58_MAX_MS - msBeforeQuote + 180);
-      const plan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, prepared, Math.min(1200, remainingMs), item);
+      const plan = await requestFreshHighLowPlanForBarrier(symbol, side, stake, prepared, Math.min(1200, remainingMs));
       if (plan && (!closestQuoted || getHighLowTargetDistance(plan) < getHighLowTargetDistance(closestQuoted))) {
         closestQuoted = plan;
       }
 
-      if (plan && isHighLowPlanAcceptable(plan) && isHighLowPlanExpiryAligned(plan, item)) {
+      if (plan && isHighLowPlanAcceptable(plan)) {
         const cache = getOrCreateExecutionPlan(item);
         if (cache) {
           if (side === "CALL") cache.call = plan;
@@ -9474,7 +6560,7 @@ async function findBestHighLowPlan(item, side, opts = {}) {
   for (const candidate of candidates) {
     if (isHighLowProposalCooldownActive()) return null;
     try {
-      const plan = await getHighLowProposalQuote(symbol, side, candidate, candidate?.precision || 0, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
+      const plan = await getHighLowProposalQuote(symbol, side, candidate, candidate?.precision || 0, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item));
       if (plan) {
         if (candidate.fixedBarrier) {
           plan.fixedBarrier = true;
@@ -9507,8 +6593,8 @@ function getHighLowMirrorReferencePlan(item, side) {
     return {
       barrierNum: signed,
       barrierAbs: Math.abs(signed),
-      precision: getHighLowEffectiveBarrierPrecision(item?.symbol, hint.precision),
-      barrier: formatRelativeBarrier(signed, getHighLowEffectiveBarrierPrecision(item?.symbol, hint.precision)),
+      precision: Math.max(0, Number(hint.precision || 0)),
+      barrier: formatRelativeBarrier(signed, hint.precision || 0),
       mirroredFromSide: opposite,
     };
   }
@@ -9525,7 +6611,7 @@ async function findMirroredHighLowPlan(item, side, referencePlan, opts = {}) {
   const stake = Number(opts.stake || getEffectiveTradeStake());
   const timeoutMs = opts.fast ? AUTO_FAST_PROPOSAL_TIMEOUT_MS : AUTO_FULL_PROPOSAL_TIMEOUT_MS;
   try {
-    const plan = await getHighLowProposalQuote(item.symbol, wanted, candidate, precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item), item);
+    const plan = await getHighLowProposalQuote(item.symbol, wanted, candidate, precision, stake, timeoutMs, "", getLatestSignalQuoteForBarrier(item));
     if (plan) {
       plan.mirroredBarrier = true;
       plan.mirroredFrom = wanted === "CALL" ? "PUT" : "CALL";
@@ -9586,7 +6672,7 @@ function rememberExecutionBarrierHint(symbol, side, plan, precision = 3) {
     barrierAbs: abs,
     barrierNum: Number(plan.barrierNum || 0),
     barrier: String(plan.barrier || formatRelativeBarrier(plan.barrierNum, precision)),
-    precision: getHighLowEffectiveBarrierPrecision(symbol, plan.precision ?? precision),
+    precision: Math.max(0, Number(plan.precision ?? precision ?? 0)),
     payoutTotalPct: Number(plan.payoutTotalPct || 0),
     profitPct: Number(plan.profitPct || 0),
     updatedAt: Date.now(),
@@ -9615,55 +6701,18 @@ function getOrCreateExecutionPlan(item) {
       callCandidate: savedCall ? { ...savedCall } : (item?.autoHighLow?.callCandidate ? { ...item.autoHighLow.callCandidate } : null),
       putCandidate: savedPut ? { ...savedPut } : (item?.autoHighLow?.putCandidate ? { ...item.autoHighLow.putCandidate } : null),
       precalcAttempts: 0,
-      barrierLockTimer: null,
-      barrierLockRunning: null,
-      barrierLockPhaseScheduled: !!item?.autoHighLow?.barrierLockStatus,
-      barrierLockStatus: item?.autoHighLow?.barrierLockStatus ? { ...item.autoHighLow.barrierLockStatus } : null,
       finalRefreshTimer: null,
-      finalRefreshPhaseScheduled: !!item?.autoHighLow?.finalRefreshStatus,
-      finalRefreshExclusive: false,
       autoEntryTimer: null,
       finalRefreshRunning: null,
       finalEntryCall: item?.autoHighLow?.finalEntryCall ? { ...item.autoHighLow.finalEntryCall } : null,
       finalEntryPut: item?.autoHighLow?.finalEntryPut ? { ...item.autoHighLow.finalEntryPut } : null,
       finalRefreshStatus: item?.autoHighLow?.finalRefreshStatus ? { ...item.autoHighLow.finalRefreshStatus } : null,
-      entryBuyActive: false,
     };
     executionPlanCache.set(item.id, cache);
   }
   cache.item = item;
   if (typeof cache.prioritySide !== "string") cache.prioritySide = "";
-  if (typeof cache.entryBuyActive !== "boolean") cache.entryBuyActive = false;
-  if (typeof cache.barrierLockPhaseScheduled !== "boolean") cache.barrierLockPhaseScheduled = false;
-  if (typeof cache.finalRefreshPhaseScheduled !== "boolean") cache.finalRefreshPhaseScheduled = false;
-  if (typeof cache.finalRefreshExclusive !== "boolean") cache.finalRefreshExclusive = false;
   return cache;
-}
-
-function beginHighLowEntryBuy(item, side, reason = "auto58_relative_fresh") {
-  if (!item?.id) return null;
-  const cache = getOrCreateExecutionPlan(item);
-  cache.entryBuyActive = true;
-  cache.finalRefreshExclusive = true;
-  cache.entryBuySide = normalizeSignalConfirmationSide(side) || "";
-  cache.entryBuyReason = String(reason || "auto58_relative_fresh");
-  cache.entryBuyStartedAt = Date.now();
-  cache.entryBuyStartedMs = Math.round(getSignalConfirmationMs(item));
-  for (const key of ["barrierLockTimer", "finalRefreshTimer"]) {
-    if (cache[key]) {
-      try { clearTimeout(cache[key]); } catch {}
-      cache[key] = null;
-    }
-  }
-  // No podemos abortar una request WS que ya salió, pero los loops de preparación
-  // consultan entryBuyActive y dejan de lanzar nuevas proposals en cuanto empieza el buy.
-  return cache;
-}
-
-function isHighLowEntryBuyActive(item) {
-  if (!item?.id) return false;
-  const cache = executionPlanCache.get(String(item.id));
-  return !!cache?.entryBuyActive;
 }
 function stopExecutionPlanLoop(itemId) {
   const cache = executionPlanCache.get(String(itemId || ""));
@@ -9675,13 +6724,10 @@ function stopExecutionPlanLoop(itemId) {
 }
 function clearHighLowFinalEntryTimers(cache) {
   if (!cache) return;
-  if (cache.barrierLockTimer) clearTimeout(cache.barrierLockTimer);
   if (cache.finalRefreshTimer) clearTimeout(cache.finalRefreshTimer);
   if (cache.autoEntryTimer) clearTimeout(cache.autoEntryTimer);
-  cache.barrierLockTimer = null;
   cache.finalRefreshTimer = null;
   cache.autoEntryTimer = null;
-  cache.barrierLockRunning = null;
   cache.finalRefreshRunning = null;
 }
 function stopAllExecutionPlanLoops() {
@@ -9706,7 +6752,7 @@ function cleanupExecutionPlanCache() {
   }
 }
 async function refreshExecutionPlanForSignal(item, force = false, requestedSide = "") {
-  if (isSignalAnchorReturnBlocked(item) || !shouldUseAutoHighLowExecution() || !item?.id) return null;
+  if (!shouldUseAutoHighLowExecution() || !item?.id) return null;
   const cache = getOrCreateExecutionPlan(item);
   if (!cache) return null;
 
@@ -9746,7 +6792,6 @@ async function refreshExecutionPlanForSignal(item, force = false, requestedSide 
       const errors = [];
 
       for (const side of sides) {
-        if (cache.entryBuyActive) break;
         const current = side === "CALL" ? cache.call : cache.put;
         if (isHighLowPlanAcceptable(current)) continue;
 
@@ -9760,7 +6805,6 @@ async function refreshExecutionPlanForSignal(item, force = false, requestedSide 
             fast: false,
             maxQuotes: HIGHLOW_TARGET_MAX_SEARCH_QUOTES,
             timeoutMs: AUTO_FULL_PROPOSAL_TIMEOUT_MS,
-            abortOnEntryBuy: true,
           });
         }
 
@@ -9865,7 +6909,6 @@ function getCachedExecutionPlan(item, side, maxAgeMs = AUTO_PRECALC_STALE_MS) {
   if (!cache) return null;
   const plan = side === "CALL" ? cache.call : cache.put;
   if (!plan) return null;
-  if (!isHighLowPlanExpiryAligned(plan, item)) return null;
   if (Date.now() - Number(plan.updatedAt || cache.updatedAt || 0) > maxAgeMs) return null;
   if (!isHighLowPlanWithinPayoutCap(plan)) return null;
   if (!isHighLowPlanAcceptable(plan)) return null;
@@ -10113,20 +7156,16 @@ function ensureAutoOpenChartButton() {
   applyAutoOpenChartUI();
   return btn;
 }
-function isChartModalOpenForAutoLock() {
-  if (!chartModal) return false;
-  return !chartModal.classList.contains("hidden") && chartModal.getAttribute("aria-hidden") !== "true";
-}
 function shouldAutoOpenChartNow() {
   if (!autoOpenChartOnSignal) return false;
   if (document.visibilityState !== "visible") return false;
 
-  // II14 · Bloqueo de foco del gráfico:
-  // si el usuario ya está analizando una señal, una señal nueva se registra y avisa,
-  // pero nunca reemplaza automáticamente el modal actual. Solo la X libera el foco.
-  if (isChartModalOpenForAutoLock()) return false;
-
-  // Auto-abrir sigue disponible desde cualquier pestaña, excepto Configuración.
+  // ✅ NUEVO:
+  // Antes se bloqueaba el auto-open si ya había un gráfico abierto.
+  // Eso hacía que, si quedaba abierta una señal vieja, una señal nueva NO se mostrara.
+  // ✅ FIX: ahora también puede auto-abrir aunque estés en Trades o Práctica.
+  // Si sale una señal nueva, la app cambia a Señales y abre/reemplaza el gráfico.
+  // Solo se bloquea en Configuración para no tocar ajustes mientras los estás editando.
   if (settingsModal && !settingsModal.classList.contains("hidden")) return false;
   if (isSignalFatigueCooldownActive()) return false;
 
@@ -10154,8 +7193,8 @@ function applyAutoReplayX2UI() {
   btn.textContent = autoReplayX2OnSignal ? "🎬 Auto Replay X2 ON" : "🎬 Auto Replay X2 OFF";
   btn.classList.toggle("active", !!autoReplayX2OnSignal);
   btn.title = autoReplayX2OnSignal
-    ? "Apenas se abre la señal inicia el mismo Replay anclado, reproduce desde el ancla en X2 hasta alcanzar el vivo y luego continúa LIVE a 1x."
-    : "No activa automáticamente el Replay anclado X2→LIVE";
+    ? "Si el modal de una señal sigue abierto, al segundo 28 cambia solo a Replay y reproduce en X2. Si cerrás el modal, se cancela."
+    : "No cambia automáticamente a Replay X2";
 }
 function ensureAutoReplayX2Button() {
   let btn = pickEl("autoReplayX2Btn");
@@ -10192,162 +7231,22 @@ function cancelModalAutoReplayX2() {
   modalAutoReplayTimer = null;
   modalAutoReplayToken = "";
 }
-function enqueuePendingAutoReplaySignal(item) {
-  const id = String(item?.id || "").trim();
-  if (!id) return;
-  if (!pendingAutoReplaySignalIds.includes(id)) pendingAutoReplaySignalIds.push(id);
-  // Si la señal que ocupa el modal ya pasó s65, no esperamos otro evento: se
-  // intenta el handoff inmediatamente con la nueva candidata.
-  if (modalCurrentItem && getSignalElapsedMsRaw(modalCurrentItem) > SIGNAL_LATE_ANALYSIS_END_MS) {
-    scheduleModalSequentialSignalHandoff(modalCurrentItem, 80);
-  }
-}
-function removePendingAutoReplaySignalId(id) {
-  const key = String(id || "");
-  let idx = pendingAutoReplaySignalIds.indexOf(key);
-  while (idx >= 0) {
-    pendingAutoReplaySignalIds.splice(idx, 1);
-    idx = pendingAutoReplaySignalIds.indexOf(key);
-  }
-}
-function getSequentialReplayFormationTargetMs(item) {
-  if (!item) return 30000;
-  const gp = item?.giroPolaridad || item?.snrLevel || {};
-  const candidates = [
-    Number(item.constructiveFormedAtMs),
-    Number(item.turnQualityValidatedAtMs),
-    Number(item.turnQualitySetupFormedAtMs),
-    Number(item.signalFromSec) * 1000,
-    Number(gp.constructiveFormedAtMs),
-    Number(gp.turnQualityValidatedAtMs),
-    Number(gp.turnQualitySetupFormedAtMs),
-    Number(gp.signalFromSec) * 1000,
-  ].filter((v) => Number.isFinite(v) && v > 0);
-  const blocks = Array.isArray(item?.giroPolaridad?.acceptedReductionBlocks)
-    ? item.giroPolaridad.acceptedReductionBlocks
-    : (Array.isArray(item?.acceptedReductionBlocks) ? item.acceptedReductionBlocks : []);
-  for (const block of blocks) {
-    const endMs = Number(block?.endMs);
-    if (Number.isFinite(endMs) && endMs > 0) candidates.push(endMs);
-  }
-  // Inicio Inamovible se confirma a más tardar en la gracia de s30. Si una
-  // señal vieja no trae metadata suficiente, usamos s30 como objetivo seguro.
-  if (!candidates.length) return 30000;
-  return Math.max(1000, Math.min(30000, Math.max(...candidates)));
-}
-function getSequentialAutoReplayEligibility(item, nowMs = serverNowMs()) {
-  if (!autoOpenChartOnSignal || !autoReplayX2OnSignal || !item) return { ok: false, reason: "settings_off" };
-  const elapsedMs = getSignalElapsedMsRaw(item, nowMs);
-  if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs >= SIGNAL_LATE_ANALYSIS_END_MS) {
-    return { ok: false, reason: "analysis_closed", elapsedMs };
-  }
-  if (!isItemLiveMinute(item)) return { ok: false, reason: "not_live", elapsedMs };
-  const targetMs = getSequentialReplayFormationTargetMs(item);
-  const remainingRealMs = Math.max(0, SIGNAL_LATE_ANALYSIS_END_MS - elapsedMs - AUTO_REPLAY_SEQUENTIAL_MIN_MARGIN_MS);
-  const visualReachMs = remainingRealMs * AUTO_REPLAY_X2_SPEED;
-  return {
-    ok: visualReachMs >= targetMs,
-    reason: visualReachMs >= targetMs ? "enough_time_to_replay_formation" : "not_enough_replay_time",
-    elapsedMs,
-    targetMs,
-    remainingRealMs,
-    visualReachMs,
-  };
-}
-function getNextPendingAutoReplaySignal() {
-  if (!pendingAutoReplaySignalIds.length) return null;
-  const now = serverNowMs();
-  const currentId = String(modalCurrentItem?.id || "");
-  let chosen = null;
-  const keep = [];
-  for (const id of pendingAutoReplaySignalIds) {
-    if (!id || id === currentId) continue;
-    const item = history.find((x) => String(x?.id || "") === String(id));
-    if (!item) continue;
-    const eligibility = getSequentialAutoReplayEligibility(item, now);
-    if (!eligibility.ok) {
-      // Una señal con ventana ya cerrada o que ya no puede llegar a su formación
-      // antes de s65 no tiene utilidad para este handoff automático.
-      if (eligibility.reason === "settings_off") keep.push(id);
-      continue;
-    }
-    if (!chosen) chosen = { item, eligibility };
-    else keep.push(id);
-  }
-  pendingAutoReplaySignalIds.length = 0;
-  pendingAutoReplaySignalIds.push(...keep);
-  return chosen;
-}
-function cancelModalSequentialSignalHandoff() {
-  if (modalSequentialHandoffTimer) clearTimeout(modalSequentialHandoffTimer);
-  modalSequentialHandoffTimer = null;
-  modalSequentialHandoffCurrentId = "";
-}
-function scheduleModalSequentialSignalHandoff(item = modalCurrentItem, explicitDelayMs = null) {
-  if (!item || !autoOpenChartOnSignal || !autoReplayX2OnSignal) return;
-  const id = String(item.id || "");
-  if (!id) return;
-  if (!(item.signalFloatingWindow || isFloatingSignalItem(item))) return;
-  cancelModalSequentialSignalHandoff();
-  modalSequentialHandoffCurrentId = id;
-  const elapsed = getSignalElapsedMsRaw(item);
-  const delay = Number.isFinite(Number(explicitDelayMs))
-    ? Math.max(50, Number(explicitDelayMs))
-    : Math.max(80, SIGNAL_LATE_ANALYSIS_END_MS - elapsed + 90);
-  modalSequentialHandoffTimer = setTimeout(() => {
-    modalSequentialHandoffTimer = null;
-    tryModalSequentialSignalHandoff(id);
-  }, delay);
-}
-function tryModalSequentialSignalHandoff(expectedCurrentId = modalSequentialHandoffCurrentId) {
-  if (!autoOpenChartOnSignal || !autoReplayX2OnSignal) return false;
-  if (!chartModal || chartModal.classList.contains("hidden") || !modalCurrentItem) return false;
-  const currentId = String(modalCurrentItem.id || "");
-  if (expectedCurrentId && currentId !== String(expectedCurrentId)) return false;
-  const elapsed = getSignalElapsedMsRaw(modalCurrentItem);
-  if (elapsed <= SIGNAL_LATE_ANALYSIS_END_MS) {
-    scheduleModalSequentialSignalHandoff(modalCurrentItem);
-    return false;
-  }
-  // No interrumpimos una explicación que todavía se está grabando ni una
-  // revisión de audio ya en curso. Se reintenta brevemente; si la candidata
-  // deja de ser útil, se descarta sola por la regla temporal de arriba.
-  const recordingHere = !!voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId === currentId;
-  const audioPlaying = !!voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended;
-  if (recordingHere || audioPlaying) {
-    scheduleModalSequentialSignalHandoff(modalCurrentItem, 400);
-    return false;
-  }
-  const next = getNextPendingAutoReplaySignal();
-  if (!next?.item) return false;
-  removePendingAutoReplaySignalId(next.item.id);
-  setActiveView("signals");
-  openChartModal(next.item, {
-    source: "signals",
-    signalId: next.item.id || "",
-    autoReplayReason: "sequential_handoff",
-  });
-  toast(`⏭️ Siguiente señal · Replay X2 · quedan ${Math.max(0, Math.ceil((SIGNAL_LATE_ANALYSIS_END_MS - next.eligibility.elapsedMs) / 1000))}s de análisis`, 1800);
-  return true;
-}
 function getModalAutoReplayToken(item = modalCurrentItem) {
   if (!item) return "";
   return `${String(item.id || "")}|${String(item.symbol || "")}|${Number(item.minute) || 0}|${String(modalOpenContext?.source || "")}`;
 }
-function isModalAutoReplayEligible(item = modalCurrentItem, reason = "open") {
+function isModalAutoReplayEligible(item = modalCurrentItem) {
   if (!autoReplayX2OnSignal) return false;
   if (!item || !chartModal || chartModal.classList.contains("hidden")) return false;
   if (modalReplayState?.open) return false;
   if (!isItemLiveMinute(item)) return false;
   const ms = getSignalConfirmationMs(item);
-  if (reason === "sequential_handoff") return !!getSequentialAutoReplayEligibility(item).ok;
-  // Apertura normal: conserva el margen histórico. El handoff II36 tiene su
-  // propia regla, basada en poder reproducir la formación antes de s65.
+  // Si ya pasó demasiado el punto de cambio, no forzamos replay tarde para no confundirte.
   return ms >= 0 && ms <= 36000;
 }
 function scheduleModalAutoReplayX2(item = modalCurrentItem, reason = "open") {
   cancelModalAutoReplayX2();
-  if (!isModalAutoReplayEligible(item, reason)) return;
+  if (!isModalAutoReplayEligible(item)) return;
   const token = getModalAutoReplayToken(item);
   if (!token) return;
 
@@ -10371,14 +7270,11 @@ function runModalAutoReplayX2(token, reason = "timer") {
     scheduleModalAutoReplayX2(modalCurrentItem, "early_retry");
     return;
   }
-  if (modalReplayState?.open) return;
-  if (reason === "sequential_handoff") {
-    if (!getSequentialAutoReplayEligibility(modalCurrentItem).ok) return;
-  } else if (ms > 36000) return;
+  if (ms > 36000 || modalReplayState?.open) return;
 
   if (modalChartView !== "candles1m") setModalChartView("candles1m");
   openModalReplay({ speed: AUTO_REPLAY_X2_SPEED, source: "auto_x2" });
-  toast("🎬 Replay desde ancla · X2 hasta LIVE", 1100);
+  toast("🎬 Replay X2 automático", 900);
 }
 
 /* =========================
@@ -10420,12 +7316,10 @@ function startUiTimers() {
   uiTimer = setInterval(() => {
     updateTickHealthUI();
     updateCountdownUI();
-    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
-      updateMentalCooldownUI();
-      updateSignalFatigueUI();
-      updateDisciplineLockUI(false);
-      updateC100PanelUI();
-    }
+    updateMentalCooldownUI();
+    updateSignalFatigueUI();
+    updateDisciplineLockUI(false);
+    updateC100PanelUI();
     // ✅ FIX AUTO 58 DEMO/REAL:
     // La autoentrada no debe depender de que el gráfico se redibuje justo en el segundo 58.
     // Este timer mantiene viva la barra del modal y además revisa señales habilitadas.
@@ -10436,10 +7330,8 @@ function startUiTimers() {
     updateModalCandleStatusUI();
     refreshOpenSignalStageBadges();
     finalizeExpiredFloatingSignalRows();
-    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) {
-      scanSignalAutoPreProposals();
-      scanSignalAutoEntriesAt57();
-    }
+    scanSignalAutoPreProposals();
+    scanSignalAutoEntriesAt57();
   }, getUiIntervalMs());
 }
 function ensureLowPowerButton() {
@@ -11066,7 +7958,6 @@ function ensureTradesView() {
   }
   actions.classList.add("viewActions", "tradesActions");
   ensureTradesDateFilterControls(actions);
-  ensureStudyPrintControls(actions);
 
   // ✅ Lista (esta SÍ se limpia)
   let list = $("tradesList");
@@ -11136,10 +8027,6 @@ function syncTradeJournalNextOutcomesFromHistory() {
       }
       if ((!Array.isArray(entry.ticks) || !entry.ticks.length) && Array.isArray(live.ticks) && live.ticks.length) {
         entry.ticks = live.ticks.slice();
-        changed = true;
-      }
-      if (live.virtualNoTouch && JSON.stringify(entry.virtualNoTouch || null) !== JSON.stringify(live.virtualNoTouch)) {
-        entry.virtualNoTouch = stripForAnalysisCopy(live.virtualNoTouch);
         changed = true;
       }
       if (!entry.minuteComplete && live.minuteComplete) {
@@ -11291,53 +8178,6 @@ function renderTradesView() {
   header.textContent = `${scopeIcon} Trades ${scopeLabel}: ${visibleTrades.length}${hasDateFilter ? ` de ${allVisibleTrades.length} · ${getTradesDateFilterLabel()}` : ""}${otherCount ? ` · ocultos de la otra cuenta: ${otherCount}` : ""}`;
   list.appendChild(header);
 
-  const ntStats = getVirtualNoTouchPortfolioStats(visibleTrades);
-  if (ntStats.total > 0) {
-    const ntHeader = document.createElement("div");
-    ntHeader.className = "tradesScopeNotice";
-    ntHeader.style.padding = "9px 12px";
-    ntHeader.style.margin = "0 0 10px";
-    ntHeader.style.borderRadius = "14px";
-    ntHeader.style.border = "1px solid rgba(56,189,248,.22)";
-    ntHeader.style.background = "rgba(3,105,161,.12)";
-    ntHeader.style.fontWeight = "800";
-    ntHeader.style.fontSize = "12px";
-    ntHeader.style.color = "rgba(224,242,254,.92)";
-    const deltaTxt = ntStats.priced ? ` · Δ vs principal ${ntStats.delta >= 0 ? "+" : ""}$${ntStats.delta.toFixed(2)}` : "";
-    ntHeader.textContent = `🛡️ No Touch virtual · ${ntStats.resolved} resueltas (${ntStats.wins}✓/${ntStats.losses}✕) · ${ntStats.active} activas${ntStats.unavailable ? ` · ${ntStats.unavailable} sin nivel/cotización` : ""}${deltaTxt}`;
-    ntHeader.title = ntStats.priced ? `Mismo riesgo total: principal solo $${ntStats.baseline.toFixed(2)} neto vs reparto principal + No Touch $${ntStats.combined.toFixed(2)} neto.` : "Simulación: no compra el No Touch real.";
-    list.appendChild(ntHeader);
-  }
-
-  const maxBarrierStats = getMaxWinningBarrierPortfolioStats(visibleTrades);
-  if (maxBarrierStats.totalEligible > 0) {
-    const box = document.createElement("div");
-    box.className = "tradesScopeNotice";
-    box.style.padding = "10px 12px";
-    box.style.margin = "0 0 10px";
-    box.style.borderRadius = "14px";
-    box.style.border = "1px solid rgba(250,204,21,.24)";
-    box.style.background = "rgba(113,63,18,.12)";
-    box.style.color = "rgba(254,243,199,.94)";
-    box.innerHTML = `<div style="font-weight:950;font-size:12px;margin-bottom:${maxBarrierStats.bySymbol.length ? "6px" : "0"};">🎯 Barrera máxima ganadora s120 · payout MAX medido/estimado por curva · ${maxBarrierStats.resolved}/${maxBarrierStats.totalEligible} resueltos${maxBarrierStats.pending ? ` · ${maxBarrierStats.pending} pendientes` : ""}${maxBarrierStats.noPositive ? ` · ${maxBarrierStats.noPositive} sin margen favorable` : ""}</div>`;
-    for (const g of maxBarrierStats.bySymbol) {
-      if (!g.positive_count) continue;
-      const symbol = g.symbol;
-      const fmt = (v) => Number.isFinite(Number(v)) ? formatMaxBarrierDistance(symbol, Number(v)) : "—";
-      const delta = Number(g.average_margin_vs_used);
-      const deltaTxt = Number.isFinite(delta) ? ` · Δ máx-usada ${delta >= 0 ? "+" : "-"}${fmt(Math.abs(delta))}` : "";
-      const line = document.createElement("div");
-      line.style.fontSize = "11px";
-      line.style.fontWeight = "800";
-      line.style.lineHeight = "1.45";
-      const maxPctTxt = Number.isFinite(Number(g.average_max_net_profit_pct)) ? ` · % MAX prom ${formatMaxBarrierProfitPct(g.average_max_net_profit_pct)} (${g.max_profit_pct_count}/${g.positive_count})` : " · % MAX aún sin curva";
-      line.textContent = `${symbol} · n ${g.positive_count}/${g.resolved} · máx prom ${fmt(g.average_max)} · med ${fmt(g.median_max)} · 80% ≥ ${fmt(g.survive_80)} · 90% ≥ ${fmt(g.survive_90)}${Number.isFinite(Number(g.average_used)) ? ` · usada prom ${fmt(g.average_used)}` : ""}${maxPctTxt}${deltaTxt}`;
-      line.title = `Umbral 80% = barrera que el 80% de los giros favorables todavía habría soportado al cierre s120. Umbral 90% = nivel más conservador soportado por el 90%.`;
-      box.appendChild(line);
-    }
-    list.appendChild(box);
-  }
-
   if (!visibleTrades.length) {
     const filterText = hasDateFilter ? ` para ${getTradesDateFilterLabel()}` : "";
     list.insertAdjacentHTML("beforeend", `<div class="tradesEmptyState">Todavía no hay trades ${scopeLabel}${filterText}.</div>`);
@@ -11374,7 +8214,6 @@ function renderTradesView() {
         signalDetectedEpochMs: merged.signalDetectedEpochMs || null,
         signalResult60: merged.signalResult60 && typeof merged.signalResult60 === "object" ? { ...merged.signalResult60 } : null,
         trade: entry.trade || merged.trade || null,
-        virtualNoTouch: entry.virtualNoTouch || merged.virtualNoTouch || null,
         study_capture_id: entry.study_capture_id || entry?.trade?.study_capture_id || merged.study_capture_id || "",
         manualGiro: normalizeManualGiroState(entry.manualGiro || merged.manualGiro),
       };
@@ -11395,7 +8234,6 @@ function renderTradesView() {
   // Si un trade quedó guardado mientras Android estaba suspendido o sin conexión,
   // completa la ventana ancla+60→ancla+120 en segundo plano y reemplaza el ⏳.
   scheduleTradeJournalNextOutcomeRecovery();
-  scheduleVirtualNoTouchRecovery();
 }
 
 
@@ -11844,54 +8682,13 @@ function ensureTradesTab() {
 /* =========================
    ✅ Clear por pestaña (inline)
 ========================= */
-async function clearSignalsOnly() {
-  const removedSignals = Array.isArray(history) ? [...history] : [];
-  const signalIdsToDelete = Array.from(new Set(
-    removedSignals
-      .map((item) => getVoiceAnalysisSignalId(item))
-      .filter(Boolean)
-  ));
-
-  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") {
-    const activeRecordingId = String(voiceAnalysisRecordingSignalId || "");
-    if (activeRecordingId && signalIdsToDelete.includes(activeRecordingId)) {
-      toast("⏹ Detené la grabación actual antes de borrar las señales.", 2200);
-      return;
-    }
-  }
-
-  const currentAudioSignalId = String(voiceAnalysisCurrentRecord?.signalId || "");
-  if (currentAudioSignalId && signalIdsToDelete.includes(currentAudioSignalId)) {
-    stopVoiceAnalysisPlayback();
-    voiceAnalysisCurrentRecord = null;
-    releaseVoiceAnalysisObjectUrl();
-    updateVoiceAnalysisUI();
-  }
-
+function clearSignalsOnly() {
   history = [];
   saveHistory(history);
   updateCounter(localStorage.getItem("activeView") || "signals");
   if (signalsEl) signalsEl.innerHTML = "";
   if (feedbackEl) feedbackEl.value = "";
-
-  let deletedAudioCount = 0;
-  for (const signalId of signalIdsToDelete) {
-    try {
-      const rec = await getVoiceAnalysisRecord(signalId);
-      if (rec) {
-        await deleteVoiceAnalysisRecord(signalId);
-        deletedAudioCount += 1;
-      }
-    } catch {}
-  }
-
-  try { await refreshVoiceAnalysisStorageUI(); } catch {}
-
-  if (deletedAudioCount > 0) {
-    toast(`🧹 Señales borradas · audios borrados: ${deletedAudioCount}`, 1800);
-  } else {
-    toast("🧹 Señales borradas", 1600);
-  }
+  toast("🧹 Señales borradas", 1600);
 }
 function clearTradesOnly() {
   const scope = getCurrentAccountScope();
@@ -11938,8 +8735,7 @@ function compactTradeForAnalysis(trade) {
     "exec_mode", "contract_type", "payout_pct", "ic2_level", "ic2_step",
     "entry_timing_mode", "entry_timing_variant", "purchase_time", "start_time",
     "buy_price", "payout", "profit", "status", "sold_time", "expiry_time",
-    "entry_spot", "entry_spot_time", "entry_reference_quote", "exit_spot", "exit_spot_time", "sell_price",
-    "barrier", "proposal_api_barrier", "proposal_barrier_mode", "payout_total_pct", "target_profit_pct"
+    "entry_spot", "entry_spot_time", "exit_spot", "exit_spot_time", "sell_price"
   ];
   const out = {};
   keep.forEach((k) => { if (trade[k] !== undefined) out[k] = trade[k]; });
@@ -11981,15 +8777,11 @@ function compactSignalForAnalysis(item) {
       confirmation_status: item.signalAutoEntry.confirmation_status,
       contract_id: item.signalAutoEntry.contract_id,
     } : null,
-    lateEntryRecovery: item.lateEntryRecovery ? stripForAnalysisCopy(item.lateEntryRecovery) : null,
     giroPolaridad: compactVisualLevelForAnalysis(item.giroPolaridad),
     snrLevel: compactVisualLevelForAnalysis(item.snrLevel),
     manualGiro: item.manualGiro ? stripForAnalysisCopy(item.manualGiro) : null,
-    pgpDecision: item.pgpDecision ? stripForAnalysisCopy(item.pgpDecision) : null,
     visualRead: item.visualRead ? stripForAnalysisCopy(item.visualRead) : null,
     giroPlus: item.giroPlus ? stripForAnalysisCopy(item.giroPlus) : null,
-    virtualNoTouch: item.virtualNoTouch ? stripForAnalysisCopy(item.virtualNoTouch) : null,
-    maxWinningBarrierS120: stripForAnalysisCopy(getMaxWinningBarrierS120Info(item)),
     ticks: Array.isArray(item.ticks)
       ? item.ticks.map((t) => ({ ms: Number(t.ms), quote: Number(t.quote) })).filter((t) => Number.isFinite(t.ms) && Number.isFinite(t.quote))
       : [],
@@ -12018,8 +8810,6 @@ function compactTradeJournalForAnalysis(entry) {
     snrLevel: compactVisualLevelForAnalysis(entry.snrLevel),
     visualRead: entry.visualRead ? stripForAnalysisCopy(entry.visualRead) : null,
     giroPlus: entry.giroPlus ? stripForAnalysisCopy(entry.giroPlus) : null,
-    virtualNoTouch: entry.virtualNoTouch ? stripForAnalysisCopy(entry.virtualNoTouch) : null,
-    maxWinningBarrierS120: stripForAnalysisCopy(getMaxWinningBarrierS120Info(buildModalItemFromTradeEntry(entry) || entry)),
     ticks: Array.isArray(entry.ticks)
       ? entry.ticks.map((t) => ({ ms: Number(t.ms), quote: Number(t.quote) })).filter((t) => Number.isFinite(t.ms) && Number.isFinite(t.quote))
       : [],
@@ -12273,7 +9063,7 @@ function buildSignalsAnalysisExport() {
     exported_at: new Date().toISOString(),
     export_scope: "inicio_inamovible_experimental_signals_all_ticks",
     app_version: APP_BUILD_VERSION,
-    description: "Export de Inicio Inamovible experimental orientado a GIRO: tres impulsos del mismo lado, G central único, tercer tramo completo confirmado por retroceso terminal y señal contraria al recorrido. Estructura inicial y cierre hasta s30, ticks 0–60 y resultado posterior. No incluye tokens ni datos sensibles.",
+    description: "Export de Inicio Inamovible experimental: G central con desplazamiento y laterales P/M menores, ancla flotante, aviso s15–s25, ticks 0–60 y resultado posterior. No incluye tokens ni datos sensibles.",
     counts: {
       signals_total: signals.length,
       signals_with_next_outcome: signals.filter((s) => !!s.nextOutcome).length,
@@ -12296,7 +9086,7 @@ function buildSignalsAnalysisExport() {
     notes_for_analysis: {
       target_window_ms: [0, 30000],
       also_review_window_ms: [0, 25000],
-      desired_output: "validar Inicio Inamovible: tres impulsos en la misma dirección, G central único, laterales menores, tercer tramo completo y giro posterior contrario",
+      desired_output: "validar secuencias G/M/P y rutas GIRO++ A+/B estricta/C/E/F/G/H+/I/J/L+ que anticipan giro de la vela siguiente",
     },
     signals_all: signals,
     trades_all: trades,
@@ -13144,9 +9934,9 @@ function ensureInlineClearButtons() {
   ensureViewActionButton("signals", {
     id: "clearSignalsInlineBtn",
     text: "🧹 Borrar Señales",
-    title: "Borra el historial de señales y también sus audios de análisis",
+    title: "Borra solo el historial de señales",
     onClick: () => {
-      if (!confirm("¿Borrar el historial de señales y también los audios de análisis asociados? (Trades se conserva)")) return;
+      if (!confirm("¿Borrar SOLO el historial de señales? (Trades se conserva)")) return;
       clearSignalsOnly();
     },
   });
@@ -15040,7 +11830,6 @@ function buildExportPayloadVoted() {
       nextOutcome: it.nextOutcome || "",
       trade: it.trade || null,
       signalAutoEntry: it.signalAutoEntry || null,
-      lateEntryRecovery: it.lateEntryRecovery || null,
       autoHighLow: it.autoHighLow || null,
       giroPolaridad: getSignalLevelMeta(it),
       snrLevel: getSignalLevelMeta(it),
@@ -15143,9 +11932,6 @@ function buildExportPayloadTrades() {
       minuteComplete: !!it.minuteComplete,
       trade: it.trade || null,
       signalAutoEntry: it.signalAutoEntry || null,
-      // II26: exportamos el estado aunque el rescate no termine en trade. Así se
-      // distingue armado / esperando precio / enviando / expirado / bloqueado / error.
-      lateEntryRecovery: it.lateEntryRecovery || null,
       autoHighLow: it.autoHighLow || null,
       giroPolaridad: getSignalLevelMeta(it),
       snrLevel: getSignalLevelMeta(it),
@@ -15518,7 +12304,7 @@ function applyTheme(theme) {
   signalMode = loadAnalysisMode();
 
   const getModeTitle = () =>
-    "Versión experimental separada: Inicio Inamovible GIRO. Busca tres impulsos del mismo lado con G central único, espera el retroceso que cierra el tercer tramo y avisa en dirección contraria. Confirmación terminal hasta s30. Solo estudio.";
+    "Versión experimental separada: Inicio Inamovible. Busca un G central con desplazamiento rodeado por dos laterales P/M menores; ancla flotante y aviso entre s15 y s25. Solo estudio.";
 
   const paintMode = () => {
     if (!modeBtn) return;
@@ -16002,7 +12788,6 @@ function buildVisualReadFromItem(item) {
   const dominant = String(meta.visualReductionGroup || "").toLowerCase().includes("vendedor") ? "vendedor" : "comprador";
   const contrary = String(meta.visualReductionContraryGroup || "").toLowerCase().includes("comprador") ? "comprador" : "vendedor";
   const isConstructiveRead = String(meta.levelMode || "") === "reduccion_constructiva_continua" || !!meta.constructiveReductionMode || normalizeSignalMode(item.mode) === MODE_REDUCCION_CONSTRUCTIVA_CONTINUA;
-  const isInicioInamovibleRead = !!meta.inicioInamovibleMode || String(meta.levelMode || "") === "inicio_inamovible_experimental" || isInicioInamovibleStudyOnlySignal(item);
   const qualificationRoute = String(meta.constructiveQualificationRoute || "");
   const isDoubleMgmRead = qualificationRoute === "double_mgm_plus_contrary";
   const irregularInitialBlock = (isDoubleMgmRead || qualificationRoute === "irregular_initial_response" || qualificationRoute.startsWith("anchored_mgm_")) && meta.irregularInitialBlock && typeof meta.irregularInitialBlock === "object"
@@ -16029,12 +12814,10 @@ function buildVisualReadFromItem(item) {
       primaryLabels = patLabels.length ? patLabels : primaryLabels;
     }
   }
-  // En Inicio Inamovible el retroceso terminal no es una confirmación adicional:
-  // únicamente marca que el tercer impulso terminó.
-  const confirmationPack = !isInicioInamovibleRead && isConstructiveRead && meta.constructiveConfirmationPack && typeof meta.constructiveConfirmationPack === "object"
+  const confirmationPack = isConstructiveRead && meta.constructiveConfirmationPack && typeof meta.constructiveConfirmationPack === "object"
     ? meta.constructiveConfirmationPack
     : null;
-  let contraryLabels = isInicioInamovibleRead ? [] : splitPatternText(meta.visualReductionContraryPattern);
+  let contraryLabels = splitPatternText(meta.visualReductionContraryPattern);
   if (isConstructiveRead && confirmationPack) {
     const packPattern = String(confirmationPack.pattern || confirmationPack.label || "").trim();
     if (/^(P|M|G)(→(P|M|G))+$/i.test(packPattern)) {
@@ -16058,29 +12841,19 @@ function buildVisualReadFromItem(item) {
           ]
         : irregularInitialBlock.runs)
     : (Array.isArray(meta.visualReductionPrimaryRuns) ? meta.visualReductionPrimaryRuns : []);
-  const contraryRunsRaw = isInicioInamovibleRead
-    ? []
-    : (isConstructiveRead
-      ? (Array.isArray(meta.acceptedConfirmationRuns) && meta.acceptedConfirmationRuns.length
-          ? meta.acceptedConfirmationRuns
-          : Array.isArray(confirmationPack?.runs) ? confirmationPack.runs : [])
-      : (Array.isArray(meta.visualReductionContraryRuns) ? meta.visualReductionContraryRuns : []));
-  const inicioInternalCorrections = isInicioInamovibleRead
-    ? (Array.isArray(meta.visualReductionCorrectionRuns) ? meta.visualReductionCorrectionRuns : [])
+  const contraryRunsRaw = isConstructiveRead
+    ? (Array.isArray(meta.acceptedConfirmationRuns) && meta.acceptedConfirmationRuns.length
+        ? meta.acceptedConfirmationRuns
+        : Array.isArray(confirmationPack?.runs) ? confirmationPack.runs : [])
+    : (Array.isArray(meta.visualReductionContraryRuns) ? meta.visualReductionContraryRuns : []);
+  const irregularCorrectionRunsRaw = isIrregularRead
+    ? [
+        ...(Array.isArray(irregularInitialBlock.correctionRuns) ? irregularInitialBlock.correctionRuns : []),
+        ...(isAnchoredMgmRead && Array.isArray(meta.acceptedReductionBlocks)
+          ? meta.acceptedReductionBlocks.flatMap((b) => Array.isArray(b?.correctionRuns) ? b.correctionRuns : [])
+          : []),
+      ]
     : [];
-  const inicioTerminalClose = isInicioInamovibleRead && meta.terminalCorrectionRun && typeof meta.terminalCorrectionRun === "object"
-    ? [meta.terminalCorrectionRun]
-    : [];
-  const irregularCorrectionRunsRaw = isInicioInamovibleRead
-    ? [...inicioInternalCorrections, ...inicioTerminalClose]
-    : (isIrregularRead
-      ? [
-          ...(Array.isArray(irregularInitialBlock.correctionRuns) ? irregularInitialBlock.correctionRuns : []),
-          ...(isAnchoredMgmRead && Array.isArray(meta.acceptedReductionBlocks)
-            ? meta.acceptedReductionBlocks.flatMap((b) => Array.isArray(b?.correctionRuns) ? b.correctionRuns : [])
-            : []),
-        ]
-      : []);
   let primaryRuns = primaryRunsRaw
     .map((r, i) => normalizeVisualReadRun(r, dominant, primaryLabels[i] || ""))
     .filter(Boolean);
@@ -16131,11 +12904,7 @@ function buildVisualReadFromItem(item) {
   const irregularCorrectionRuns = irregularCorrectionRunsRaw
     .map((r, i) => {
       const run = normalizeVisualReadRun(r, contrary, irregularCorrectionLabels[i] || String(r?.irregularLabel || ""));
-      if (run) {
-        run.irregularInitialCorrection = true;
-        run.inicioInamovibleCorrection = isInicioInamovibleRead;
-        run.inicioTerminalClose = isInicioInamovibleRead && i >= inicioInternalCorrections.length;
-      }
+      if (run) run.irregularInitialCorrection = true;
       return run;
     })
     .filter(Boolean);
@@ -16178,7 +12947,6 @@ function buildVisualReadFromItem(item) {
     confirmationPack,
     irregularInitialBlock,
     qualificationRoute,
-    inicioInamovibleRead: isInicioInamovibleRead,
     reasons: Array.isArray(meta.reasons) ? meta.reasons : [],
     rejectHints: Array.isArray(meta.rejectHints) ? meta.rejectHints : [],
     evalMs: Number(meta.analysisWindowMs || 25000),
@@ -16379,23 +13147,21 @@ function drawVisualReductionReadingOverlay(ctx, item, xOf, yOf, w, h) {
 
   const meta = item.giroPolaridad || item.snrLevel || {};
   const isConstructive = String(meta.levelMode || "") === "reduccion_constructiva_continua" || !!meta.constructiveReductionMode || normalizeSignalMode(item.mode) === MODE_REDUCCION_CONSTRUCTIVA_CONTINUA;
-  const isInicioInamovibleRead = !!read.inicioInamovibleRead;
-  const isIrregularRead = !isInicioInamovibleRead && (read.qualificationRoute === "double_mgm_plus_contrary" || read.qualificationRoute === "irregular_initial_response" || String(read.qualificationRoute || "").startsWith("anchored_mgm_"));
+  const isIrregularRead = read.qualificationRoute === "double_mgm_plus_contrary" || read.qualificationRoute === "irregular_initial_response" || String(read.qualificationRoute || "").startsWith("anchored_mgm_");
   const formedMs = Number(meta.constructiveFormedAtMs || meta.signalFromSec * 1000 || read.evalMs || 25000);
   const evalMs = Math.max(1000, Math.min(60000, isConstructive && Number.isFinite(formedMs) ? formedMs : Number(read.evalMs || 25000)));
   const x0 = xOf(0), xEval = xOf(evalMs);
 
   ctx.save();
-  // II5: en Inicio Inamovible la ventana de lectura es cian, no amarilla.
-  ctx.fillStyle = isInicioInamovibleRead ? "rgba(34,211,238,.024)" : "rgba(250,204,21,.032)";
+  ctx.fillStyle = "rgba(250,204,21,.032)";
   ctx.fillRect(x0, 8, Math.max(0, xEval - x0), h - 30);
   ctx.setLineDash([5, 4]);
-  ctx.strokeStyle = isInicioInamovibleRead ? "rgba(34,211,238,.38)" : "rgba(250,204,21,.38)";
+  ctx.strokeStyle = "rgba(250,204,21,.38)";
   ctx.lineWidth = 1.05;
   ctx.beginPath(); ctx.moveTo(xEval, 8); ctx.lineTo(xEval, h - 22); ctx.stroke();
   ctx.setLineDash([]);
   ctx.font = "900 11px system-ui, -apple-system, Segoe UI, sans-serif";
-  ctx.fillStyle = isInicioInamovibleRead ? "rgba(165,243,252,.72)" : "rgba(254,240,138,.64)";
+  ctx.fillStyle = "rgba(254,240,138,.64)";
   ctx.fillText(`${Math.round(evalMs / 1000)}s lectura`, Math.min(w - 82, xEval + 4), 19);
 
   const buyCol = "rgba(34,197,94,.55)";
@@ -16405,8 +13171,8 @@ function drawVisualReductionReadingOverlay(ctx, item, xOf, yOf, w, h) {
   // V111.1: además de las reducciones, Lectura ON muestra todo el inicio irregular
   // y la respuesta sana que lo confirmó.
   const primaryRuns = isConstructive ? (read.primaryRuns || []).slice(0, isIrregularRead ? 12 : 9) : (read.primaryRuns || []);
-  const irregularCorrectionRuns = (isIrregularRead || isInicioInamovibleRead) ? (read.irregularCorrectionRuns || []).slice(0, 10) : [];
-  const contraryRuns = isInicioInamovibleRead ? [] : (isConstructive ? (read.contraryRuns || []).slice(0, 4) : (read.contraryRuns || []));
+  const irregularCorrectionRuns = isIrregularRead ? (read.irregularCorrectionRuns || []).slice(0, 10) : [];
+  const contraryRuns = isConstructive ? (read.contraryRuns || []).slice(0, 4) : (read.contraryRuns || []);
 
   const drawRun = (r, prefix, idx, kind = "reduction") => {
     const isBuyer = String(r.side || "") === "comprador";
@@ -16449,15 +13215,13 @@ function drawVisualReductionReadingOverlay(ctx, item, xOf, yOf, w, h) {
     const midP = path[Math.floor(path.length / 2)] || { x: (path[0].x + lastP.x) / 2, y: Math.min(path[0].y, lastP.y) };
     const my = Math.min(...path.map((p) => p.y));
     const sideLetter = isBuyer ? "C" : "V";
-    const reductionPrefix = !isInicioInamovibleRead && isConstructive && Number(r.reductionNo) > 0 ? `${Number(r.reductionNo)}·` : "";
+    const reductionPrefix = isConstructive && Number(r.reductionNo) > 0 ? `${Number(r.reductionNo)}·` : "";
     const irregularPrefix = isIrregularRead && !isConfirmation
       ? (r.mgmFollowupReduction ? "EST·" : "IRR·")
       : reductionPrefix;
     const confirmationPrefix = isConfirmation
       ? (isIrregularRead ? "RESP·" : "CONF·")
-      : (isIrregularCorrection
-          ? (isInicioInamovibleRead ? (r.inicioTerminalClose ? "CIERRE·" : "PAUSA·") : "IRR·CORR·")
-          : irregularPrefix);
+      : (isIrregularCorrection ? "IRR·CORR·" : irregularPrefix);
     const shapeShort = isIrregularRead && !isConfirmation && r.shape
       ? ({ PARADO: "PAR", ACOSTADO: "ACO", ANGULO: "ANG", QUEBRADO: "QUE" }[String(r.shape).toUpperCase()] || String(r.shape).slice(0, 3).toUpperCase())
       : "";
@@ -16869,20 +13633,6 @@ function isTradeEntryOpen(item) {
   if (!item) return false;
   return isItemLiveMinute(item);
 }
-function isSignalPGPAnalysisOpen(item) {
-  if (!item) return false;
-  const isInicioFloating = !!item.signalFloatingWindow && (
-    String(item.mode_version || "").includes("INICIO_INAMOVIBLE") ||
-    String(item.mode || "").toUpperCase().includes("INICIO INAMOVIBLE")
-  );
-  if (!isInicioFloating) return isTradeEntryOpen(item);
-  const elapsed = getSignalElapsedMsRaw(item);
-  return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= SIGNAL_LATE_ANALYSIS_END_MS;
-}
-function getSignalLateAnalysisRemainingMs(item) {
-  if (!item) return 0;
-  return Math.max(0, SIGNAL_LATE_ANALYSIS_END_MS - getSignalElapsedMsRaw(item));
-}
 function ensureModalCandleStatusBar() {
   if (modalCandleStatusEl) return modalCandleStatusEl;
 
@@ -17053,431 +13803,11 @@ function getSignalNetBuyPoints(item = modalCurrentItem) {
 function getSignalNetSellPoints(item = modalCurrentItem) {
   return Math.max(0, -getSignalConfirmationScore(item));
 }
-
-const SIGNAL_ANCHOR_RETURN_GUARD_VERSION = "ANCHOR_RETURN_BLOCK_V1_II14";
-function getSignalAnchorQuote(item = modalCurrentItem) {
-  const direct = Number(item?.signalAnchorQuote);
-  if (Number.isFinite(direct)) return direct;
-  const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
-  const first = ticks
-    .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
-    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote))
-    .sort((a, b) => a.ms - b.ms)[0];
-  return Number.isFinite(Number(first?.quote)) ? Number(first.quote) : null;
-}
-function getSignalFormationMovementSide(item = modalCurrentItem) {
-  const meta = item?.giroPolaridad || item?.snrLevel || {};
-  const fromMeta = Math.sign(Number(meta?.turnQualityConditions?.movementSigns?.[0] || 0));
-  if (fromMeta) return fromMeta;
-  const signalSide = normalizeSignalConfirmationSide(item?.direction);
-  // La señal es contraria a los tres impulsos: PUT proviene de formación alcista y CALL de bajista.
-  if (signalSide === "PUT") return 1;
-  if (signalSide === "CALL") return -1;
-  return 0;
-}
-function getSignalAnchorReturnBlock(item = modalCurrentItem) {
-  const block = item?.signalAnchorReturnBlock;
-  return block && typeof block === "object" && block.blocked ? block : null;
-}
-function isSignalAnchorReturnBlocked(item = modalCurrentItem) {
-  return !!getSignalAnchorReturnBlock(item) || (
-    !!item?.signalOperationalBlocked &&
-    String(item?.signalOperationalBlockedReason || "") === "RETURN_TO_ANCHOR"
-  );
-}
-function getSignalAnchorReturnBlockText(item = modalCurrentItem) {
-  const block = getSignalAnchorReturnBlock(item) || {};
-  const anchor = Number(block.anchorQuote ?? getSignalAnchorQuote(item));
-  const touch = Number(block.touchQuote);
-  const anchorTxt = Number.isFinite(anchor) ? anchor.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") : "—";
-  const touchTxt = Number.isFinite(touch) ? touch.toFixed(6).replace(/0+$/, "").replace(/\.$/, "") : "—";
-  return `Volvió al ancla ${anchorTxt}${touchTxt !== "—" ? ` · toque ${touchTxt}` : ""}`;
-}
-function markSignalAnchorReturnBlocked(item, epochMs, quote, msFromAnchor) {
-  if (!item || isSignalAnchorReturnBlocked(item)) return false;
-  const anchorQuote = getSignalAnchorQuote(item);
-  if (!Number.isFinite(Number(anchorQuote))) return false;
-  const movementSide = getSignalFormationMovementSide(item);
-  const block = {
-    version: SIGNAL_ANCHOR_RETURN_GUARD_VERSION,
-    blocked: true,
-    reason: "RETURN_TO_ANCHOR",
-    anchorQuote: Number(anchorQuote),
-    touchQuote: Number(quote),
-    movementSide,
-    blockedAtEpochMs: Number(epochMs),
-    blockedAtMs: Math.max(0, Number(msFromAnchor || 0)),
-    blockedAt: Date.now(),
-    message: "Operativa bloqueada: el precio volvió a tocar o atravesar el ancla de la formación.",
-  };
-  item.signalAnchorQuote = Number(anchorQuote);
-  item.signalAnchorReturnBlock = block;
-  item.signalOperationalBlocked = true;
-  item.signalOperationalBlockedReason = "RETURN_TO_ANCHOR";
-
-  const state = normalizePGPDecisionState(item);
-  state.result = "anchor_return_blocked";
-  state.tradeAuthorized = false;
-  state.authorizedSide = "";
-  state.authorizedAt = null;
-  state.authorizedAtMs = null;
-  state.updatedAt = Date.now();
-  item.pgpDecision = state;
-
-  if (!item?.trade?.badge && !item?.signalAutoEntry?.attempted) {
-    item.signalAutoEntry = {
-      type: "AUTO_58_REAL",
-      attempted: true,
-      status: "cancelled",
-      side: "",
-      ms: Math.max(0, Math.round(Number(msFromAnchor || 0))),
-      sec: Math.max(0, Math.round(Number(msFromAnchor || 0) / 1000)),
-      reason: "RETURN_TO_ANCHOR",
-      at: Date.now(),
-      error: "Cancelada: el precio volvió al punto de inicio de la formación.",
-      anchor_return_block: { ...block },
-    };
-  }
-  if (item.signalAutoPreProposal && typeof item.signalAutoPreProposal === "object") {
-    item.signalAutoPreProposal.status = "cancelled_anchor_return";
-    item.signalAutoPreProposal.cancelled_at = Date.now();
-    item.signalAutoPreProposal.cancel_reason = "RETURN_TO_ANCHOR";
-  }
-  try { toast(`⛔ ${item.symbol || "Señal"}: volvió al ancla · operativa bloqueada`, 2600); } catch {}
-  return true;
-}
-function evaluateSignalAnchorReturnOnTick(item, epochMs, quote) {
-  if (!item?.signalAnchorReturnGuardEnabled || isSignalAnchorReturnBlocked(item)) return false;
-  if (item?.trade?.badge) return false;
-  const autoStatus = String(item?.signalAutoEntry?.status || "");
-  if (["sending", "sent"].includes(autoStatus)) return false;
-
-  const anchorEpochMs = Number(item?.signalAnchorEpochMs || 0);
-  const detectedEpochMs = Number(item?.signalDetectedEpochMs || item?.signalCreatedEpochMs || 0);
-  const ep = Number(epochMs);
-  const q = Number(quote);
-  if (!Number.isFinite(anchorEpochMs) || anchorEpochMs <= 0 || !Number.isFinite(ep) || !Number.isFinite(q)) return false;
-  const ms = ep - anchorEpochMs;
-  if (ms < 0 || ms > SIGNAL_LATE_RECOVERY_END_MS) return false;
-  // El guard empieza después de creada la señal; no invalida el propio retroceso que cerró el tercer movimiento.
-  if (Number.isFinite(detectedEpochMs) && detectedEpochMs > 0 && ep <= detectedEpochMs + 250) return false;
-
-  const anchorQuote = getSignalAnchorQuote(item);
-  const movementSide = getSignalFormationMovementSide(item);
-  if (!Number.isFinite(Number(anchorQuote)) || !movementSide) return false;
-  const touchedOrCrossed = movementSide > 0 ? q <= Number(anchorQuote) : q >= Number(anchorQuote);
-  if (!touchedOrCrossed) return false;
-  return markSignalAnchorReturnBlocked(item, ep, q, ms);
-}
-
-const PGP_FLOW_VERSION = "PGP_FLOW_V4_II14_ANCHOR_GUARD_MODAL_LOCK";
-function createDefaultPGPDecisionState() {
-  return {
-    version: PGP_FLOW_VERSION,
-    answers: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    result: "pending",
-    tradeAuthorized: false,
-    authorizedSide: "",
-    authorizedAt: null,
-    authorizedAtMs: null,
-  };
-}
-function normalizePGPDecisionState(item = modalCurrentItem, { persist = false } = {}) {
-  if (!item) return createDefaultPGPDecisionState();
-  const raw = item.pgpDecision && typeof item.pgpDecision === "object" ? item.pgpDecision : {};
-  const state = {
-    ...createDefaultPGPDecisionState(),
-    ...raw,
-    version: PGP_FLOW_VERSION,
-    answers: Array.isArray(raw.answers)
-      ? raw.answers
-          .filter((a) => a && typeof a === "object" && a.step && a.value)
-          .map((a) => ({
-            step: String(a.step),
-            value: String(a.value),
-            label: String(a.label || a.value),
-            at: Number(a.at || 0) || Date.now(),
-            ms: Number.isFinite(Number(a.ms)) ? Number(a.ms) : null,
-          }))
-      : [],
-  };
-  item.pgpDecision = state;
-  if (persist) saveHistory(history);
-  return state;
-}
-function getPGPGroupLabels(item = modalCurrentItem) {
-  const meta = item?.giroPolaridad || item?.snrLevel || {};
-  const movement = String(meta.visualReductionGroup || meta.turnQualityConditions?.movementDirection || "").toLowerCase();
-  const contrary = String(meta.visualReductionContraryGroup || "").toLowerCase();
-  const movementLabel = movement.includes("vendedor") || movement.includes("baj") ? "vendedor" : movement.includes("comprador") || movement.includes("alc") ? "comprador" : "dominante";
-  const contraryLabel = contrary.includes("vendedor") || contrary.includes("baj") ? "vendedor" : contrary.includes("comprador") || contrary.includes("alc") ? "comprador" : (movementLabel === "comprador" ? "vendedor" : movementLabel === "vendedor" ? "comprador" : "contrario");
-  return { gd: movementLabel, gc: contraryLabel };
-}
-function getPGPTradeLabel(side) {
-  const safe = normalizeSignalConfirmationSide(side);
-  return safe === "CALL" ? "COMPRA" : safe === "PUT" ? "VENTA" : "OPERACIÓN";
-}
-function derivePGPDecisionFlow(item = modalCurrentItem) {
-  const state = normalizePGPDecisionState(item);
-  let step = "attack_gc";
-  let result = "pending";
-  const path = [];
-  let confirmationCount = 0;
-  let firstConfirmationAt = null;
-  let tradeAuthorized = false;
-  let authorizedSide = "";
-  let authorizedAt = null;
-  let authorizedAtMs = null;
-
-  for (const ans of state.answers) {
-    if (String(ans.step) !== step) break;
-    path.push(String(ans.label || ans.value));
-    if (step === "attack_gc") {
-      step = ans.value === "yes" ? "breaks_level" : "gd_response";
-    } else if (step === "breaks_level") {
-      step = ans.value === "yes" ? "break_health" : "gd_response";
-    } else if (step === "break_health") {
-      step = "gd_response";
-    } else if (step === "gd_response") {
-      if (ans.value === "good") {
-        result = "continuity";
-        step = "continuity";
-      } else {
-        result = "search_giro";
-        step = "giro_confirmation_1";
-      }
-    } else if (step === "giro_confirmation_1") {
-      if (ans.value === "confirm_1") {
-        confirmationCount = 1;
-        firstConfirmationAt = Number(ans.at || Date.now());
-        result = "confirmation_1";
-        step = "giro_confirmation_2";
-      } else {
-        result = "cancelled";
-        step = "cancelled";
-      }
-    } else if (step === "giro_confirmation_2") {
-      if (ans.value === "confirm_2") {
-        confirmationCount = 2;
-        result = "authorized";
-        step = "authorized";
-        tradeAuthorized = true;
-        authorizedSide = normalizeSignalConfirmationSide(item?.direction);
-        authorizedAt = Number(ans.at || Date.now());
-        authorizedAtMs = Number.isFinite(Number(ans.ms)) ? Number(ans.ms) : null;
-      } else {
-        result = "cancelled";
-        step = "cancelled";
-      }
-    }
-  }
-
-  const anchorReturnBlock = getSignalAnchorReturnBlock(item);
-  if (anchorReturnBlock) {
-    step = "anchor_return_blocked";
-    result = "anchor_return_blocked";
-    tradeAuthorized = false;
-    authorizedSide = "";
-    authorizedAt = null;
-    authorizedAtMs = null;
-  }
-
-  return {
-    state,
-    step,
-    result,
-    path,
-    confirmationCount,
-    firstConfirmationAt,
-    tradeAuthorized,
-    authorizedSide,
-    authorizedAt,
-    authorizedAtMs,
-    anchorReturnBlock,
-    groups: getPGPGroupLabels(item),
-  };
-}
-function syncPGPDecisionSummary(item = modalCurrentItem) {
-  if (!item) return null;
-  const flow = derivePGPDecisionFlow(item);
-  const state = normalizePGPDecisionState(item);
-  state.result = flow.result;
-  state.tradeAuthorized = flow.tradeAuthorized;
-  state.authorizedSide = flow.authorizedSide;
-  state.authorizedAt = flow.authorizedAt;
-  state.authorizedAtMs = flow.authorizedAtMs;
-  state.updatedAt = Date.now();
-  item.pgpDecision = state;
-  return flow;
-}
-function getPGPFlowQuestion(flow) {
-  if (!flow) return "¿Qué observás en el PGP?";
-  if (flow.step === "attack_gc") return "¿El Grupo Dominante ataca al Grupo Contrario?";
-  if (flow.step === "breaks_level") return "¿El ataque rompe el nivel?";
-  if (flow.step === "break_health") return "¿La ruptura es sana o insana?";
-  if (flow.step === "gd_response") return "¿Cómo responde el Grupo Dominante?";
-  if (flow.step === "giro_confirmation_1") return "La ruta pide buscar giro. Realizá la primera confirmación visual.";
-  if (flow.step === "giro_confirmation_2") return "Confirmación 1/2 registrada. ¿Confirmás nuevamente el giro para habilitar la operación?";
-  if (flow.step === "continuity") return "Continuidad: la señal de giro quedó anulada.";
-  if (flow.step === "authorized") return `Giro confirmado 2/2: ${getPGPTradeLabel(flow.authorizedSide)} habilitada.`;
-  if (flow.step === "cancelled") return "La señal fue anulada manualmente.";
-  if (flow.step === "anchor_return_blocked") return "El precio volvió al ancla: la operativa quedó bloqueada.";
-  return "Decisión PGP";
-}
-function applyPGPFlowChoice(value, label = "") {
-  if (!modalCurrentItem || !isSignalPGPAnalysisOpen(modalCurrentItem)) return;
-  if (isSignalAnchorReturnBlocked(modalCurrentItem)) {
-    toast("⛔ Operativa bloqueada: el precio volvió al ancla", 1800);
-    return;
-  }
-  if (isInicioInamovibleStudyOnlySignal(modalCurrentItem) || modalCurrentItem?.trade?.badge || modalCurrentItem?.signalAutoEntry?.attempted) return;
-  const flow = derivePGPDecisionFlow(modalCurrentItem);
-  const allowedSteps = new Set(["attack_gc", "breaks_level", "break_health", "gd_response", "giro_confirmation_1", "giro_confirmation_2"]);
-  if (!allowedSteps.has(flow.step)) return;
-
-  // Evita que un doble toque accidental cuente como las dos confirmaciones.
-  if (flow.step === "giro_confirmation_2") {
-    const elapsed = Date.now() - Number(flow.firstConfirmationAt || 0);
-    if (!Number.isFinite(elapsed) || elapsed < 900) {
-      toast("⏳ Confirmación 1/2 registrada · esperá un instante para confirmar la segunda", 1500);
-      return;
-    }
-  }
-
-  const state = normalizePGPDecisionState(modalCurrentItem);
-  state.answers.push({
-    step: flow.step,
-    value: String(value),
-    label: String(label || value),
-    at: Date.now(),
-    ms: Math.min(SIGNAL_LATE_ANALYSIS_END_MS, Math.round(getSignalElapsedMsRaw(modalCurrentItem))),
-  });
-  modalCurrentItem.pgpDecision = state;
-  const next = syncPGPDecisionSummary(modalCurrentItem);
-  saveHistory(history);
-  updateSignalConfirmationUI();
-  updateModalCandleStatusUI();
-
-  if (next?.result === "continuity") {
-    toast("✅ CONTINUIDAD: señal de giro anulada", 1700);
-    return;
-  }
-  if (next?.result === "cancelled") {
-    toast("⛔ Señal PGP anulada", 1500);
-    return;
-  }
-  if (next?.result === "confirmation_1") {
-    toast("1️⃣ Confirmación 1/2 registrada · falta la segunda", 1700);
-    return;
-  }
-  if (next?.result === "authorized" && next.authorizedSide) {
-    const authorizedMs = Number.isFinite(Number(next.authorizedAtMs))
-      ? Number(next.authorizedAtMs)
-      : getSignalElapsedMsRaw(modalCurrentItem);
-    if (authorizedMs > SIGNAL_AUTO_ENTRY_MS) {
-      if (!shouldUseAutoHighLowExecution()) {
-        toast(`⚠️ GIRO 2/2 en ${(authorizedMs / 1000).toFixed(1)}s · el rescate tardío s60→s70 requiere Higher/Lower`, 2400);
-        return;
-      }
-      modalCurrentItem.signalAutoEntry = {
-        type: "AUTO_58_REAL",
-        attempted: true,
-        status: "cancelled",
-        side: next.authorizedSide,
-        ms: Math.round(authorizedMs),
-        sec: Number((authorizedMs / 1000).toFixed(3)),
-        reason: "PGP_AUTHORIZED_AFTER_S58_RECOVERY_ONLY",
-        at: Date.now(),
-        confirmation_status: getSignalConfirmationStatusText(modalCurrentItem),
-        points_enabled_at_ms: Math.round(authorizedMs),
-        app_version: APP_BUILD_VERSION,
-        timing_diagnosis: {
-          code: "PGP_LATE_ANALYSIS_RECOVERY_ONLY",
-          message: `El 2/2 terminó después de s58 (${(authorizedMs / 1000).toFixed(2)}s); AUTO58 normal se omite y queda solo rescate favorable hasta s70.`,
-          points_enabled_at_ms: Math.round(authorizedMs),
-          analysis_deadline_ms: SIGNAL_LATE_ANALYSIS_END_MS,
-          recovery_deadline_ms: SIGNAL_LATE_RECOVERY_END_MS,
-        },
-      };
-      armLateEntryRecovery(modalCurrentItem, "pgp_authorized_after_s58", { allowLateAnalysis: true });
-      saveHistory(history);
-      updateSignalConfirmationUI();
-      updateModalCandleStatusUI();
-      toast(`🕒 GIRO 2/2 en ${(authorizedMs / 1000).toFixed(1)}s · rescate armado hasta s70`, 2200);
-      const q = Number(lastQuoteBySymbol?.[modalCurrentItem.symbol]);
-      if (Number.isFinite(q)) scanSignalLateEntryRecoveriesOnTick(modalCurrentItem.symbol, serverNowMs(), q);
-      return;
-    }
-    if (shouldUseAutoHighLowExecution()) {
-      void refreshExecutionPlanForSignal(modalCurrentItem, true, next.authorizedSide);
-      scheduleHighLowFinalEntryTimers(modalCurrentItem);
-    } else {
-      void prepareRiseFallAutoPreProposal(modalCurrentItem, next.authorizedSide, "pgp_flow_authorized_2_of_2");
-    }
-    toast(`✅ GIRO confirmado 2/2 · ${getPGPTradeLabel(next.authorizedSide)} habilitada · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`, 2100);
-    trySignalAutoEntryAt57("PGP_DOBLE_AUTORIZACION_DESPUES_DE_57");
-  }
-}
-function undoPGPFlowStep() {
-  if (!modalCurrentItem || !isSignalPGPAnalysisOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
-  const state = normalizePGPDecisionState(modalCurrentItem);
-  if (!state.answers.length || modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
-  state.answers.pop();
-  modalCurrentItem.pgpDecision = state;
-  syncPGPDecisionSummary(modalCurrentItem);
-  saveHistory(history);
-  updateSignalConfirmationUI();
-  updateModalCandleStatusUI();
-}
-function resetPGPFlow() {
-  if (!modalCurrentItem || !isSignalPGPAnalysisOpen(modalCurrentItem) || isSignalAnchorReturnBlocked(modalCurrentItem)) return;
-  if (modalCurrentItem?.signalAutoEntry?.attempted || modalCurrentItem?.trade?.badge) return;
-  modalCurrentItem.pgpDecision = createDefaultPGPDecisionState();
-  saveHistory(history);
-  updateSignalConfirmationUI();
-  updateModalCandleStatusUI();
-  toast("↻ Decisión PGP reiniciada", 1200);
-}
-function appendPGPFlowButton(container, text, value, label, tone = "neutral", disabled = false) {
-  if (!container) return null;
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btn pgpFlowBtn";
-  btn.textContent = text;
-  btn.disabled = !!disabled;
-  btn.style.minHeight = "50px";
-  btn.style.borderRadius = "14px";
-  btn.style.fontWeight = "950";
-  btn.style.fontSize = "13.5px";
-  btn.style.lineHeight = "1.12";
-  btn.style.whiteSpace = "pre-line";
-  btn.style.padding = "9px 10px";
-  btn.style.touchAction = "manipulation";
-  const palettes = {
-    green: ["rgba(34,197,94,.66)", "linear-gradient(180deg,rgba(34,197,94,.28),rgba(22,101,52,.17))", "#dcfce7"],
-    red: ["rgba(239,68,68,.66)", "linear-gradient(180deg,rgba(239,68,68,.27),rgba(127,29,29,.18))", "#fee2e2"],
-    blue: ["rgba(56,189,248,.62)", "linear-gradient(180deg,rgba(14,165,233,.25),rgba(8,47,73,.18))", "#e0f2fe"],
-    purple: ["rgba(167,139,250,.62)", "linear-gradient(180deg,rgba(139,92,246,.25),rgba(76,29,149,.18))", "#ede9fe"],
-    amber: ["rgba(251,191,36,.62)", "linear-gradient(180deg,rgba(245,158,11,.25),rgba(120,53,15,.18))", "#fef3c7"],
-    neutral: ["rgba(148,163,184,.42)", "rgba(15,23,42,.52)", "#e2e8f0"],
-  };
-  const p = palettes[tone] || palettes.neutral;
-  btn.style.border = `1px solid ${p[0]}`;
-  btn.style.background = p[1];
-  btn.style.color = p[2];
-  btn.style.opacity = btn.disabled ? ".44" : "1";
-  btn.onclick = () => applyPGPFlowChoice(value, label);
-  container.appendChild(btn);
-  return btn;
-}
 function getSignalEnabledTradeSide(item = modalCurrentItem) {
-  if (isSignalAnchorReturnBlocked(item)) return "";
-  const flow = derivePGPDecisionFlow(item);
-  if (!flow.tradeAuthorized || flow.result !== "authorized") return "";
-  const signalSide = normalizeSignalConfirmationSide(item?.direction);
-  return flow.authorizedSide && flow.authorizedSide === signalSide ? signalSide : "";
+  const score = getSignalConfirmationScore(item);
+  if (score >= SIGNAL_CONFIRM_MIN) return "CALL";
+  if (score <= -SIGNAL_CONFIRM_MIN) return "PUT";
+  return "";
 }
 function getSignalConfirmationCount(item = modalCurrentItem, side = null) {
   const wanted = normalizeSignalConfirmationSide(side);
@@ -17491,29 +13821,21 @@ function hasSignalMinimumConfirmations(item = modalCurrentItem, side = null) {
   return wanted ? enabled === wanted : !!enabled;
 }
 function getSignalConfirmationStatusText(item = modalCurrentItem) {
-  if (!item) return "PGP · sin señal";
-  if (isSignalAnchorReturnBlocked(item)) return "PGP · VOLVIÓ AL ANCLA · operativa bloqueada";
-  const flow = derivePGPDecisionFlow(item);
-  if (flow.result === "authorized") return `PGP · GIRO CONFIRMADO · ${getPGPTradeLabel(flow.authorizedSide)} lista`;
-  if (flow.result === "continuity") return "PGP · CONTINUIDAD · giro anulado";
-  if (flow.result === "search_giro") return "PGP · buscar confirmación de giro";
-  if (flow.result === "cancelled") return "PGP · señal anulada";
-  if (flow.step === "attack_gc") return "PGP · decidir ataque a GC";
-  if (flow.step === "breaks_level") return "PGP · decidir ruptura de nivel";
-  if (flow.step === "break_health") return "PGP · decidir sano/insano";
-  if (flow.step === "gd_response") return "PGP · decidir respuesta del GD";
-  return "PGP · decisión pendiente";
+  return `COMPRA ${getSignalNetBuyPoints(item)}/${SIGNAL_CONFIRM_MIN} · VENTA ${getSignalNetSellPoints(item)}/${SIGNAL_CONFIRM_MIN}`;
 }
 function getSignalMissingConfirmations(side, item = modalCurrentItem) {
   const wanted = normalizeSignalConfirmationSide(side);
-  const enabled = getSignalEnabledTradeSide(item);
-  return wanted && enabled === wanted ? 0 : 1;
+  if (wanted === "CALL") return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalNetBuyPoints(item));
+  if (wanted === "PUT") return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalNetSellPoints(item));
+  return Math.max(0, SIGNAL_CONFIRM_MIN - getSignalConfirmationCount(item));
 }
 function ensureSignalConfirmationControls() {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) return null;
   if (signalConfirmPanelEl && signalConfirmPanelEl.isConnected) return signalConfirmPanelEl;
 
-  const footer = document.querySelector("#chartModal .modalFooter") || (chartModal ? chartModal.querySelector(".modalFooter") : null);
+  const footer =
+    document.querySelector("#chartModal .modalFooter") ||
+    (chartModal ? chartModal.querySelector(".modalFooter") : null);
+
   if (!footer) return null;
 
   const panel = document.createElement("div");
@@ -17521,11 +13843,11 @@ function ensureSignalConfirmationControls() {
   panel.style.width = "100%";
   panel.style.boxSizing = "border-box";
   panel.style.margin = "0 0 8px 0";
-  panel.style.padding = "11px";
-  panel.style.borderRadius = "17px";
-  panel.style.border = "1px solid rgba(56,189,248,.28)";
-  panel.style.background = "linear-gradient(180deg,rgba(8,47,73,.30),rgba(2,6,23,.54))";
-  panel.style.boxShadow = "0 10px 24px rgba(0,0,0,.18),inset 0 0 0 1px rgba(56,189,248,.035)";
+  panel.style.padding = "10px";
+  panel.style.borderRadius = "16px";
+  panel.style.border = "1px solid rgba(255,255,255,.14)";
+  panel.style.background = "linear-gradient(180deg, rgba(251,191,36,.075), rgba(255,255,255,.025))";
+  panel.style.boxShadow = "0 10px 22px rgba(0,0,0,.14), inset 0 0 0 1px rgba(251,191,36,.035)";
 
   const top = document.createElement("div");
   top.style.display = "flex";
@@ -17538,11 +13860,12 @@ function ensureSignalConfirmationControls() {
   count.id = "signalConfirmCount";
   count.style.fontWeight = "950";
   count.style.letterSpacing = ".25px";
-  count.style.fontSize = "13.5px";
-  count.style.padding = "8px 10px";
+  count.style.fontSize = "14px";
+  count.style.padding = "8px 11px";
   count.style.borderRadius = "999px";
-  count.style.border = "1px solid rgba(56,189,248,.32)";
-  count.style.background = "rgba(8,47,73,.30)";
+  count.style.border = "1px solid rgba(255,255,255,.14)";
+  count.style.background = "rgba(0,0,0,.16)";
+  count.style.whiteSpace = "normal";
   count.style.lineHeight = "1.15";
 
   const hint = document.createElement("div");
@@ -17551,84 +13874,91 @@ function ensureSignalConfirmationControls() {
   hint.style.textAlign = "right";
   hint.style.fontSize = "11.5px";
   hint.style.fontWeight = "850";
-  hint.style.opacity = ".92";
+  hint.style.opacity = ".90";
   hint.style.lineHeight = "1.18";
-
-  const path = document.createElement("div");
-  path.id = "signalFlowPath";
-  path.style.fontSize = "11.5px";
-  path.style.fontWeight = "800";
-  path.style.color = "rgba(186,230,253,.86)";
-  path.style.margin = "2px 1px 8px";
-  path.style.lineHeight = "1.25";
-  path.style.wordBreak = "break-word";
-
-  const question = document.createElement("div");
-  question.id = "signalFlowQuestion";
-  question.style.fontWeight = "950";
-  question.style.fontSize = "15px";
-  question.style.lineHeight = "1.22";
-  question.style.color = "#f8fafc";
-  question.style.margin = "0 1px 9px";
-
-  const actions = document.createElement("div");
-  actions.id = "signalFlowActions";
-  actions.style.display = "grid";
-  actions.style.gridTemplateColumns = "repeat(2,minmax(0,1fr))";
-  actions.style.gap = "8px";
-
-  const nav = document.createElement("div");
-  nav.style.display = "grid";
-  nav.style.gridTemplateColumns = "1fr 1fr";
-  nav.style.gap = "8px";
-  nav.style.marginTop = "8px";
-
-  const backBtn = document.createElement("button");
-  backBtn.type = "button";
-  backBtn.className = "btn btnGhost";
-  backBtn.textContent = "↩️ VOLVER";
-  backBtn.style.minHeight = "40px";
-  backBtn.style.borderRadius = "12px";
-  backBtn.style.fontWeight = "900";
-  backBtn.onclick = undoPGPFlowStep;
-
-  const resetBtn = document.createElement("button");
-  resetBtn.type = "button";
-  resetBtn.className = "btn btnGhost";
-  resetBtn.textContent = "↻ REINICIAR";
-  resetBtn.style.minHeight = "40px";
-  resetBtn.style.borderRadius = "12px";
-  resetBtn.style.fontWeight = "900";
-  resetBtn.onclick = resetPGPFlow;
+  hint.style.maxWidth = "150px";
 
   top.appendChild(count);
   top.appendChild(hint);
-  nav.appendChild(backBtn);
-  nav.appendChild(resetBtn);
+
+  const row = document.createElement("div");
+  row.style.display = "grid";
+  row.style.gridTemplateColumns = "minmax(0, 1fr) minmax(0, 1fr) auto";
+  row.style.gap = "8px";
+  row.style.alignItems = "stretch";
+
+  const buyBtn = document.createElement("button");
+  buyBtn.id = "signalConfirmBuyBtn";
+  buyBtn.type = "button";
+  buyBtn.className = "btn";
+  buyBtn.textContent = "🟢 + COMPRA";
+  buyBtn.title = "Sumar una confirmación a favor de COMPRA. Si había puntos de VENTA, primero los resta.";
+  buyBtn.style.minHeight = "48px";
+  buyBtn.style.borderRadius = "14px";
+  buyBtn.style.fontWeight = "950";
+  buyBtn.style.fontSize = "14px";
+  buyBtn.style.letterSpacing = ".25px";
+  buyBtn.style.border = "1px solid rgba(34,197,94,.62)";
+  buyBtn.style.background = "linear-gradient(180deg, rgba(34,197,94,.26), rgba(34,197,94,.10))";
+  buyBtn.style.boxShadow = "0 0 18px rgba(34,197,94,.14), inset 0 0 14px rgba(34,197,94,.07)";
+  buyBtn.style.touchAction = "manipulation";
+
+  const sellBtn = document.createElement("button");
+  sellBtn.id = "signalConfirmSellBtn";
+  sellBtn.type = "button";
+  sellBtn.className = "btn";
+  sellBtn.textContent = "🔴 + VENTA";
+  sellBtn.title = "Sumar una confirmación a favor de VENTA. Si había puntos de COMPRA, primero los resta.";
+  sellBtn.style.minHeight = "48px";
+  sellBtn.style.borderRadius = "14px";
+  sellBtn.style.fontWeight = "950";
+  sellBtn.style.fontSize = "14px";
+  sellBtn.style.letterSpacing = ".25px";
+  sellBtn.style.border = "1px solid rgba(239,68,68,.62)";
+  sellBtn.style.background = "linear-gradient(180deg, rgba(239,68,68,.24), rgba(239,68,68,.10))";
+  sellBtn.style.boxShadow = "0 0 18px rgba(239,68,68,.13), inset 0 0 14px rgba(239,68,68,.07)";
+  sellBtn.style.touchAction = "manipulation";
+
+  const undoBtn = document.createElement("button");
+  undoBtn.id = "signalConfirmUndoBtn";
+  undoBtn.type = "button";
+  undoBtn.className = "btn btnGhost";
+  undoBtn.textContent = "↩️";
+  undoBtn.title = "Quitar última confirmación";
+  undoBtn.style.minHeight = "48px";
+  undoBtn.style.minWidth = "52px";
+  undoBtn.style.borderRadius = "14px";
+  undoBtn.style.fontWeight = "950";
+  undoBtn.style.fontSize = "18px";
+  undoBtn.style.touchAction = "manipulation";
+
+  row.appendChild(buyBtn);
+  row.appendChild(sellBtn);
+  row.appendChild(undoBtn);
   panel.appendChild(top);
-  panel.appendChild(path);
-  panel.appendChild(question);
-  panel.appendChild(actions);
-  panel.appendChild(nav);
+  panel.appendChild(row);
 
   const statusBar = ensureModalCandleStatusBar();
   const tradeRow = footer.querySelector(".tradeRow");
-  if (statusBar && statusBar.parentElement === footer) statusBar.insertAdjacentElement("afterend", panel);
-  else if (tradeRow) footer.insertBefore(panel, tradeRow);
-  else footer.prepend(panel);
+  if (statusBar && statusBar.parentElement === footer) {
+    statusBar.insertAdjacentElement("afterend", panel);
+  } else if (tradeRow) {
+    footer.insertBefore(panel, tradeRow);
+  } else {
+    footer.prepend(panel);
+  }
 
   signalConfirmPanelEl = panel;
   signalConfirmCountEl = count;
+  signalConfirmBtnEl = buyBtn; // compat
+  signalConfirmBuyBtnEl = buyBtn;
+  signalConfirmSellBtnEl = sellBtn;
+  signalConfirmUndoBtnEl = undoBtn;
   signalConfirmHintEl = hint;
-  signalFlowPathEl = path;
-  signalFlowQuestionEl = question;
-  signalFlowActionsEl = actions;
-  signalFlowBackBtnEl = backBtn;
-  signalFlowResetBtnEl = resetBtn;
-  signalConfirmBtnEl = null;
-  signalConfirmBuyBtnEl = null;
-  signalConfirmSellBtnEl = null;
-  signalConfirmUndoBtnEl = null;
+
+  buyBtn.onclick = () => addSignalConfirmation("CALL");
+  sellBtn.onclick = () => addSignalConfirmation("PUT");
+  undoBtn.onclick = () => removeSignalConfirmation();
 
   updateSignalConfirmationUI();
   return panel;
@@ -17648,18 +13978,6 @@ function getSignalConfirmationMs(item = modalCurrentItem) {
       : Math.floor(now / 60000) * 60000);
   return Math.max(0, Math.min(60000, now - minuteStart));
 }
-function getSignalElapsedMsRaw(item = modalCurrentItem, nowMs = serverNowMs()) {
-  if (!item) return 0;
-  const now = Number(nowMs);
-  const anchorMs = Number(item.signalAnchorEpochMs || 0);
-  if (Number.isFinite(anchorMs) && anchorMs > 0 && Number.isFinite(now)) return Math.max(0, now - anchorMs);
-  const itemMinute = Number(item.minute);
-  const start = Number.isFinite(itemMinute) && itemMinute > 0
-    ? itemMinute * 60000
-    : (Number.isFinite(currentMinuteStartMs) && currentMinuteStartMs ? currentMinuteStartMs : Math.floor(now / 60000) * 60000);
-  return Number.isFinite(now) ? Math.max(0, now - start) : 0;
-}
-
 function getSignalLastTickMsInMinute(item = modalCurrentItem) {
   if (!item) return 0;
   const minute = Number(item.minute);
@@ -17716,7 +14034,6 @@ function cancelSignalAutoEntryLate(item, side, readiness, reason = "AUTO_POST58_
     post58_readiness: { ...(readiness || {}) },
   };
   saveHistory(history);
-  armLateEntryRecovery(item, reason || "auto_post58_late");
   if (modalCurrentItem && modalCurrentItem.id === item.id) updateSignalConfirmationUI();
   toast(`⛔ AUTO ${label} cancelada: llegó tarde después de ${SIGNAL_AUTO_POST58_MAX_SEC.toFixed(1)}s`, 2200);
   return true;
@@ -17768,135 +14085,63 @@ function removeSignalConfirmation() {
   updateModalCandleStatusUI();
 }
 function updateSignalConfirmationUI() {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) {
-    if (signalConfirmPanelEl) signalConfirmPanelEl.style.display = "none";
-    return;
-  }
   ensureSignalConfirmationControls();
-  if (!signalConfirmPanelEl) return;
 
   const hasItem = !!modalCurrentItem;
-  const isOpen = hasItem && isSignalPGPAnalysisOpen(modalCurrentItem);
-  if (hasItem) syncPGPDecisionSummary(modalCurrentItem);
-  const flow = derivePGPDecisionFlow(modalCurrentItem);
-  const anchorReturnBlocked = isSignalAnchorReturnBlocked(modalCurrentItem);
-  const controlsDisabled = !hasItem || !isOpen || anchorReturnBlocked || isInicioInamovibleStudyOnlySignal(modalCurrentItem) || !!modalCurrentItem?.trade?.badge || !!modalCurrentItem?.signalAutoEntry?.attempted;
-  const side = normalizeSignalConfirmationSide(modalCurrentItem?.direction);
-  const sideLabel = getPGPTradeLabel(side);
+  const isOpen = hasItem && isTradeEntryOpen(modalCurrentItem);
+  const buyPts = getSignalNetBuyPoints(modalCurrentItem);
+  const sellPts = getSignalNetSellPoints(modalCurrentItem);
+  const totalEvents = getSignalConfirmationEvents(modalCurrentItem).length;
+  const enabled = getSignalEnabledTradeSide(modalCurrentItem);
+  const ok = !!enabled;
 
   if (signalConfirmCountEl) {
-    signalConfirmCountEl.textContent = flow.result === "anchor_return_blocked"
-      ? "⛔ VOLVIÓ AL ANCLA · BLOQUEADA"
-      : flow.result === "authorized"
-        ? `✅ GIRO 2/2 · ${sideLabel} HABILITADA`
-      : flow.result === "continuity"
-        ? "✅ CONTINUIDAD · GIRO ANULADO"
-        : flow.result === "confirmation_1"
-          ? "1️⃣ GIRO CONFIRMADO 1/2"
-          : flow.result === "search_giro"
-            ? "🔄 BUSCAR GIRO · 0/2"
-            : flow.result === "cancelled"
-              ? "⛔ SEÑAL ANULADA"
-              : "🧭 DECISIÓN PGP";
-    const tone = flow.result === "anchor_return_blocked"
-      ? "red"
-      : flow.result === "authorized" || flow.result === "search_giro"
-        ? "red"
-      : flow.result === "confirmation_1"
-        ? "amber"
-        : flow.result === "continuity"
-          ? "green"
-          : flow.result === "cancelled"
-            ? "neutral"
-            : "blue";
-    const colors = tone === "red"
-      ? ["#fee2e2", "rgba(127,29,29,.24)", "rgba(239,68,68,.46)"]
-      : tone === "amber"
-        ? ["#fef3c7", "rgba(120,53,15,.22)", "rgba(245,158,11,.44)"]
-        : tone === "green"
-          ? ["#dcfce7", "rgba(22,101,52,.22)", "rgba(34,197,94,.44)"]
-          : tone === "neutral"
-            ? ["#e2e8f0", "rgba(51,65,85,.28)", "rgba(148,163,184,.32)"]
-            : ["#e0f2fe", "rgba(8,47,73,.30)", "rgba(56,189,248,.38)"];
-    signalConfirmCountEl.style.color = colors[0];
-    signalConfirmCountEl.style.background = colors[1];
-    signalConfirmCountEl.style.borderColor = colors[2];
+    const activePts = enabled === "CALL" ? buyPts : enabled === "PUT" ? sellPts : Math.max(buyPts, sellPts);
+    if (enabled === "CALL" || enabled === "PUT") {
+      signalConfirmCountEl.innerHTML = `${enabled === "CALL" ? "COMPRA" : "VENTA"} habilitada <span class="signalConfirmPts">${activePts}/${SIGNAL_CONFIRM_MIN} pts</span>`;
+    } else {
+      signalConfirmCountEl.textContent = getSignalConfirmationStatusText(modalCurrentItem);
+    }
+    signalConfirmCountEl.style.color = enabled === "CALL" ? "#dcfce7" : enabled === "PUT" ? "#fecaca" : "rgba(255,255,255,.92)";
+    signalConfirmCountEl.style.borderColor = enabled === "CALL" ? "rgba(34,197,94,.46)" : enabled === "PUT" ? "rgba(239,68,68,.46)" : "rgba(251,191,36,.24)";
+    signalConfirmCountEl.style.background = enabled === "CALL" ? "rgba(22,163,74,.16)" : enabled === "PUT" ? "rgba(127,29,29,.19)" : "rgba(0,0,0,.13)";
+    signalConfirmCountEl.style.boxShadow = ok ? "0 0 14px rgba(255,255,255,.07)" : "none";
   }
   if (signalConfirmHintEl) {
-    signalConfirmHintEl.textContent = flow.result === "anchor_return_blocked"
-      ? getSignalAnchorReturnBlockText(modalCurrentItem)
-      : `GD ${flow.groups.gd} · GC ${flow.groups.gc}${flow.result === "authorized" ? (Number(flow.authorizedAtMs) > SIGNAL_AUTO_ENTRY_MS ? " · RESCATE hasta s70" : ` · AUTO ${SIGNAL_AUTO_ENTRY_SEC}s`) : flow.result === "confirmation_1" ? " · falta 1 confirmación" : ""}${getSignalElapsedMsRaw(modalCurrentItem) >= 60000 && isOpen ? ` · análisis ${Math.ceil(getSignalLateAnalysisRemainingMs(modalCurrentItem) / 1000)}s` : ""}`;
-    signalConfirmHintEl.style.color = flow.result === "anchor_return_blocked" || flow.result === "authorized" ? "#fecaca" : flow.result === "confirmation_1" ? "#fde68a" : "rgba(186,230,253,.86)";
-  }
-  if (signalFlowPathEl) {
-    signalFlowPathEl.textContent = flow.path.length ? `Ruta: ${flow.path.join(" › ")}` : "Ruta: inicio";
-  }
-  if (signalFlowQuestionEl) signalFlowQuestionEl.textContent = getPGPFlowQuestion(flow);
-  if (signalFlowActionsEl) {
-    signalFlowActionsEl.innerHTML = "";
-    if (flow.step === "attack_gc") {
-      appendPGPFlowButton(signalFlowActionsEl, "💥 ATACA GC", "yes", "Ataca GC", "blue", controlsDisabled);
-      appendPGPFlowButton(signalFlowActionsEl, "🛡️ NO ATACA GC", "no", "No ataca GC", "green", controlsDisabled);
-    } else if (flow.step === "breaks_level") {
-      appendPGPFlowButton(signalFlowActionsEl, "📈 ROMPE NIVEL", "yes", "Rompe nivel", "purple", controlsDisabled);
-      appendPGPFlowButton(signalFlowActionsEl, "⛔ NO ROMPE", "no", "No rompe nivel", "blue", controlsDisabled);
-    } else if (flow.step === "break_health") {
-      appendPGPFlowButton(signalFlowActionsEl, "❤️ SANO", "healthy", "Sano", "green", controlsDisabled);
-      appendPGPFlowButton(signalFlowActionsEl, "🧠 INSANO", "unhealthy", "Insano", "amber", controlsDisabled);
-    } else if (flow.step === "gd_response") {
-      appendPGPFlowButton(signalFlowActionsEl, "✅ GD BIEN\nANULA GIRO", "good", "GD bien", "green", controlsDisabled);
-      appendPGPFlowButton(signalFlowActionsEl, "❌ GD MAL\nBUSCAR GIRO", "bad", "GD mal", "red", controlsDisabled);
-    } else if (flow.step === "giro_confirmation_1") {
-      appendPGPFlowButton(signalFlowActionsEl, "1️⃣ CONFIRMAR GIRO\nCONFIRMACIÓN 1/2", "confirm_1", "Giro confirmado 1/2", "amber", controlsDisabled || !side);
-      appendPGPFlowButton(signalFlowActionsEl, "⛔ ANULAR SEÑAL", "cancel", "Señal anulada", "neutral", controlsDisabled);
-    } else if (flow.step === "giro_confirmation_2") {
-      appendPGPFlowButton(signalFlowActionsEl, `2️⃣ CONFIRMAR GIRO\nHABILITAR ${sideLabel}`, "confirm_2", `Giro confirmado 2/2 · ${sideLabel}`, "red", controlsDisabled || !side);
-      appendPGPFlowButton(signalFlowActionsEl, "⛔ ANULAR SEÑAL", "cancel", "Señal anulada", "neutral", controlsDisabled);
+    const scope = formatCompactScopeLabel ? formatCompactScopeLabel() : "";
+    const nextOutcomeTxt = formatNextCandleOutcomeLabel(modalCurrentItem, true);
+    if (enabled === "CALL") {
+      signalConfirmHintEl.textContent = `AUTO ${SIGNAL_AUTO_ENTRY_SEC}s · ${nextOutcomeTxt} · ${isDynamicLineMode(modalCurrentItem?.mode) ? "línea respetada" : "zona azul/amarilla"}${scope ? " · " + scope : ""}`;
+      signalConfirmHintEl.style.color = getNextCandleOutcomeTextColor(modalCurrentItem, "#bbf7d0");
+    } else if (enabled === "PUT") {
+      signalConfirmHintEl.textContent = `AUTO ${SIGNAL_AUTO_ENTRY_SEC}s · ${nextOutcomeTxt} · ${isDynamicLineMode(modalCurrentItem?.mode) ? "línea respetada" : "zona azul/amarilla"}${scope ? " · " + scope : ""}`;
+      signalConfirmHintEl.style.color = getNextCandleOutcomeTextColor(modalCurrentItem, "#fecaca");
     } else {
-      const info = document.createElement("div");
-      info.style.gridColumn = "1 / -1";
-      info.style.padding = "10px 11px";
-      info.style.borderRadius = "13px";
-      info.style.fontWeight = "900";
-      info.style.fontSize = "12.5px";
-      info.style.lineHeight = "1.25";
-      info.style.textAlign = "center";
-      if (flow.result === "anchor_return_blocked") {
-        info.textContent = `Operativa bloqueada de forma irreversible. ${getSignalAnchorReturnBlockText(modalCurrentItem)}.`;
-        info.style.color = "#fee2e2";
-        info.style.background = "rgba(127,29,29,.28)";
-        info.style.border = "1px solid rgba(239,68,68,.48)";
-      } else if (flow.result === "authorized") {
-        const authMs = Number(flow.authorizedAtMs);
-        info.textContent = Number.isFinite(authMs) && authMs > SIGNAL_AUTO_ENTRY_MS
-          ? `${sideLabel} habilitada después de s58. AUTO58 normal omitido; rescate favorable activo hasta s70 con referencia real de s60.`
-          : `${sideLabel} habilitada después de 2/2 confirmaciones. Se ejecutará en AUTO ${SIGNAL_AUTO_ENTRY_SEC}s si la entrada sigue abierta.`;
-        info.style.color = "#fee2e2";
-        info.style.background = "rgba(127,29,29,.22)";
-        info.style.border = "1px solid rgba(239,68,68,.38)";
-      } else if (flow.result === "continuity") {
-        info.textContent = "El GD respondió bien: se busca continuidad y esta señal de giro queda bloqueada.";
-        info.style.color = "#dcfce7";
-        info.style.background = "rgba(22,101,52,.20)";
-        info.style.border = "1px solid rgba(34,197,94,.36)";
-      } else {
-        info.textContent = "Esta señal no está habilitada para operar.";
-        info.style.color = "#e2e8f0";
-        info.style.background = "rgba(51,65,85,.24)";
-        info.style.border = "1px solid rgba(148,163,184,.30)";
-      }
-      signalFlowActionsEl.appendChild(info);
+      const score = getSignalConfirmationScore(modalCurrentItem);
+      signalConfirmHintEl.textContent = score === 0
+        ? `PREALERTA · mínimo ${SIGNAL_CONFIRM_MIN} netas`
+        : `PREALERTA · neto ${score > 0 ? "+" : ""}${score}`;
+      signalConfirmHintEl.style.color = "rgba(255,255,255,.68)";
     }
   }
 
-  const answerCount = flow.state.answers.length;
-  if (signalFlowBackBtnEl) {
-    signalFlowBackBtnEl.disabled = controlsDisabled || answerCount <= 0;
-    signalFlowBackBtnEl.style.opacity = signalFlowBackBtnEl.disabled ? ".42" : "1";
+  const controlsDisabled = !hasItem || !isOpen || isInicioInamovibleStudyOnlySignal(modalCurrentItem) || !!modalCurrentItem?.trade?.badge || !!modalCurrentItem?.signalAutoEntry?.attempted;
+  [signalConfirmBuyBtnEl, signalConfirmSellBtnEl].forEach((btn) => {
+    if (!btn) return;
+    btn.disabled = controlsDisabled;
+    btn.style.opacity = btn.disabled ? ".45" : "1";
+  });
+  if (signalConfirmBuyBtnEl) {
+    signalConfirmBuyBtnEl.textContent = `🟢 + COMPRA ${buyPts}/${SIGNAL_CONFIRM_MIN}`;
+    signalConfirmBuyBtnEl.style.transform = enabled === "CALL" ? "translateY(-1px)" : "none";
   }
-  if (signalFlowResetBtnEl) {
-    signalFlowResetBtnEl.disabled = controlsDisabled || answerCount <= 0;
-    signalFlowResetBtnEl.style.opacity = signalFlowResetBtnEl.disabled ? ".42" : "1";
+  if (signalConfirmSellBtnEl) {
+    signalConfirmSellBtnEl.textContent = `🔴 + VENTA ${sellPts}/${SIGNAL_CONFIRM_MIN}`;
+    signalConfirmSellBtnEl.style.transform = enabled === "PUT" ? "translateY(-1px)" : "none";
+  }
+  if (signalConfirmUndoBtnEl) {
+    signalConfirmUndoBtnEl.disabled = controlsDisabled || totalEvents <= 0;
+    signalConfirmUndoBtnEl.style.opacity = signalConfirmUndoBtnEl.disabled ? ".42" : "1";
   }
 }
 function setSignalConfirmationControlsVisible(show) {
@@ -17906,49 +14151,30 @@ function setSignalConfirmationControlsVisible(show) {
 function applySignalConfirmationTradeGate(locked = false, candleClosed = false) {
   if (!modalCurrentItem) return;
   updateSignalConfirmationUI();
+
   if (locked || candleClosed) return;
-  if (isSignalAnchorReturnBlocked(modalCurrentItem)) {
-    const msg = `Operativa bloqueada: ${getSignalAnchorReturnBlockText(modalCurrentItem)}.`;
-    paintGiroOnlyButtonState(modalBuyCallBtn, false, msg);
-    paintGiroOnlyButtonState(modalBuyPutBtn, false, msg);
-    return;
-  }
   const enabledSide = getSignalEnabledTradeSide(modalCurrentItem);
-  const flow = derivePGPDecisionFlow(modalCurrentItem);
 
   if (enabledSide === "CALL") {
-    paintGiroOnlyButtonState(modalBuyPutBtn, false, "Flujo PGP: solo COMPRA habilitada después de 2/2 confirmaciones.");
+    paintGiroOnlyButtonState(modalBuyPutBtn, false, `Confirmaciones reales: solo COMPRA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`);
     return;
   }
   if (enabledSide === "PUT") {
-    paintGiroOnlyButtonState(modalBuyCallBtn, false, "Flujo PGP: solo VENTA habilitada después de 2/2 confirmaciones.");
+    paintGiroOnlyButtonState(modalBuyCallBtn, false, `Confirmaciones reales: solo VENTA habilitada (${getSignalConfirmationStatusText(modalCurrentItem)}).`);
     return;
   }
 
-  const msg = flow.result === "continuity"
-    ? "Flujo PGP: continuidad confirmada; la operación de giro está anulada."
-    : flow.result === "confirmation_1"
-      ? "Flujo PGP: confirmación 1/2 registrada; falta la segunda confirmación."
-      : flow.result === "search_giro"
-        ? "Flujo PGP: faltan dos confirmaciones visuales de giro para habilitar la operación."
-        : flow.result === "cancelled"
-          ? "Flujo PGP: señal anulada."
-          : `Completá el flujo PGP: ${getPGPFlowQuestion(flow)}`;
+  const msg = `Necesitas ${SIGNAL_CONFIRM_MIN} puntos netos en un grupo para operar: ${getSignalConfirmationStatusText(modalCurrentItem)}.`;
   paintGiroOnlyButtonState(modalBuyCallBtn, false, msg);
   paintGiroOnlyButtonState(modalBuyPutBtn, false, msg);
 }
 function assertSignalMinimumConfirmations(side = null, item = modalCurrentItem) {
   if (!item) return;
-  if (isSignalAnchorReturnBlocked(item)) throw new Error("Operativa bloqueada: el precio volvió al ancla de la formación");
   const wanted = normalizeSignalConfirmationSide(side);
-  const enabled = getSignalEnabledTradeSide(item);
-  if (!wanted || enabled !== wanted) {
-    const flow = derivePGPDecisionFlow(item);
-    if (flow.result === "continuity") throw new Error("El flujo PGP confirmó continuidad y anuló el giro");
-    if (flow.result === "cancelled") throw new Error("La señal PGP fue anulada");
-    if (flow.result === "confirmation_1") throw new Error("Confirmación 1/2 registrada; falta la segunda confirmación de giro");
-    if (flow.result === "search_giro") throw new Error("Faltan dos confirmaciones visuales de giro en el flujo PGP");
-    throw new Error(`Completá el flujo PGP antes de operar: ${getPGPFlowQuestion(flow)}`);
+  if (!hasSignalMinimumConfirmations(item, wanted)) {
+    const faltan = getSignalMissingConfirmations(wanted, item);
+    const label = wanted === "CALL" ? "COMPRA" : wanted === "PUT" ? "VENTA" : "un lado";
+    throw new Error(`Faltan ${faltan} punto${faltan === 1 ? "" : "s"} neto${faltan === 1 ? "" : "s"} para ${label}`);
   }
 }
 function getSignalSNREntryMeta(item) {
@@ -18120,8 +14346,6 @@ function signalHasProtectedTrade(item) {
   if (item?.signalAutoEntry?.contract_id) return true;
   const autoStatus = String(item?.signalAutoEntry?.status || "").toLowerCase();
   if (item?.signalAutoEntry?.attempted && ["sending", "sent"].includes(autoStatus)) return true;
-  const recoveryStatus = String(item?.lateEntryRecovery?.status || "").toLowerCase();
-  if (["sending", "sent"].includes(recoveryStatus)) return true;
   return false;
 }
 function hasSignalTradeAssociated(item) {
@@ -18238,7 +14462,7 @@ function assertSignalSNREntryGateAt57(side = null, item = modalCurrentItem) {
 
   // V46: en modos SNR/SNR polaridad NO se exige que la vela cierre dentro del SNR
   // ni se bloquea la autoentrada por estar lejos de la zona al check de 58s.
-  // La operación se decide por: formación viva + flujo PGP con giro autorizado + disciplina OK.
+  // La operación se decide por: formación viva + puntos netos requeridos + disciplina OK.
   // Igual calculamos el gate SNR para registrar si el precio estaba dentro/cerca/lejos,
   // pero no lo usamos como bloqueo operativo.
   const gate = buildSignalSNREntryGate(item, side, SIGNAL_AUTO_SNR_CHECK_MS);
@@ -18246,155 +14470,29 @@ function assertSignalSNREntryGateAt57(side = null, item = modalCurrentItem) {
     return {
       ok: true,
       pending: false,
-      reason: "auto58_pgp_autorizado_snr_sin_cierre_zona",
+      reason: "auto58_5pts_snr_sin_cierre_zona",
       side: normalizeSignalConfirmationSide(side) || "",
       check_ms: SIGNAL_AUTO_SNR_CHECK_MS,
       check_sec: SIGNAL_AUTO_ENTRY_SEC,
-      message: "AUTO 58 habilitado por flujo PGP con giro autorizado; cierre/zona SNR no bloquean la entrada.",
+      message: `AUTO 58 habilitado por ${SIGNAL_CONFIRM_MIN} puntos; cierre/zona SNR no bloquean la entrada.`,
       original_gate: gate,
     };
   }
   return Object.assign({}, gate || {}, {
     ok: true,
     pending: false,
-    reason: gate?.reason ? `auto58_pgp_sin_bloqueo_${gate.reason}` : "auto58_pgp_sin_cierre_zona",
+    reason: gate?.reason ? `auto58_5pts_sin_bloqueo_${gate.reason}` : "auto58_5pts_sin_cierre_zona",
     original_ok: !!gate?.ok,
     original_reason: gate?.reason || "sin_snr_gate",
     message: gate?.ok
-      ? (gate.message || "AUTO 58 por flujo PGP autorizado; precio dentro/cerca del SNR.")
-      : `AUTO 58 por flujo PGP autorizado; SNR no bloquea entrada (${gate?.message || "sin validación SNR"}).`,
+      ? (gate.message || `AUTO 58 por ${SIGNAL_CONFIRM_MIN} puntos; precio dentro/cerca del SNR.`)
+      : `AUTO 58 por ${SIGNAL_CONFIRM_MIN} puntos; SNR no bloquea entrada (${gate?.message || "sin validación SNR"}).`,
   });
-}
-
-function isLateEntryRecoverySending(item) {
-  return String(item?.lateEntryRecovery?.status || "") === "sending";
-}
-function isLateEntryRecoveryFailureEligible(item) {
-  if (!item || !shouldUseAutoHighLowExecution() || item?.trade?.contract_id || item?.signalAutoEntry?.contract_id) return false;
-  if (isSignalAnchorReturnBlocked(item)) return false;
-  const auto = item?.signalAutoEntry;
-  if (!auto?.attempted || !["error", "cancelled"].includes(String(auto.status || "").toLowerCase())) return false;
-  const side = normalizeSignalConfirmationSide(auto.side || item.direction);
-  if (!side) return false;
-  const enabledAt = getSignalSideEnabledAtMs(item, side);
-  if (!Number.isFinite(enabledAt) || enabledAt > SIGNAL_LATE_RECOVERY_START_MS) return false;
-
-  const code = String(auto?.timing_diagnosis?.code || "").toUpperCase();
-  const text = `${auto?.reason || ""} ${auto?.error || ""} ${auto?.timing_diagnosis?.message || ""}`.toLowerCase();
-  const safeCodes = new Set([
-    "FINAL_PROPOSAL_NOT_READY",
-    "FINAL_PROPOSAL_REFRESH_ERROR",
-    "CONFIRMATION_TOO_LATE",
-    "CONFIRMATION_LATE_NO_FRESH_PLAN",
-    "TIMER_DELAYED_AND_FINAL_PROPOSAL_MISSING",
-    "AUTO_TRIGGER_AFTER_LIMIT",
-    "MARKET_MOVED_REPRICE_TOO_LATE",
-    "MARKET_MOVED_REPRICE_READY_TOO_LATE",
-    "MARKET_MOVED_REPRICE_OUT_OF_RANGE",
-    "AUTO58_RELATIVE_FRESH_NOT_READY",
-    "AUTO58_RELATIVE_FRESH_READY_TOO_LATE",
-    "AUTO58_RELATIVE_SEED_MISSING",
-    "AUTO58_RELATIVE_REQUOTE_TOO_LATE",
-    "AUTO58_RELATIVE_REQUOTE_ERROR",
-    "AUTO58_RELATIVE_REQUOTE_OUT_OF_RANGE",
-    "AUTO58_RELATIVE_REQUOTE_READY_TOO_LATE",
-  ]);
-  if (safeCodes.has(code)) return true;
-  return /post-58|proposal final|proposal.*58|no se obtuvo proposal|barrera fresca|barrera relativa|sin distancia relativa|cotizaci[oó]n.*tarde|lleg[oó] tarde|ventana post|ventana segura de entrada|sin tiempo seguro para recotizar|recotizaci[oó]n lleg[oó] despu[eé]s/.test(text);
-}
-function isLateEntryRecoveryLateAnalysisEligible(item) {
-  if (!item || !shouldUseAutoHighLowExecution() || item?.trade?.contract_id || item?.signalAutoEntry?.contract_id) return false;
-  if (isSignalAnchorReturnBlocked(item)) return false;
-  const side = normalizeSignalConfirmationSide(item?.direction);
-  if (!side || getSignalEnabledTradeSide(item) !== side) return false;
-  const enabledAt = getSignalSideEnabledAtMs(item, side);
-  return Number.isFinite(enabledAt) && enabledAt > SIGNAL_AUTO_ENTRY_MS && enabledAt <= SIGNAL_LATE_ANALYSIS_END_MS;
-}
-function getCanonicalSignalS60Reference(item) {
-  if (!item) return null;
-  try {
-    const result60 = ensureSignalResult60(item);
-    const q = Number(result60?.startQuote);
-    if (Number.isFinite(q)) return { price: q, epochMs: Number(result60?.startEpochMs || 0) || null, source: String(result60?.source || "signal_result60_start") };
-  } catch {}
-  const ticks = (Array.isArray(item?.ticks) ? item.ticks : [])
-    .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
-    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= SIGNAL_LATE_RECOVERY_START_MS)
-    .sort((a, b) => a.ms - b.ms);
-  if (ticks.length) {
-    const anchor = Number(item?.signalAnchorEpochMs || 0);
-    return {
-      price: ticks[0].quote,
-      epochMs: Number.isFinite(anchor) && anchor > 0 ? anchor + ticks[0].ms : null,
-      source: "saved_tick_at_or_after_s60",
-    };
-  }
-  return null;
-}
-function armLateEntryRecovery(item, reason = "auto58_timing_or_proposal_failure", options = {}) {
-  const allowLateAnalysis = !!options?.allowLateAnalysis;
-  const failureEligible = isLateEntryRecoveryFailureEligible(item);
-  const lateAnalysisEligible = allowLateAnalysis && isLateEntryRecoveryLateAnalysisEligible(item);
-  if (!failureEligible && !lateAnalysisEligible) return false;
-  if (item?.lateEntryRecovery && !["expired", "blocked", "error"].includes(String(item.lateEntryRecovery.status || ""))) return true;
-  const side = normalizeSignalConfirmationSide(item?.signalAutoEntry?.side || item?.direction);
-  if (!side) return false;
-  const ref60 = getSignalElapsedMsRaw(item) >= SIGNAL_LATE_RECOVERY_START_MS ? getCanonicalSignalS60Reference(item) : null;
-  item.lateEntryRecovery = {
-    enabled: true,
-    status: Number.isFinite(Number(ref60?.price)) ? "waiting_price" : "armed",
-    side,
-    reason: String(reason || "auto58_timing_or_proposal_failure"),
-    origin: lateAnalysisEligible ? "late_manual_pgp_after_s58" : "auto58_failure",
-    armed_at: Date.now(),
-    armed_elapsed_ms: Math.round(getSignalElapsedMsRaw(item)),
-    analysis_end_ms: SIGNAL_LATE_ANALYSIS_END_MS,
-    start_ms: SIGNAL_LATE_RECOVERY_START_MS,
-    end_ms: SIGNAL_LATE_RECOVERY_END_MS,
-    reference_price: Number.isFinite(Number(ref60?.price)) ? Number(ref60.price) : null,
-    reference_epoch_ms: Number.isFinite(Number(ref60?.epochMs)) ? Number(ref60.epochMs) : null,
-    reference_elapsed_ms: Number.isFinite(Number(ref60?.price)) ? SIGNAL_LATE_RECOVERY_START_MS : null,
-    reference_source: Number.isFinite(Number(ref60?.price)) ? String(ref60.source || "signal_s60_reference") : "first_live_tick_at_or_after_s60",
-    favorable_rule: side === "CALL" ? "price<=s60_reference" : "price>=s60_reference",
-    trigger_price: null,
-    trigger_epoch_ms: null,
-    trigger_elapsed_ms: null,
-    contract_id: "",
-    app_version: APP_BUILD_VERSION,
-  };
-  try { saveHistory(history); } catch {}
-  if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
-    try { toast(`🕒 Rescate ${side === "CALL" ? "COMPRA" : "VENTA"} armado hasta s70`, 1800); } catch {}
-  }
-  return true;
-}
-function getLateRecoveryReferencePrice(item) {
-  const raw = item?.lateEntryRecovery?.reference_price;
-  if (raw === null || raw === undefined || raw === "") return NaN;
-  const stored = Number(raw);
-  return Number.isFinite(stored) ? stored : NaN;
-}
-function isLateRecoveryPriceFavorable(side, currentPrice, referencePrice) {
-  const q = Number(currentPrice);
-  const ref = Number(referencePrice);
-  if (!Number.isFinite(q) || !Number.isFinite(ref)) return false;
-  return String(side || "CALL").toUpperCase() === "PUT"
-    ? q >= ref - SIGNAL_LATE_RECOVERY_PRICE_EPS
-    : q <= ref + SIGNAL_LATE_RECOVERY_PRICE_EPS;
-}
-function expireLateEntryRecovery(item, elapsedMs, reason = "s70_expired") {
-  if (!item?.lateEntryRecovery || ["sent", "expired", "blocked"].includes(String(item.lateEntryRecovery.status || ""))) return false;
-  item.lateEntryRecovery.status = "expired";
-  item.lateEntryRecovery.expired_at = Date.now();
-  item.lateEntryRecovery.expired_elapsed_ms = Math.round(Number(elapsedMs || 0));
-  item.lateEntryRecovery.expire_reason = String(reason || "s70_expired");
-  try { saveHistory(history); } catch {}
-  return true;
 }
 
 function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
   const item = itemOverride || modalCurrentItem;
-  if (!item || isInicioInamovibleStudyOnlySignal(item) || isSignalAnchorReturnBlocked(item) || !isTradeEntryOpen(item)) return false;
+  if (!item || isInicioInamovibleStudyOnlySignal(item) || !isTradeEntryOpen(item)) return false;
   if (item?.trade?.badge) return false;
   if (tradeInFlight) return false;
   if (item?.signalAutoEntry?.attempted) return false;
@@ -18485,7 +14583,6 @@ function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
       item.signalAutoEntry.error = e?.message || String(e);
       item.signalAutoEntry.error_at = Date.now();
       if (shouldUseAutoHighLowExecution()) item.signalAutoEntry.highlow_prepare_debug_after = getHighLowEntryDiagnostics(item, side);
-      armLateEntryRecovery(item, "auto58_error_timing_or_proposal");
       saveHistory(history);
       toast(`⚠️ AUTO ${label} falló: ${e?.message || e}`, 2600);
     })
@@ -18500,123 +14597,7 @@ function trySignalAutoEntryAt57(reason = "AUTO_58", itemOverride = null) {
   return true;
 }
 
-function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
-  if (!shouldUseAutoHighLowExecution() || !Array.isArray(history) || !history.length) return false;
-  const sym = String(symbol || "");
-  const ep = Number(epochMs);
-  const q = Number(quote);
-  if (!sym || !Number.isFinite(ep) || !Number.isFinite(q)) return false;
-
-  const candidates = history.slice(-40).filter((it) => it && String(it.symbol || "") === sym && isFloatingSignalItem(it));
-  for (const item of candidates) {
-    if (item?.trade?.contract_id || item?.signalAutoEntry?.contract_id) continue;
-    if (!item?.lateEntryRecovery && isLateEntryRecoveryFailureEligible(item)) armLateEntryRecovery(item, "scan_detected_auto58_failure");
-    const state = item?.lateEntryRecovery;
-    if (!state?.enabled || ["sent", "expired", "blocked", "error", "sending"].includes(String(state.status || ""))) continue;
-
-    const anchor = Number(item.signalAnchorEpochMs || 0);
-    if (!Number.isFinite(anchor) || anchor <= 0) continue;
-    const elapsed = ep - anchor;
-    if (elapsed < SIGNAL_LATE_RECOVERY_START_MS) continue;
-    if (elapsed > SIGNAL_LATE_RECOVERY_END_MS) {
-      expireLateEntryRecovery(item, elapsed, "s70_without_favorable_entry");
-      continue;
-    }
-    if (isSignalAnchorReturnBlocked(item)) {
-      state.status = "blocked";
-      state.blocked_at = Date.now();
-      state.block_reason = "anchor_return";
-      try { saveHistory(history); } catch {}
-      continue;
-    }
-
-    const side = normalizeSignalConfirmationSide(state.side || item.direction);
-    if (!side || getSignalEnabledTradeSide(item) !== side) {
-      state.status = "blocked";
-      state.blocked_at = Date.now();
-      state.block_reason = "pgp_not_authorized_anymore";
-      try { saveHistory(history); } catch {}
-      continue;
-    }
-
-    if (!Number.isFinite(getLateRecoveryReferencePrice(item))) {
-      const canonical = getCanonicalSignalS60Reference(item);
-      state.reference_price = Number.isFinite(Number(canonical?.price)) ? Number(canonical.price) : q;
-      state.reference_epoch_ms = Number.isFinite(Number(canonical?.epochMs)) ? Number(canonical.epochMs) : ep;
-      state.reference_elapsed_ms = SIGNAL_LATE_RECOVERY_START_MS;
-      state.reference_source = Number.isFinite(Number(canonical?.price)) ? String(canonical.source || "signal_s60_reference") : "first_live_tick_at_or_after_s60";
-      state.status = "waiting_price";
-      try { saveHistory(history); } catch {}
-    }
-
-    const ref = getLateRecoveryReferencePrice(item);
-    state.last_price = q;
-    state.last_elapsed_ms = Math.round(elapsed);
-    state.last_favorable = isLateRecoveryPriceFavorable(side, q, ref);
-    if (!state.last_favorable || tradeInFlight) continue;
-    if (SIGNAL_LATE_RECOVERY_END_MS - elapsed < SIGNAL_LATE_RECOVERY_MIN_SEND_REMAIN_MS) {
-      expireLateEntryRecovery(item, elapsed, "insufficient_time_to_send_before_s70");
-      continue;
-    }
-
-    state.status = "sending";
-    state.trigger_price = q;
-    state.trigger_epoch_ms = ep;
-    state.trigger_elapsed_ms = Math.round(elapsed);
-    state.trigger_reference_price = ref;
-    state.trigger_condition = side === "CALL" ? "current<=reference" : "current>=reference";
-    state.send_started_at = Date.now();
-    try { saveHistory(history); } catch {}
-    if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
-      try { toast(`♻️ Rescate ${side === "CALL" ? "COMPRA" : "VENTA"}: precio favorable, enviando…`, 1600); } catch {}
-    }
-
-    Promise.race([
-      buyOneClick(side, null, item),
-      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout rescate tardío")), 12000)),
-    ]).then((res) => {
-      const cid = res?.buy?.contract_id ? String(res.buy.contract_id) : "";
-      state.status = "sent";
-      state.contract_id = cid;
-      state.sent_at = Date.now();
-      state.sent_elapsed_ms = Math.round(getSignalElapsedMsRaw(item));
-      try { saveHistory(history); } catch {}
-      try { toast(`✅ Rescate ${side === "CALL" ? "COMPRA" : "VENTA"} enviado${cid ? " · ID " + cid : ""}`, 2000); } catch {}
-    }).catch((e) => {
-      const msg = e?.message || String(e);
-      const elapsedNow = getSignalElapsedMsRaw(item);
-      // II32: mientras quede ventana hasta s70, un cambio de precio o una cotización
-      // sin barrera aceptable no mata el rescate. Vuelve a esperar otro tick favorable.
-      const retryableRecoveryError = /dejó de ser favorable|sin barrera válida|sin barrera \+130|no se obtuvo.*barrera|proposal.*no.*válida|payout.*fuera|pago.*fuera/i.test(String(msg));
-      if (retryableRecoveryError && elapsedNow < SIGNAL_LATE_RECOVERY_END_MS) {
-        state.status = "waiting_price";
-        state.deferred_count = Number(state.deferred_count || 0) + 1;
-        state.last_deferred_reason = String(msg);
-        state.last_deferred_at = Date.now();
-        state.last_deferred_elapsed_ms = Math.round(elapsedNow);
-        try { saveHistory(history); } catch {}
-        return;
-      }
-      state.status = "error";
-      state.error = msg;
-      state.error_at = Date.now();
-      state.error_elapsed_ms = Math.round(elapsedNow);
-      try { saveHistory(history); } catch {}
-      try { toast(`⚠️ Rescate tardío falló: ${state.error}`, 2400); } catch {}
-    }).finally(() => {
-      updateDisciplineLockUI(false);
-      if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
-        updateSignalConfirmationUI();
-        requestModalDraw(true);
-      }
-    });
-    return true;
-  }
-  return false;
-}
-
 function scanSignalAutoEntriesAt57() {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) return false;
   try {
     if (areSignalsPaused()) return false;
     if (tradeInFlight) return false;
@@ -18682,45 +14663,6 @@ function updateModalCandleStatusUI() {
 
   bar.style.display = "block";
 
-  // Las señales históricas marcadas studyOnly permanecen bloqueadas.
-  // Las señales nuevas II15 usan flujo PGP, dos confirmaciones, bloqueo por retorno al ancla, modal fijado y cierre en s60.
-  if (isInicioInamovibleStudyOnlySignal(modalCurrentItem)) {
-    const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
-    if (tradeRow) tradeRow.style.display = "none";
-    setSignalConfirmationControlsVisible(false);
-    setGiroAprendizajeControlsVisible(false);
-    setProcessMiniPanelVisible(false);
-
-    const result60 = isFloatingSignalItem(modalCurrentItem) ? ensureSignalResult60(modalCurrentItem) : null;
-    if (result60 && isSignalResult60Resolved(modalCurrentItem)) {
-      const correctness = getSignalResult60Correctness(modalCurrentItem);
-      const correctnessTxt = correctness === "correct" ? " · ✅ giro correcto" : correctness === "incorrect" ? " · ❌ continuó" : "";
-      bar.textContent = `${getSignalResult60DirectionText(modalCurrentItem)}${correctnessTxt}`;
-      bar.style.color = correctness === "incorrect" ? "#fecaca" : correctness === "correct" ? "#dcfce7" : "rgba(229,231,235,.92)";
-      bar.style.background = correctness === "incorrect" ? "rgba(127,29,29,.22)" : correctness === "correct" ? "rgba(22,163,74,.16)" : "rgba(107,114,128,.16)";
-      bar.style.borderColor = correctness === "incorrect" ? "rgba(248,113,113,.34)" : correctness === "correct" ? "rgba(34,197,94,.30)" : "rgba(156,163,175,.22)";
-    } else if (result60) {
-      bar.textContent = `🧪 INICIO INAMOVIBLE · GIRO ${String(modalCurrentItem.direction || "")} · resultado en ${getSignalResult60RemainingSec(modalCurrentItem)}s`;
-      bar.style.color = "#ede9fe";
-      bar.style.background = "rgba(139,92,246,.14)";
-      bar.style.borderColor = "rgba(167,139,250,.34)";
-      if (getSignalResult60RemainingSec(modalCurrentItem) === 0) scheduleSignalResult60Hydration(modalCurrentItem);
-    } else {
-      bar.textContent = `🧪 INICIO INAMOVIBLE · señal de GIRO ${String(modalCurrentItem.direction || "")} · solo estudio`;
-      bar.style.color = "#ede9fe";
-      bar.style.background = "rgba(139,92,246,.14)";
-      bar.style.borderColor = "rgba(167,139,250,.34)";
-    }
-    bar.style.boxShadow = "0 0 0 1px rgba(167,139,250,.05) inset";
-    updateModalNavVoteUI();
-    updateModalFooterReadingUI();
-    updateVisualReadPanelUI();
-    return;
-  }
-
-  const tradeRow = document.querySelector("#chartModal .modalFooter .tradeRow");
-  if (tradeRow) tradeRow.style.display = "";
-
   const callPlan = modalCurrentItem ? getCachedExecutionPlan(modalCurrentItem, "CALL") : null;
   const putPlan = modalCurrentItem ? getCachedExecutionPlan(modalCurrentItem, "PUT") : null;
   setTradeButtonBaseLabel(modalBuyCallBtn, buildTradeButtonLabel("CALL", callPlan));
@@ -18731,15 +14673,8 @@ function updateModalCandleStatusUI() {
   const remain = locked ? Math.max(0, disciplineLockUntilMs - Date.now()) : 0;
   const candleClosed = !isOpen;
   const brainBlocked = isBrainProcessTradeBlocked(modalCurrentItem);
-  const anchorReturnBlocked = isSignalAnchorReturnBlocked(modalCurrentItem);
 
-  if (anchorReturnBlocked) {
-    bar.textContent = `⛔ OPERATIVA BLOQUEADA · ${getSignalAnchorReturnBlockText(modalCurrentItem)}`;
-    bar.style.color = "#fee2e2";
-    bar.style.background = "linear-gradient(180deg, rgba(127,29,29,.72), rgba(69,10,10,.58))";
-    bar.style.borderColor = "rgba(248,113,113,.58)";
-    bar.style.boxShadow = "0 0 0 1px rgba(248,113,113,.12) inset, 0 0 14px rgba(239,68,68,.14)";
-  } else if (locked) {
+  if (locked) {
     bar.textContent = `🔒 DEMO bloqueada · ${getDisciplineCounterText()} · falta ${fmtRemaining(remain)}`;
     bar.style.color = "#fff";
     bar.style.background = "linear-gradient(180deg, rgba(127,29,29,.78), rgba(69,10,10,.78))";
@@ -18780,26 +14715,8 @@ function updateModalCandleStatusUI() {
     bar.style.borderColor = "rgba(34,197,94,.28)";
     bar.style.boxShadow = "0 0 0 1px rgba(34,197,94,.05) inset";
   } else {
-    const rawElapsed = getSignalElapsedMsRaw(modalCurrentItem);
-    const analysisStillOpen = isSignalPGPAnalysisOpen(modalCurrentItem);
-    const recovery = modalCurrentItem?.lateEntryRecovery;
-    const recoveryActive = recovery?.enabled && !["sent", "expired", "blocked", "error"].includes(String(recovery.status || ""));
     const result60 = isFloatingSignalItem(modalCurrentItem) ? ensureSignalResult60(modalCurrentItem) : null;
-    if (recoveryActive && rawElapsed <= SIGNAL_LATE_RECOVERY_END_MS) {
-      const ref = getLateRecoveryReferencePrice(modalCurrentItem);
-      bar.textContent = `♻️ Rescate activo · hasta s70 · ${recovery.side === "PUT" ? "VENTA precio ≥" : "COMPRA precio ≤"} ${Number.isFinite(ref) ? ref.toFixed(6) : "ref s60"}`;
-      bar.style.color = "#fef3c7";
-      bar.style.background = "rgba(202,138,4,.16)";
-      bar.style.borderColor = "rgba(250,204,21,.34)";
-      bar.style.boxShadow = "0 0 0 1px rgba(250,204,21,.05) inset";
-    } else if (analysisStillOpen && rawElapsed >= 60000) {
-      const left = Math.ceil(getSignalLateAnalysisRemainingMs(modalCurrentItem) / 1000);
-      bar.textContent = `🕒 Análisis extendido · faltan ${left}s para cerrar en s65 · completá PGP 2/2`;
-      bar.style.color = "#e0f2fe";
-      bar.style.background = "rgba(8,47,73,.30)";
-      bar.style.borderColor = "rgba(56,189,248,.38)";
-      bar.style.boxShadow = "0 0 0 1px rgba(56,189,248,.05) inset";
-    } else if (result60 && !isSignalResult60Resolved(modalCurrentItem)) {
+    if (result60 && !isSignalResult60Resolved(modalCurrentItem)) {
       const remain60 = getSignalResult60RemainingSec(modalCurrentItem);
       bar.textContent = `⏳ Próximos 60s · faltan ${remain60}s`;
       bar.style.color = "#fef3c7";
@@ -18842,7 +14759,7 @@ function updateModalCandleStatusUI() {
   applyBrainProcessTradeGate(locked, candleClosed);
   updateVisualReadPanelUI();
 
-  // Auto-entrada real: al segundo 58 solo si el flujo PGP terminó en giro autorizado.
+  // Auto-entrada real: al segundo 58 si ya están completos los puntos netos requeridos.
   if (!locked && !candleClosed && !brainBlocked) trySignalAutoEntryAt57("TIMER_58");
 }
 
@@ -19329,40 +15246,16 @@ function drawDerivLikeOneMinuteCandles(canvas, item, ticks = []) {
 ========================= */
 function getModalReplayTicks(item = modalCurrentItem) {
   if (!item) return [];
-
-  // II25: una señal flotante tiene un eje propio que nace exactamente en
-  // signalAnchorEpochMs. El Replay manual ya era correcto porque usa item.ticks;
-  // el AUTO REPLAY X2 fallaba al estar LIVE porque podía reemplazar esa serie por
-  // minuteData, cuyos ms pertenecen al minuto calendario. Para señales flotantes
-  // JAMÁS mezclamos ambas fuentes: item.ticks se sigue completando en vivo desde
-  // updateConstructiveFloatingSignalsOnTick() y conserva ms=0 en el ancla real.
-  const isFloating = isFloatingSignalItem(item);
   let ticks = Array.isArray(item.ticks) ? item.ticks.slice() : [];
-  if (!isFloating && modalLive && isItemLiveMinute(item)) {
+  if (modalLive && isItemLiveMinute(item)) {
     const liveTicks = minuteData?.[item.minute]?.[item.symbol];
     if (Array.isArray(liveTicks) && liveTicks.length >= ticks.length) ticks = liveTicks.slice();
   }
-
   return ticks
     .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
     .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote))
     .map((p) => ({ ms: Math.max(0, Math.min(60000, p.ms)), quote: p.quote }))
     .sort((a, b) => a.ms - b.ms);
-}
-function getModalReplayLiveTargetMs(item = modalCurrentItem) {
-  if (!item) return 0;
-  const ticks = getModalReplayTicks(item);
-  const lastTickMs = ticks.length ? Number(ticks[ticks.length - 1]?.ms) : 0;
-  if (!Number.isFinite(lastTickMs)) return 0;
-  // En señales flotantes el último tick guardado es el precio vivo canónico de
-  // esa ventana. No usamos ms del minuto calendario ni otro símbolo.
-  return Math.max(0, Math.min(60000, lastTickMs));
-}
-function disableModalReplayAutoFollow(source = "manual_override") {
-  modalReplayState.autoCatchUp = false;
-  modalReplayState.liveFollow = false;
-  modalReplayState.source = source;
-  modalReplayState.liveToastShown = false;
 }
 function ensureModalReplayBox() {
   let box = document.getElementById("modalReplayBox");
@@ -19394,11 +15287,6 @@ function ensureModalReplayBox() {
   if (closeBtn) closeBtn.onclick = (e) => { e.stopPropagation(); closeModalReplay(); };
   if (playBtn) playBtn.onclick = (e) => {
     e.stopPropagation();
-    if (modalReplayState.controlledByAudio) {
-      void toggleVoiceAnalysisPlayback();
-      return;
-    }
-    disableModalReplayAutoFollow("manual_play");
     modalReplayState.playing = !modalReplayState.playing;
     modalReplayState.lastFrameTs = 0;
     if (modalReplayState.playing && modalReplayState.currentMs >= 60000) modalReplayState.currentMs = 0;
@@ -19407,13 +15295,6 @@ function ensureModalReplayBox() {
   };
   if (resetBtn) resetBtn.onclick = (e) => {
     e.stopPropagation();
-    if (modalReplayState.controlledByAudio && voiceAnalysisAudio && voiceAnalysisCurrentRecord) {
-      try { voiceAnalysisAudio.currentTime = 0; } catch {}
-      syncModalReplayToVoiceAudio(true);
-      updateVoiceAnalysisUI();
-      return;
-    }
-    disableModalReplayAutoFollow("manual_reset");
     modalReplayState.currentMs = 0;
     modalReplayState.lastFrameTs = 0;
     modalReplayState.playing = true;
@@ -19422,11 +15303,6 @@ function ensureModalReplayBox() {
   };
   if (speedBtn) speedBtn.onclick = (e) => {
     e.stopPropagation();
-    if (modalReplayState.controlledByAudio) {
-      toast("🎙️ Replay sincronizado con el audio", 900);
-      return;
-    }
-    disableModalReplayAutoFollow("manual_speed");
     const speeds = [1, 2, 4];
     const idx = speeds.indexOf(Number(modalReplayState.speed || 1));
     modalReplayState.speed = speeds[(idx + 1) % speeds.length];
@@ -19434,15 +15310,7 @@ function ensureModalReplayBox() {
   };
   if (seek) seek.oninput = (e) => {
     e.stopPropagation();
-    const nextMs = Math.max(0, Math.min(60000, Number(seek.value) || 0));
-    if (modalReplayState.controlledByAudio && voiceAnalysisAudio && voiceAnalysisCurrentRecord) {
-      try { voiceAnalysisAudio.currentTime = Math.max(0, getVoiceAnalysisAudioMsAtSignalMs(voiceAnalysisCurrentRecord, nextMs) / 1000); } catch {}
-      syncModalReplayToVoiceAudio(true);
-      updateVoiceAnalysisUI();
-      return;
-    }
-    disableModalReplayAutoFollow("manual_seek");
-    modalReplayState.currentMs = nextMs;
+    modalReplayState.currentMs = Math.max(0, Math.min(60000, Number(seek.value) || 0));
     modalReplayState.lastFrameTs = 0;
     drawModalReplayFrame();
   };
@@ -19455,21 +15323,12 @@ function updateModalReplayControlsUI() {
   const playBtn = box.querySelector("#modalReplayPlayBtn");
   const speedBtn = box.querySelector("#modalReplaySpeedBtn");
   const seek = box.querySelector("#modalReplaySeek");
-  const syncMode = !!modalReplayState.controlledByAudio;
   if (playBtn) {
-    const isPlaying = syncMode ? (!!voiceAnalysisAudio && !voiceAnalysisAudio.paused && !voiceAnalysisAudio.ended) : !!modalReplayState.playing;
-    playBtn.textContent = isPlaying ? "⏸️" : "▶️";
-    playBtn.classList.toggle("active", !!isPlaying);
-    playBtn.title = syncMode ? "Reproducir o pausar el audio sincronizado" : "Reproducir o pausar replay";
+    playBtn.textContent = modalReplayState.playing ? "⏸️" : "▶️";
+    playBtn.classList.toggle("active", !!modalReplayState.playing);
   }
-  if (speedBtn) {
-    speedBtn.textContent = syncMode ? "🎙️ SYNC" : (modalReplayState.liveFollow ? "LIVE 1x" : `${Number(modalReplayState.speed || 1)}x`);
-    speedBtn.title = syncMode ? "El tiempo del replay lo controla el audio" : "Cambiar velocidad del replay";
-  }
-  if (seek) {
-    seek.value = String(Math.max(0, Math.min(60000, Number(modalReplayState.currentMs || 0))));
-    seek.title = syncMode ? "Deslizar para buscar dentro del audio sincronizado" : "Deslizar para moverse dentro del replay";
-  }
+  if (speedBtn) speedBtn.textContent = `${Number(modalReplayState.speed || 1)}x`;
+  if (seek) seek.value = String(Math.max(0, Math.min(60000, Number(modalReplayState.currentMs || 0))));
 }
 function openModalReplay(options = {}) {
   if (!modalCurrentItem) return;
@@ -19480,20 +15339,12 @@ function openModalReplay(options = {}) {
   }
   const box = ensureModalReplayBox();
   if (!box) return;
-  const source = String(options.source || "manual");
-  const autoCatchUp = source === "auto_x2";
   box.classList.remove("hidden");
   modalReplayState.open = true;
   modalReplayState.playing = true;
   modalReplayState.speed = [1, 2, 4].includes(Number(options.speed)) ? Number(options.speed) : 1;
   modalReplayState.currentMs = Math.max(0, Math.min(60000, Number(options.currentMs || 0)));
   modalReplayState.lastFrameTs = 0;
-  modalReplayState.source = source;
-  modalReplayState.autoCatchUp = autoCatchUp && !options.controlledByAudio;
-  modalReplayState.liveFollow = false;
-  modalReplayState.controlledByAudio = !!options.controlledByAudio;
-  modalReplayState.itemId = String(modalCurrentItem.id || "");
-  modalReplayState.liveToastShown = false;
   updateModalReplayControlsUI();
   startModalReplayLoop();
 }
@@ -19501,12 +15352,6 @@ function closeModalReplay() {
   modalReplayState.open = false;
   modalReplayState.playing = false;
   modalReplayState.lastFrameTs = 0;
-  modalReplayState.autoCatchUp = false;
-  modalReplayState.liveFollow = false;
-  modalReplayState.controlledByAudio = false;
-  modalReplayState.source = "manual";
-  modalReplayState.itemId = "";
-  modalReplayState.liveToastShown = false;
   if (modalReplayState.raf) cancelAnimationFrame(modalReplayState.raf);
   modalReplayState.raf = null;
   const box = document.getElementById("modalReplayBox");
@@ -19519,54 +15364,14 @@ function startModalReplayLoop() {
 }
 function modalReplayLoop(ts) {
   if (!modalReplayState.open) return;
-  if (!modalCurrentItem || (modalReplayState.itemId && String(modalCurrentItem.id || "") !== modalReplayState.itemId)) {
-    closeModalReplay();
-    return;
-  }
-
-  if (modalReplayState.controlledByAudio) {
-    syncModalReplayToVoiceAudio(false);
-  } else if (modalReplayState.liveFollow) {
-    // II25: una vez alcanzado el vivo no seguimos con un cronómetro independiente.
-    // Seguimos el ms real de la ventana anclada; así cada nuevo tick aparece a 1x
-    // y nunca hay deriva entre Replay y mercado.
-    modalReplayState.speed = 1;
-    modalReplayState.playing = true;
-    modalReplayState.lastFrameTs = ts;
-    const liveTargetMs = getModalReplayLiveTargetMs(modalCurrentItem);
-    modalReplayState.currentMs = Math.max(0, Math.min(60000, liveTargetMs));
-    if (!isItemLiveMinute(modalCurrentItem) && liveTargetMs >= 60000) {
-      modalReplayState.currentMs = 60000;
-      modalReplayState.playing = false;
-      modalReplayState.liveFollow = false;
-    }
-  } else if (modalReplayState.playing) {
+  if (modalReplayState.playing) {
     if (!modalReplayState.lastFrameTs) modalReplayState.lastFrameTs = ts;
     const dt = Math.max(0, ts - modalReplayState.lastFrameTs);
     modalReplayState.lastFrameTs = ts;
     modalReplayState.currentMs = Math.min(60000, Number(modalReplayState.currentMs || 0) + dt * Number(modalReplayState.speed || 1));
-
-    if (modalReplayState.autoCatchUp) {
-      const liveTargetMs = getModalReplayLiveTargetMs(modalCurrentItem);
-      // Un pequeño margen evita oscilar por diferencias de un frame. Al alcanzar
-      // el último precio realmente recibido, pasamos a seguir el vivo a 1x.
-      if (liveTargetMs > 0 && Number(modalReplayState.currentMs || 0) >= liveTargetMs - 80) {
-        modalReplayState.currentMs = liveTargetMs;
-        modalReplayState.speed = 1;
-        modalReplayState.autoCatchUp = false;
-        modalReplayState.liveFollow = true;
-        modalReplayState.lastFrameTs = ts;
-        if (!modalReplayState.liveToastShown) {
-          modalReplayState.liveToastShown = true;
-          toast("📡 Replay alcanzó LIVE · 1x", 900);
-        }
-      }
-    }
-
-    if (!modalReplayState.liveFollow && modalReplayState.currentMs >= 60000) {
+    if (modalReplayState.currentMs >= 60000) {
       modalReplayState.currentMs = 60000;
       modalReplayState.playing = false;
-      modalReplayState.autoCatchUp = false;
     }
   } else {
     modalReplayState.lastFrameTs = 0;
@@ -19603,14 +15408,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   }
 
   const ms = Math.max(0, Math.min(60000, Number(replayMs || 0)));
-  // II27: si replayMs coincide exactamente con el último tick disponible,
-  // findIndex() devuelve -1 porque ya no existe un punto futuro. Antes se hacía
-  // -1 - 1 y luego se corregía a 0, dejando visible SOLO el primer tick justo
-  // en el handoff X2 → LIVE. Ahora -1 significa correctamente “mostrar toda
-  // la serie disponible”. Esto también mantiene la formación completa congelada
-  // al llegar a s60.
-  const firstFutureIdx = ticks.findIndex((p) => Number(p.ms) > ms);
-  let lastIdx = firstFutureIdx < 0 ? ticks.length - 1 : firstFutureIdx - 1;
+  let lastIdx = ticks.findIndex((p) => Number(p.ms) > ms) - 1;
   if (lastIdx < 0) lastIdx = 0;
   if (lastIdx >= ticks.length) lastIdx = ticks.length - 1;
   const seen = ticks.slice(0, lastIdx + 1);
@@ -20949,7 +16747,7 @@ async function resubscribePendingContracts() {
       subscribeContractOutcome(cid, true);
       scheduleOutcomeFallbackPoll(cid, 45000);
     }
-    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) startPendingContractWatchdog({ immediate: true });
+    startPendingContractWatchdog({ immediate: true });
 
     toast(`🔁 Reenganche pendientes: ${list.length}`, 1400);
   } catch {}
@@ -21001,7 +16799,6 @@ function buildModalItemFromTradeEntry(entry) {
     signalDetectedEpochMs: entry.signalDetectedEpochMs || live?.signalDetectedEpochMs || null,
     signalResult60: entry.signalResult60 || live?.signalResult60 || null,
     giroPlus: entry.giroPlus || live?.giroPlus || null,
-    virtualNoTouch: entry.virtualNoTouch || live?.virtualNoTouch || null,
     trade: entry.trade || live?.trade || null,
     study_capture_id: entry.study_capture_id || entry?.trade?.study_capture_id || live?.study_capture_id || live?.trade?.study_capture_id || "",
     manualGiro: normalizeManualGiroState(entry.manualGiro || live?.manualGiro),
@@ -21182,14 +16979,7 @@ function navigateModalItem(step = 1) {
 function openChartModal(item, opts = {}) {
   cancelModalAutoReplayX2();
   closeModalReplay();
-  const nextVoiceSignalId = getVoiceAnalysisSignalId(item);
-  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive" && voiceAnalysisRecordingSignalId !== nextVoiceSignalId) {
-    stopVoiceAnalysisRecording({ silent: true });
-  }
-  stopVoiceAnalysisPlayback();
-  releaseVoiceAnalysisObjectUrl();
   modalCurrentItem = item;
-  removePendingAutoReplaySignalId(item?.id || "");
   modalOpenContext = normalizeModalContext(opts, item);
   if (!chartModal || !modalTitle || !modalSub) return;
 
@@ -21212,19 +17002,16 @@ function openChartModal(item, opts = {}) {
   chartModal.setAttribute("aria-hidden", "false");
 
   modalCurrentItem.signalConfirmations ||= [];
-  const inicioStudyOnly = isInicioInamovibleStudyOnlySignal(modalCurrentItem);
   applyModalTradeButtonsLayout();
 ensureModalFooterControlsLayout();
 updateModalFooterReadingUI();
-  setSignalConfirmationControlsVisible(!inicioStudyOnly);
+  setSignalConfirmationControlsVisible(true);
   ensureGiroAprendizajeControls();
-  setGiroAprendizajeControlsVisible(!inicioStudyOnly);
-  if (!inicioStudyOnly) {
-    updateSignalConfirmationUI();
-    updateGiroAprendizajeControlsUI();
-  }
-  setProcessMiniPanelVisible(!inicioStudyOnly);
-  if (!inicioStudyOnly) updateProcessMiniPanelUI();
+  setGiroAprendizajeControlsVisible(true);
+  updateSignalConfirmationUI();
+  updateGiroAprendizajeControlsUI();
+  setProcessMiniPanelVisible(true);
+  updateProcessMiniPanelUI();
   if (shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(modalCurrentItem);
   updateDisciplineLockUI(false);
   updateModalCandleStatusUI();
@@ -21232,20 +17019,12 @@ updateModalFooterReadingUI();
   updateModalChartViewBtnUI();
   updateVisualReadPanelUI();
 
-  bindVoiceAnalysisControls();
-  void loadVoiceAnalysisForModal(modalCurrentItem);
   requestModalDraw(true);
-  scheduleModalAutoReplayX2(modalCurrentItem, String(opts.autoReplayReason || "open_modal"));
-  scheduleModalSequentialSignalHandoff(modalCurrentItem);
+  scheduleModalAutoReplayX2(modalCurrentItem, "open_modal");
 }
 function closeChartModal() {
   cancelModalAutoReplayX2();
-  cancelModalSequentialSignalHandoff();
   closeModalReplay();
-  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") stopVoiceAnalysisRecording({ silent: true });
-  stopVoiceAnalysisPlayback();
-  releaseVoiceAnalysisObjectUrl();
-  voiceAnalysisLoadToken += 1;
   if (!chartModal) return;
   chartModal.classList.add("hidden");
   chartModal.setAttribute("aria-hidden", "true");
@@ -21397,90 +17176,16 @@ function updateRowGiroPlusBadgeOnRow(row, item) {
     el.style.boxShadow = "none";
   }
 }
-function getTradeOtmEntryPointInfo(item) {
-  const trade = item?.trade || {};
-  const badge = String(trade.badge || "").toUpperCase();
-  if (badge !== "OTM") return { active: false, key: "", label: "", title: "" };
-
-  const side = String(trade.side || item?.direction || "").toUpperCase();
-  const outcome = String(getItemNextOutcomeValue(item) || item?.nextOutcome || "").toLowerCase();
-  const signalDirectionCorrect = (side === "CALL" && outcome === "up") || (side === "PUT" && outcome === "down");
-  if (!signalDirectionCorrect) return { active: false, key: "", label: "", title: "" };
-
-  const entry = Number(trade.entry_spot);
-  const exit = Number(trade.exit_spot);
-  const contractType = String(trade.contract_type || trade.api_contract_type || "").toUpperCase();
-  const barrierMode = String(trade.proposal_barrier_mode || trade.barrier_mode || "").toLowerCase();
-  const relBarrier = Number(String(trade.barrier ?? "").replace(",", "."));
-  const absBarrier = Number(trade.proposal_api_barrier ?? trade.apiBarrier);
-  let threshold = NaN;
-
-  if ((contractType === "HIGHER" || contractType === "LOWER") && Number.isFinite(entry)) {
-    if (barrierMode === "relative" && Number.isFinite(relBarrier)) threshold = entry + relBarrier;
-    else if (Number.isFinite(absBarrier)) threshold = absBarrier;
-  }
-
-  const fmt = (n) => Number.isFinite(Number(n)) ? Number(n).toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : "";
-  const dirTxt = side === "CALL" ? "CALL → alcista" : side === "PUT" ? "PUT → bajista" : "dirección correcta";
-  let title = `OTM por punto de entrada: la lectura de la señal terminó correcta (${dirTxt}), pero el contrato real quedó OTM.`;
-  if (Number.isFinite(entry) && Number.isFinite(exit)) {
-    title += ` Entrada ${fmt(entry)} · cierre ${fmt(exit)}.`;
-  }
-  if (Number.isFinite(threshold)) {
-    title += ` Nivel que debía superar: ${fmt(threshold)}.`;
-  }
-
-  return {
-    active: true,
-    key: "entry_point",
-    label: "📍 PUNTO ENTRADA",
-    title,
-    signal_direction_correct: true,
-    entry_spot: Number.isFinite(entry) ? entry : null,
-    exit_spot: Number.isFinite(exit) ? exit : null,
-    threshold: Number.isFinite(threshold) ? threshold : null,
-  };
-}
-
-function annotateTradeOtmEntryPoint(item) {
-  if (!item?.trade) return false;
-  const info = getTradeOtmEntryPointInfo(item);
-  if (info.active) {
-    item.trade.otm_entry_point = true;
-    item.trade.otm_reason = "entry_point";
-    item.trade.otm_entry_point_info = {
-      signal_direction_correct: true,
-      entry_spot: info.entry_spot,
-      exit_spot: info.exit_spot,
-      threshold: info.threshold,
-    };
-    return true;
-  }
-  if (String(item.trade.badge || "").toUpperCase() === "OTM") {
-    item.trade.otm_entry_point = false;
-    if (item.trade.otm_reason === "entry_point") item.trade.otm_reason = "";
-    if (item.trade.otm_entry_point_info) delete item.trade.otm_entry_point_info;
-  }
-  return false;
-}
-
 function updateRowTradeBadgeOnRow(row, item) {
   if (!row) return;
   const el = row.querySelector(".tradeBadge");
-  const entryPointEl = row.querySelector(".otmEntryPointBadge");
   if (!el) return;
 
   const badge = item?.trade?.badge || "";
-  const entryPointInfo = getTradeOtmEntryPointInfo(item);
   if (!badge) {
     el.classList.add("hidden");
     el.textContent = "";
     el.title = "";
-    if (entryPointEl) {
-      entryPointEl.classList.add("hidden");
-      entryPointEl.textContent = "";
-      entryPointEl.title = "";
-    }
     return;
   }
 
@@ -21491,7 +17196,7 @@ function updateRowTradeBadgeOnRow(row, item) {
     el.style.opacity = "1";
   } else if (badge === "OTM") {
     el.textContent = "💥 OTM";
-    el.title = entryPointInfo.active ? entryPointInfo.title : "Trade perdida (OTM)";
+    el.title = "Trade perdida (OTM)";
     el.style.opacity = "1";
   } else {
     el.textContent = "⏳ TRADE";
@@ -21506,30 +17211,6 @@ function updateRowTradeBadgeOnRow(row, item) {
   el.style.borderRadius = "999px";
   el.style.border = "1px solid rgba(255,255,255,.18)";
   el.style.background = "rgba(255,255,255,.06)";
-
-  if (entryPointEl) {
-    if (badge === "OTM" && entryPointInfo.active) {
-      entryPointEl.classList.remove("hidden");
-      entryPointEl.textContent = entryPointInfo.label;
-      entryPointEl.title = entryPointInfo.title;
-      entryPointEl.style.display = "inline-flex";
-      entryPointEl.style.alignItems = "center";
-      entryPointEl.style.justifyContent = "center";
-      entryPointEl.style.padding = "4px 7px";
-      entryPointEl.style.borderRadius = "999px";
-      entryPointEl.style.fontSize = "10px";
-      entryPointEl.style.fontWeight = "950";
-      entryPointEl.style.whiteSpace = "nowrap";
-      entryPointEl.style.border = "1px solid rgba(251,191,36,.48)";
-      entryPointEl.style.background = "rgba(251,191,36,.12)";
-      entryPointEl.style.color = "#fef3c7";
-    } else {
-      entryPointEl.classList.add("hidden");
-      entryPointEl.textContent = "";
-      entryPointEl.title = "";
-      entryPointEl.style.display = "none";
-    }
-  }
 }
 function updateRowNextArrowOnRow(row, item) {
   if (!row) return;
@@ -21569,12 +17250,10 @@ function animateFailShake(item) {
 function setNextOutcome(item, outcome) {
   const prevOutcome = item.nextOutcome || "";
   item.nextOutcome = outcome;
-  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) { try { updateGiroPlusOutcome(item); } catch {} }
-  try { annotateTradeOtmEntryPoint(item); } catch {}
+  try { updateGiroPlusOutcome(item); } catch {}
   saveHistory(history);
 
   updateRowNextArrow(item);
-  updateRowTradeBadge(item);
   updateCounter();
   if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
     modalCurrentItem.nextOutcome = outcome;
@@ -21748,7 +17427,6 @@ function getTradesJournalExportList() {
 
   for (const x of tradesJournal || []) {
     if (!x) continue;
-    try { annotateTradeOtmEntryPoint(x); } catch {}
     const key = String(x.journal_id || makeJournalIdFromSignal(x) || x.id || "");
     if (key && seen.has(key)) continue;
     if (key) seen.add(key);
@@ -21807,9 +17485,7 @@ function applyVoteButtonsVisual(row, vote = "", { lock = false } = {}) {
 
 
 function isInicioInamovibleStudyOnlySignal(item) {
-  // Las señales históricas II1-II6 traen studyOnly=true y continúan sin poder operar.
-  // Ser Inicio Inamovible, por sí solo, ya no implica modo estudio.
-  return !!(item?.signalStudyOnly || item?.giroPolaridad?.studyOnly);
+  return !!(item?.signalStudyOnly || item?.giroPolaridad?.studyOnly || item?.giroPolaridad?.inicioInamovibleMode);
 }
 function getSignalLifecycleStageInfo(item) {
   if (!item) return { key: "", label: "", title: "" };
@@ -21856,46 +17532,6 @@ function getSignalLifecycleStageInfo(item) {
         title: `Esperando el resultado a los 60 segundos desde el primer movimiento. Faltan ${getSignalResult60RemainingSec(item)}s.`,
       };
     }
-  }
-
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !item.minuteComplete) {
-    const flow = derivePGPDecisionFlow(item);
-    if (flow.result === "authorized") {
-      return {
-        key: "pgp_authorized",
-        label: `🔴 GIRO · ${getPGPTradeLabel(flow.authorizedSide)}`,
-        title: `Flujo PGP completo y giro confirmado. ${getPGPTradeLabel(flow.authorizedSide)} habilitada para AUTO ${autoSec}s.`,
-      };
-    }
-    if (flow.result === "continuity") {
-      return {
-        key: "pgp_continuity",
-        label: "✅ CONTINUIDAD",
-        title: "El GD respondió bien: la señal de giro quedó anulada por el flujo PGP.",
-      };
-    }
-    if (flow.result === "confirmation_1") {
-      return {
-        key: "pgp_giro_1_2",
-        label: "1️⃣ GIRO 1/2",
-        title: "Primera confirmación registrada. Falta la segunda para habilitar la operación.",
-      };
-    }
-    if (flow.result === "search_giro") {
-      return {
-        key: "pgp_giro",
-        label: "🔄 BUSCAR GIRO 0/2",
-        title: "El GD respondió mal. Faltan dos confirmaciones visuales de giro para habilitar la operación.",
-      };
-    }
-    if (flow.result === "cancelled") {
-      return { key: "pgp_cancelled", label: "⛔ ANULADA", title: "La señal fue anulada manualmente en el flujo PGP." };
-    }
-    return {
-      key: "pgp_pending",
-      label: "🧭 PGP PENDIENTE",
-      title: `${getPGPFlowQuestion(flow)} · ${getSignalConfirmationStatusText(item)}`,
-    };
   }
 
   if (item.minuteComplete) {
@@ -21997,22 +17633,6 @@ function updateRowSignalStageOnRow(row, item) {
     el.style.borderColor = "rgba(251,191,36,.42)";
     el.style.background = "rgba(251,191,36,.10)";
     el.style.color = "#fef3c7";
-  } else if (st.key === "pgp_pending") {
-    el.style.borderColor = "rgba(56,189,248,.42)";
-    el.style.background = "rgba(14,165,233,.10)";
-    el.style.color = "#e0f2fe";
-  } else if (st.key === "pgp_giro" || st.key === "pgp_authorized") {
-    el.style.borderColor = "rgba(239,68,68,.44)";
-    el.style.background = "rgba(239,68,68,.11)";
-    el.style.color = "#fee2e2";
-  } else if (st.key === "pgp_continuity") {
-    el.style.borderColor = "rgba(34,197,94,.44)";
-    el.style.background = "rgba(34,197,94,.11)";
-    el.style.color = "#dcfce7";
-  } else if (st.key === "pgp_cancelled") {
-    el.style.borderColor = "rgba(148,163,184,.36)";
-    el.style.background = "rgba(71,85,105,.13)";
-    el.style.color = "#e2e8f0";
   } else if (st.key === "auto_ready" || st.key === "auto_zone" || st.key === "closed_ok") {
     el.style.borderColor = "rgba(34,197,94,.42)";
     el.style.background = "rgba(34,197,94,.10)";
@@ -22075,7 +17695,6 @@ function buildRow(item, opts = {}) {
   const voteIsLocked = !!opts.voteLocked && !!item.vote && !opts.allowVoteChange;
   const commentPlaceholder = opts.source === "trades" ? "por qué" : "comentario";
   const commentStyle = "";
-  const printSelectionKey = getStudyPrintSelectionKey(item, opts);
   const actionsHtml = opts.hideActions
     ? ""
     : `
@@ -22084,7 +17703,6 @@ function buildRow(item, opts = {}) {
       <button class="voteBtn" data-v="dislike" type="button" ${voteIsLocked ? "disabled" : ""} title="No me gusta / operación que quiero evitar">👎</button>
       <button class="savePracticeBtn ${savedForPractice ? "selected" : ""}" type="button" title="${savedForPractice ? "Quitar del pool de práctica" : "Guardar en práctica Giro Doble Rechazo"}">💾</button>
       <button class="studyCaptureBtn" type="button" title="Generar / ver captura de estudio">📸</button>
-      ${opts.source === "trades" ? `<button class="studyPrintSelectBtn" data-print-key="${escapeHtml(printSelectionKey)}" type="button" title="Seleccionar para imprimir" aria-pressed="false">🖨️</button>` : ""}
       <input class="row-comment" style="${commentStyle}" placeholder="${commentPlaceholder}" value="${escapeHtml(item.comment || "")}">
     </div>
   `;
@@ -22103,9 +17721,6 @@ function buildRow(item, opts = {}) {
         <span class="signalStageBadge" title=""></span>
         <span class="giroPlusBadge hidden" title=""></span>
         <span class="tradeBadge hidden" title=""></span>
-        <span class="otmEntryPointBadge hidden" title=""></span>
-        <span class="virtualNoTouchBadge hidden" title=""></span>
-        <span class="maxWinningBarrierBadge hidden" title=""></span>
         <span class="nextArrow pending" title="Próxima vela: esperando…">⏳</span>
       </div>
     </div>
@@ -22154,8 +17769,6 @@ function buildRow(item, opts = {}) {
 
   updateRowChartBtnOnRow(row, item);
   updateRowTradeBadgeOnRow(row, item);
-  updateRowVirtualNoTouchBadgeOnRow(row, item);
-  updateRowMaxWinningBarrierBadgeOnRow(row, item);
   updateRowNextArrowOnRow(row, item);
   updateRowSignalStageOnRow(row, item);
   updateRowGiroPlusBadgeOnRow(row, item);
@@ -22244,22 +17857,6 @@ function buildRow(item, opts = {}) {
       };
     }
 
-    const studyPrintSelectBtn = row.querySelector(".studyPrintSelectBtn");
-    if (studyPrintSelectBtn) {
-      studyPrintSelectBtn.style.borderRadius = "12px";
-      studyPrintSelectBtn.style.minWidth = "40px";
-      studyPrintSelectBtn.style.fontWeight = "900";
-      studyPrintSelectBtn.onclick = (e) => {
-        e.stopPropagation();
-        const key = String(studyPrintSelectBtn.dataset.printKey || printSelectionKey || "");
-        if (!key) return;
-        if (studyPrintSelectedKeys.has(key)) studyPrintSelectedKeys.delete(key);
-        else studyPrintSelectedKeys.add(key);
-        updateStudyPrintControlsUI();
-      };
-      updateStudyPrintControlsUI();
-    }
-
     const input = row.querySelector(".row-comment");
     if (input) {
       input.addEventListener("blur", () => {
@@ -22294,10 +17891,8 @@ function renderHistory() {
       it.mode = normalizedFamily !== MODE_NORMAL || /^normal$/i.test(rawMode) ? normalizedFamily : rawMode.toUpperCase();
     }
   }
-  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
-    for (const it of history || []) {
-      try { updateGiroPlusClassification(it, { persist: false, notify: false }); } catch {}
-    }
+  for (const it of history || []) {
+    try { updateGiroPlusClassification(it, { persist: false, notify: false }); } catch {}
   }
   saveHistory(history);
 
@@ -22670,7 +18265,6 @@ function applyClosedContractOutcomeFromPOC(poc, sourceLabel = "watchdog") {
             tradesJournal[idx].trade.account_mode = tradesJournal[idx].account_mode;
             tradesJournal[idx].trade.account_label = tradesJournal[idx].account_label;
           }
-          try { recomputeVirtualNoTouchCombined(tradesJournal[idx]); } catch {}
           tradesJournal[idx].saved_at = Date.now();
           saveTradesJournal(tradesJournal);
           try { if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView(); } catch {}
@@ -22826,11 +18420,6 @@ function assertCanTrade() {
   }
 }
 function assertEntryWindowOpen(item = modalCurrentItem) {
-  if (item && isLateEntryRecoverySending(item)) {
-    const elapsed = getSignalElapsedMsRaw(item);
-    if (elapsed >= SIGNAL_LATE_RECOVERY_START_MS && elapsed <= SIGNAL_LATE_RECOVERY_END_MS) return;
-    throw new Error(`Rescate tardío fuera de ventana (${(elapsed / 1000).toFixed(2)}s).`);
-  }
   if (item && !isTradeEntryOpen(item)) {
     throw new Error("La vela ya cerró");
   }
@@ -22838,25 +18427,24 @@ function assertEntryWindowOpen(item = modalCurrentItem) {
 
 async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, itemOverride = null) {
   const itemCtx = itemOverride || modalCurrentItem;
-  const lateRecoveryExecution = isLateEntryRecoverySending(itemCtx);
-  if (isInicioInamovibleStudyOnlySignal(itemCtx)) throw new Error("Esta señal histórica es solo de estudio y no puede operar.");
-  const inicioOperable = !!(itemCtx?.giroPolaridad?.inicioInamovibleMode || String(itemCtx?.mode_version || "").includes("INICIO_INAMOVIBLE"));
+  if (isInicioInamovibleStudyOnlySignal(itemCtx)) throw new Error("Esta versión experimental es solo para aviso y registro; las operaciones están desactivadas.");
   assertCanTrade();
   assertEntryWindowOpen(itemCtx);
-  // El motor nuevo no hereda evaluadores de señal antiguos, pero sí conserva
-  // el requisito original de 6 puntos netos y toda la compra Deriv.
-  if (!inicioOperable) assertBrainProcessCanTrade(itemCtx);
+  assertBrainProcessCanTrade(itemCtx);
   assertSignalMinimumConfirmations(side, itemCtx);
+  // V46: en SNR/SNR polaridad, la operación se permite por puntos completos + AUTO 58.
+  // El cierre final fuera de SNR y la distancia al SNR quedan registrados, pero no bloquean.
+  // En Línea dinámica se mantiene su validación específica.
   const snrEntryGate = assertSignalSNREntryGateAt57(side, itemCtx);
-  if (!inicioOperable) assertC100CanTrade();
+  assertC100CanTrade();
 
   if (tradeInFlight) throw new Error("Operación en curso");
   tradeInFlight = true;
 
   try {
     const isAutoSignalExecution = !!(
-      lateRecoveryExecution ||
-      (itemCtx?.signalAutoEntry?.attempted && itemCtx?.signalAutoEntry?.status === "sending")
+      itemCtx?.signalAutoEntry?.attempted &&
+      itemCtx?.signalAutoEntry?.status === "sending"
     );
     const isAutoCloseExecution = !!(
       isAutoSignalExecution &&
@@ -22903,26 +18491,18 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
 
       // Al salir la señal consulta HIGHER/LOWER y busca la barrera más cercana a 130% de ganancia neta (230% de pago total).
       // Al operar pide una proposal nueva con esa barrera y compra inmediatamente.
-      const highLowBuy = lateRecoveryExecution
-        ? await buyLateRecoveryHighLow(itemCtx || { symbol }, side, stake)
-        : await buyFreshHighLowLikeWindows(itemCtx || { symbol }, side, stake);
+      const highLowBuy = await buyFreshHighLowLikeWindows(itemCtx || { symbol }, side, stake);
       const plan = highLowBuy.plan;
       res = highLowBuy.res;
       contractLabel = plan.contractType || hlName;
 
       tradeExtra = {
         ...tradeExtra,
-        exec_mode: highLowBuy.lateRecoveryUsed
-          ? "HIGHLOW_TARGET_PROFIT_130_LATE_RECOVERY_S60_70"
-          : highLowBuy.auto58RelativeFreshUsed
-            ? (highLowBuy.repriceUsed
-                ? "HIGHLOW_TARGET_PROFIT_130_AUTO58_RELATIVE_FRESH_REQUOTE_BUY"
-                : "HIGHLOW_TARGET_PROFIT_130_AUTO58_RELATIVE_FRESH_BUY")
-            : highLowBuy.repriceUsed
-              ? "HIGHLOW_TARGET_PROFIT_130_MARKET_MOVED_REPRICE_BUY"
-              : highLowBuy.usedFinalPreproposal
-                ? "HIGHLOW_TARGET_PROFIT_130_PRE58_PROPOSAL_BUY"
-                : "HIGHLOW_TARGET_PROFIT_130_SIGNAL_SEARCH_FRESH_BUY",
+        exec_mode: highLowBuy.repriceUsed
+          ? "HIGHLOW_TARGET_PROFIT_130_MARKET_MOVED_REPRICE_BUY"
+          : highLowBuy.usedFinalPreproposal
+            ? "HIGHLOW_TARGET_PROFIT_130_PRE58_PROPOSAL_BUY"
+            : "HIGHLOW_TARGET_PROFIT_130_SIGNAL_SEARCH_FRESH_BUY",
         contract_type: contractLabel,
         api_contract_type: plan.apiContractType || getHighLowPrimaryApiContractType(side),
         api_symbol_field: isNewPatApiMode() ? "underlying_symbol" : "symbol",
@@ -22935,9 +18515,6 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         target_payout_total_pct: HIGHLOW_TARGET_PAYOUT_TOTAL_PCT,
         target_distance_pct: Number(plan.targetDistancePct || getHighLowTargetDistance(plan)),
         proposal_fresh: true,
-        auto58_relative_fresh: !!highLowBuy.auto58RelativeFreshUsed,
-        proposal_barrier_mode: String(plan.barrierMode || ""),
-        proposal_api_barrier: String(plan.apiBarrier || ""),
         entry_preproposal_used: !!highLowBuy.usedFinalPreproposal,
         entry_preproposal_prepared_ms: Number(plan.finalPreparedMs || null),
         entry_preproposal_age_ms: Number(highLowBuy.finalPlanAgeMs ?? null),
@@ -22950,14 +18527,6 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         actual_return_pct: Math.round(plan.profitPct),
         payout_total_pct: Number(plan.payoutTotalPct),
         proposal_id: plan.proposalId,
-        expiry_mode: String(plan.expiryMode || "fixed_s60_absolute"),
-        planned_expiry_time: Number(plan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(itemCtx) || 0) || null,
-        planned_duration_if_bought_at_58_sec: 62,
-        late_entry_recovery: !!highLowBuy.lateRecoveryUsed,
-        late_entry_recovery_window_ms: highLowBuy.lateRecoveryUsed ? [SIGNAL_LATE_RECOVERY_START_MS, SIGNAL_LATE_RECOVERY_END_MS] : null,
-        late_entry_reference_price: highLowBuy.lateRecoveryUsed ? Number(highLowBuy.lateRecoveryReferencePrice) : null,
-        late_entry_trigger_price: highLowBuy.lateRecoveryUsed ? Number(highLowBuy.lateRecoveryTriggerPrice) : null,
-        late_entry_trigger_elapsed_ms: highLowBuy.lateRecoveryUsed ? Number(highLowBuy.lateRecoveryTriggerElapsedMs) : null,
         ic2_enabled: isC100Active(),
         ic2_level: c100State?.level || null,
         ic2_step: c100State?.compoundStep || 0,
@@ -23068,10 +18637,6 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
     try {
       Object.assign(tradeExtra, compactAuditFields(extractContractAuditFields(res?.buy || {})));
       if (!tradeExtra.purchase_time) tradeExtra.purchase_time = Math.floor(serverNowMs() / 1000);
-      if (!Number.isFinite(Number(tradeExtra.entry_spot))) {
-        const entryRef = Number(lastQuoteBySymbol?.[symbol]);
-        if (Number.isFinite(entryRef) && entryRef > 0) tradeExtra.entry_reference_quote = entryRef;
-      }
       if (itemCtx?.signalAutoEntry?.post58_readiness) {
         tradeExtra.entry_trigger_mode = isNextCandleExpiryTiming() ? "PREPROPOSAL_POST_TICK_58" : "AUTO58_NORMAL";
         tradeExtra.entry_trigger_ms = Math.round(Number(itemCtx.signalAutoEntry.post58_readiness.ms || 0));
@@ -23085,12 +18650,6 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
     if (itemCtx && itemCtx.id) {
       setTradeBadge(itemCtx, "PENDING", { contract_id: String(cid), ...tradeExtra });
       linkContractToSignal(cid, itemCtx.id);
-      // II40: prepara en segundo plano una cotización NOTOUCH virtual basada en nivel.
-      // No envía buy para ese segundo contrato.
-      scheduleVirtualNoTouchSimulation(itemCtx);
-      // II43: curva de cotizaciones virtuales para estimar el payout de la barrera MAX s120.
-      // Solo proposal: jamás envía buy.
-      scheduleMaxBarrierPayoutCalibration(itemCtx);
     }
 
     subscribeContractOutcome(cid, true);
@@ -23729,7 +19288,7 @@ async function rehydrateHistoryOnBoot() {
         }
       }
       if (changed || anyMark) saveHistory(history);
-      if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) purgeClosedSignalsOutsideSNRCloseZone("rehydrate_minute_complete");
+      purgeClosedSignalsOutsideSNRCloseZone("rehydrate_minute_complete");
     } catch {}
 
     await sleep(REHYDRATE_SLEEP_MS);
@@ -23861,7 +19420,7 @@ function finalizeMinute(minute) {
       }
     }
     if (changed) saveHistory(history);
-    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) purgeClosedSignalsOutsideSNRCloseZone("finalize_minute_complete");
+    purgeClosedSignalsOutsideSNRCloseZone("finalize_minute_complete");
 
     if (modalCurrentItem && modalCurrentItem.minute === minute && !isFloatingSignalItem(modalCurrentItem)) {
       modalLive = false;
@@ -23870,12 +19429,10 @@ function finalizeMinute(minute) {
     }
   })();
 
-  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
-    try {
-      for (const sym of SYMBOLS) syncCurrentCandleToPolarity(sym, minute);
-      saveGiroPolarityCandles();
-    } catch {}
-  }
+  try {
+    for (const sym of SYMBOLS) syncCurrentCandleToPolarity(sym, minute);
+    saveGiroPolarityCandles();
+  } catch {}
 
   delete candleOC[minute - 3];
   delete minuteData[minute - 3];
@@ -23905,9 +19462,6 @@ function onTick(tick) {
   lastQuoteBySymbol[symbol] = tick.quote;
   rememberConstructiveRollingTick(symbol, epochMs, tick.quote);
   updateConstructiveFloatingSignalsOnTick(symbol, epochMs, tick.quote);
-  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && !areSignalsPaused()) {
-    scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, tick.quote);
-  }
 
   if (lastMinuteSeenBySymbol[symbol] !== minute) {
     lastMinuteSeenBySymbol[symbol] = minute;
@@ -23950,7 +19504,7 @@ function onTick(tick) {
     candleOC[minute][symbol].low = Math.min(Number(candleOC[minute][symbol].low ?? candleOC[minute][symbol].open ?? tick.quote), tick.quote);
     candleOC[minute][symbol].close = tick.quote;
   }
-  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) syncCurrentCandleToPolarity(symbol, minute);
+  syncCurrentCandleToPolarity(symbol, minute);
 
   if (
     modalCurrentItem &&
@@ -23978,15 +19532,120 @@ function onTick(tick) {
     for (const it of tail) updateRowChartBtn(it);
   }
 
-  // II5: esta variante es solo de estudio; no escanea ni prepara autoentradas.
-  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && !areSignalsPaused()) {
-    scanSignalAutoPreProposals();
-    scanSignalAutoEntriesAt57();
-  }
+  // ✅ FIX AUTO 58: también revisar en cada tick, salvo cuando el análisis está pausado
+  // o la pestaña En vivo está activa (modo aparte).
+  if (!areSignalsPaused()) scanSignalAutoEntriesAt57();
 
   if (!areSignalsPaused()) {
-    // II5: única búsqueda de señales activa. No existe fallback a otros modos.
-    scanConstructiveReductionContinuousOnTick(symbol, epochMs);
+    const activeModeForTick = normalizeSignalMode(signalMode);
+
+    if (isReduccionConstructivaContinuaMode(activeModeForTick)) {
+      // V108: modo flotante. No espera al segundo 30 del minuto Deriv.
+      // Escanea cada tick y crea la señal cuando se completan 2 reducciones claras
+      // antes de 30s desde el inicio real del primer movimiento.
+      scanConstructiveReductionContinuousOnTick(symbol, epochMs);
+    } else if (isReduccionExacta25sMode(activeModeForTick)) {
+      // V107.1 Dos reducciones claras:
+      // puede disparar apenas aparezcan 2 reducciones claras, pero nunca usa datos
+      // posteriores al segundo 30. Si a los 30 no apareció, la vela queda descartada.
+      const visualEvalStartSec = 15;
+      const visualEvalEndSec = 30;
+      const visualEvalLateSec = 33; // tolerancia por ticks tardíos; evalúa la FOTO de 30s.
+      if (sec >= visualEvalStartSec && sec <= visualEvalEndSec && lastEvaluatedMinute !== minute) {
+        const evalMsNow = Math.max(visualEvalStartSec * 1000, Math.min(msInMinute, visualEvalEndSec * 1000));
+        const ok = evaluateMinute(minute, {
+          evalMs: evalMsNow,
+          evalSec: Math.min(sec, visualEvalEndSec),
+          radar: true,
+          radarStartSec: 0,
+          radarEndSec: Math.min(sec, visualEvalEndSec),
+        });
+        if (ok || sec >= visualEvalEndSec) lastEvaluatedMinute = minute;
+      } else if (sec > visualEvalEndSec && sec <= visualEvalLateSec && lastEvaluatedMinute !== minute) {
+        evaluateMinute(minute, {
+          evalMs: visualEvalEndSec * 1000,
+          evalSec: visualEvalEndSec,
+          radar: true,
+          radarStartSec: 0,
+          radarEndSec: visualEvalEndSec,
+          forceFullWindow30s: true,
+        });
+        lastEvaluatedMinute = minute;
+      } else if (sec > visualEvalLateSec && lastEvaluatedMinute !== minute) {
+        lastEvaluatedMinute = minute;
+      }
+    } else if (isAlcistaIrregular25sMode(activeModeForTick)) {
+      // V98 Alcista irregular 30s:
+      // Analiza hasta 30s. La señal visible puede salir entre 20-30s
+      // si la vela está verde y muestra avance irregular / estructura insana.
+      const irregularStartSec = 20;
+      const irregularEndSec = 30;
+      if (sec >= irregularStartSec && sec <= irregularEndSec && lastEvaluatedMinute !== minute) {
+        const ok = evaluateMinute(minute, {
+          evalMs: Math.max(irregularStartSec * 1000, Math.min(msInMinute, irregularEndSec * 1000)),
+          evalSec: sec,
+          radar: true,
+          radarStartSec: irregularStartSec,
+          radarEndSec: irregularEndSec,
+        });
+        if (ok) lastEvaluatedMinute = minute;
+      } else if (sec > irregularEndSec && lastEvaluatedMinute !== minute) {
+        lastEvaluatedMinute = minute;
+      }
+    } else if (isRupturaDebilGiroMode(activeModeForTick)) {
+      // V78 Ruptura Débil Giro:
+      // 0-15s queda como observación interna, pero NO se muestra señal todavía.
+      // La señal visible recién puede salir entre 20-30s, si la vela sigue alcista
+      // y no perdió el open con fuerza antes de los 20s.
+      // La operación no sale sola por radar: requiere los puntos manuales completos como el resto.
+      const ruptureStartSec = 20;
+      const ruptureEndSec = 30;
+      if (sec >= ruptureStartSec && sec <= ruptureEndSec && lastEvaluatedMinute !== minute) {
+        const ok = evaluateMinute(minute, {
+          evalMs: Math.max(ruptureStartSec * 1000, Math.min(msInMinute, ruptureEndSec * 1000)),
+          evalSec: sec,
+          radar: true,
+          radarStartSec: ruptureStartSec,
+          radarEndSec: ruptureEndSec,
+        });
+        if (ok) lastEvaluatedMinute = minute;
+      } else if (sec > ruptureEndSec && lastEvaluatedMinute !== minute) {
+        lastEvaluatedMinute = minute;
+      }
+    } else if (isDynamicLineMode(activeModeForTick)) {
+      // Línea dinámica queda igual: evalúa una sola vez en el segundo elegido.
+      if (sec >= EVAL_SEC && lastEvaluatedMinute !== minute) {
+        lastEvaluatedMinute = minute;
+        const ok = evaluateMinute(minute, {
+          evalMs: Math.max(1000, Number(EVAL_SEC || 45) * 1000),
+          evalSec: Number(EVAL_SEC || 45),
+          radar: false,
+        });
+
+        if (!ok && signalMode === MODE_NORMAL) scheduleRetry(minute);
+      }
+    } else {
+      // V38 SNR RADAR:
+      // En SNR ya no evalúa solo en un segundo visual.
+      // Desde 35s hasta el segundo elegido escanea en cada tick.
+      // Si encuentra interacción válida con el SNR, crea la prealerta y deja de escanear esa vela.
+      const radarStartSec = SNR_RADAR_START_SEC;
+      const radarEndSec = Math.max(radarStartSec, Math.min(45, Number(EVAL_SEC || 40)));
+
+      if (sec >= radarStartSec && sec <= radarEndSec && lastEvaluatedMinute !== minute) {
+        const ok = evaluateMinute(minute, {
+          evalMs: Math.max(radarStartSec * 1000, Math.min(msInMinute, radarEndSec * 1000)),
+          evalSec: sec,
+          radar: true,
+          radarStartSec,
+          radarEndSec,
+        });
+        if (ok) lastEvaluatedMinute = minute;
+      } else if (sec > radarEndSec && lastEvaluatedMinute !== minute) {
+        // Se terminó la ventana de radar sin señal. No volver a evaluar esta vela.
+        lastEvaluatedMinute = minute;
+      }
+    }
   }
 }
 function scheduleRetry(minute) {
@@ -30713,19 +26372,7 @@ function updateGiroPlusOutcome(item) {
   return before !== JSON.stringify({ outcome: item.giroPlus.outcome || "", giroCorrecto: item.giroPlus.giroCorrecto });
 }
 function updateGiroPlusClassification(item, opts = {}) {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) {
-    if (item && item.giroPlus) delete item.giroPlus;
-    return false;
-  }
   if (!item || !isFloatingSignalItem(item)) return false;
-  // II5: esta variante estudia exclusivamente Inicio Inamovible.
-  // No debe ejecutar, mostrar ni exportar clasificaciones GIRO++ heredadas.
-  if (isInicioInamovibleStudyOnlySignal(item)) {
-    const hadLegacyGiroPlus = !!item.giroPlus;
-    if (hadLegacyGiroPlus) delete item.giroPlus;
-    try { updateRowGiroPlusBadge(item); } catch {}
-    return hadLegacyGiroPlus;
-  }
   const previous = item.giroPlus && typeof item.giroPlus === "object" ? item.giroPlus : {};
   if (previous.version === GIRO_PLUS_VERSION && previous.evaluated && Number(previous.evaluatedAtMs) >= GIRO_PLUS_FINAL_MS) {
     return updateGiroPlusOutcome(item);
@@ -30794,8 +26441,6 @@ function updateGiroPlusClassification(item, opts = {}) {
   return true;
 }
 function getGiroPlusLabelInfo(item) {
-  // II5: nunca mostrar la insignia amarilla GIRO++ en Inicio Inamovible.
-  if (isInicioInamovibleStudyOnlySignal(item)) return { key: "", label: "", title: "" };
   const gp = item?.giroPlus || {};
   if (gp.confirmed) {
     return {
@@ -30822,7 +26467,6 @@ function getGiroPlusLabelInfo(item) {
   return { key: "", label: "", title: "" };
 }
 function getGiroPlusModalSummary(item) {
-  if (isInicioInamovibleStudyOnlySignal(item)) return "";
   const gp = item?.giroPlus || {};
   if (gp.confirmed) return `⭐ GIRO++ CONFIRMADA · RUTA ${gp.route || "—"} · 58s`;
   if (gp.status === "candidate" || (!gp.evaluated && gp.candidate)) return `✨ GIRO++ CANDIDATA · esperando 58s`;
@@ -30839,9 +26483,6 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
     let changed = false;
     for (const it of history.slice(-60)) {
       if (!it || !it.signalFloatingWindow || String(it.symbol || "") !== sym) continue;
-
-      // II40: seguimiento del No Touch virtual. No ejecuta ninguna compra.
-      try { if (evaluateVirtualNoTouchOnTick(it, ep, q)) changed = true; } catch {}
 
       // Resultado canónico: próximos 60s después de la formación,
       // desde ancla+60s hasta ancla+120s.
@@ -30872,7 +26513,6 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
       const anchor = Number(it.signalAnchorEpochMs || 0);
       if (!Number.isFinite(anchor) || anchor <= 0) continue;
       const ms = ep - anchor;
-      if (evaluateSignalAnchorReturnOnTick(it, ep, q)) changed = true;
       // La formación flotante debe seguir completándose hasta sus propios 60s,
       // aunque Higher/Lower o Rise/Fall ya haya informado ITM/OTM.
       // Antes, trade.badge cortaba este bloque y dejaba el botón con candado
@@ -30893,22 +26533,14 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
         }
       }
 
-      if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) {
-        try {
-          if (updateGiroPlusClassification(it, { persist: false, notify: true })) changed = true;
-        } catch {}
-      }
+      try {
+        if (updateGiroPlusClassification(it, { persist: false, notify: true })) changed = true;
+      } catch {}
 
       if (modalCurrentItem && modalCurrentItem.id === it.id) {
         modalCurrentItem.ticks = Array.isArray(it.ticks) ? it.ticks.slice() : [];
         modalCurrentItem.minuteComplete = !!it.minuteComplete;
         modalCurrentItem.signalResult60 = it.signalResult60 ? { ...it.signalResult60 } : null;
-        modalCurrentItem.signalAnchorQuote = it.signalAnchorQuote;
-        modalCurrentItem.signalAnchorReturnBlock = it.signalAnchorReturnBlock ? { ...it.signalAnchorReturnBlock } : null;
-        modalCurrentItem.signalOperationalBlocked = !!it.signalOperationalBlocked;
-        modalCurrentItem.signalOperationalBlockedReason = String(it.signalOperationalBlockedReason || "");
-        modalCurrentItem.signalAutoEntry = it.signalAutoEntry ? { ...it.signalAutoEntry } : null;
-        modalCurrentItem.pgpDecision = it.pgpDecision ? { ...it.pgpDecision, answers: Array.isArray(it.pgpDecision.answers) ? it.pgpDecision.answers.map((a) => ({ ...a })) : [] } : null;
         setCompactModalHeader(modalCurrentItem);
         updateModalCandleStatusUI();
         updateModalFooterReadingUI();
@@ -32462,26 +28094,154 @@ function scoreConstructiveReductionContinuousSide(clean, side, evalMs, tol, loca
     lastIrregularLabel: String(selected.lastIrregularLabel || ""),
   };
 }
-// V113.33-II34 — II33 + audio local de análisis por señal.
-// Conserva el cierre operativo fijo en el segundo 60 de II15.
-// Regla real: tres impulsos primarios en la MISMA dirección, con G central y laterales P/M menores.
-// El tercer impulso NO se corta mientras sigue avanzando: se espera el siguiente retroceso visual,
-// se mide el tramo completo y recién entonces se valida que el centro siga siendo el único G.
-// La estructura comienza dentro de s0–s25 y dispone de una gracia técnica hasta s30 exclusivamente
-// para confirmar el retroceso terminal. La señal siempre es CONTRARIA a los tres impulsos.
+// V113.33-II1 — Inicio Inamovible experimental.
+// Regla real: lateral menor → G central contrario → lateral menor.
+// Los laterales pueden ser P o M, no tienen que ser iguales entre sí.
+// El ancla se reubica en el inicio del primer lateral y el aviso solo se habilita entre s15 y s25.
+function buildInicioInamovibleSwingRuns(clean, evalMs, tol, localRange) {
+  const pts = (Array.isArray(clean) ? clean : [])
+    .map((p) => ({ ms: Number(p.ms), quote: Number(p.quote) }))
+    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= Number(evalMs || 25000))
+    .sort((a, b) => a.ms - b.ms);
+  if (pts.length < 4) return [];
+
+  // Umbral acumulativo tipo zigzag: absorbe microretrocesos y pausas sin cortar el movimiento principal.
+  const reversal = Math.max(Number(localRange || 0) * 0.028, Number(tol || 0) * 1.05, 1e-9);
+  const startThreshold = Math.max(Number(localRange || 0) * 0.024, Number(tol || 0) * 0.95, 1e-9);
+  const runs = [];
+  let anchorIdx = 0;
+  let extremeIdx = 0;
+  let direction = 0;
+  let initialMinIdx = 0;
+  let initialMaxIdx = 0;
+
+  const pushRun = (fromIdx, toIdx, sign) => {
+    if (!(toIdx > fromIdx) || !sign) return;
+    const segment = pts.slice(fromIdx, toIdx + 1);
+    const start = segment[0];
+    const end = segment[segment.length - 1];
+    const delta = Number(end.quote) - Number(start.quote);
+    const move = Math.abs(delta);
+    if (!(move >= startThreshold)) return;
+    let path = 0;
+    for (let i = 1; i < segment.length; i++) path += Math.abs(Number(segment[i].quote) - Number(segment[i - 1].quote));
+    runs.push({
+      sign: sign > 0 ? 1 : -1,
+      startMs: Number(start.ms),
+      endMs: Number(end.ms),
+      startQuote: Number(start.quote),
+      endQuote: Number(end.quote),
+      startY: Number(start.quote),
+      endY: Number(end.quote),
+      delta,
+      move,
+      durationMs: Math.max(0, Number(end.ms) - Number(start.ms)),
+      path,
+      efficiency: move / Math.max(path, move, 1e-9),
+      points: segment.map((p) => ({ ...p, y: p.quote })),
+    });
+  };
+
+  for (let i = 1; i < pts.length; i++) {
+    const q = Number(pts[i].quote);
+    const anchorQ = Number(pts[anchorIdx].quote);
+    if (!direction) {
+      if (q <= Number(pts[initialMinIdx].quote)) initialMinIdx = i;
+      if (q >= Number(pts[initialMaxIdx].quote)) initialMaxIdx = i;
+      const riseFromMin = q - Number(pts[initialMinIdx].quote);
+      const fallFromMax = Number(pts[initialMaxIdx].quote) - q;
+      if (riseFromMin >= startThreshold) {
+        anchorIdx = initialMinIdx;
+        direction = 1;
+        extremeIdx = i;
+      } else if (fallFromMax >= startThreshold) {
+        anchorIdx = initialMaxIdx;
+        direction = -1;
+        extremeIdx = i;
+      }
+      continue;
+    }
+
+    const extremeQ = Number(pts[extremeIdx].quote);
+    if (direction > 0) {
+      if (q >= extremeQ) {
+        extremeIdx = i;
+      } else if (extremeQ - q >= reversal) {
+        pushRun(anchorIdx, extremeIdx, 1);
+        anchorIdx = extremeIdx;
+        direction = -1;
+        extremeIdx = i;
+      }
+    } else {
+      if (q <= extremeQ) {
+        extremeIdx = i;
+      } else if (q - extremeQ >= reversal) {
+        pushRun(anchorIdx, extremeIdx, -1);
+        anchorIdx = extremeIdx;
+        direction = 1;
+        extremeIdx = i;
+      }
+    }
+  }
+  if (direction) pushRun(anchorIdx, extremeIdx, direction);
+
+  // Comprime microretrocesos internos: A→micro contrario→A sigue siendo un solo movimiento visual.
+  // No comprime el patrón buscado porque allí el tramo central es el dominante, no un microcorte.
+  let compact = runs.map((r) => ({ ...r }));
+  let changed = true;
+  while (changed && compact.length >= 3) {
+    changed = false;
+    for (let i = 0; i + 2 < compact.length; i++) {
+      const a = compact[i], b = compact[i + 1], c = compact[i + 2];
+      if (a.sign !== c.sign || b.sign === a.sign) continue;
+      const microLimit = Math.max(
+        Math.min(Number(a.move || 0), Number(c.move || 0)) * 0.30,
+        Number(localRange || 0) * 0.075,
+        Number(tol || 0) * 1.35,
+        1e-9
+      );
+      if (Number(b.move || 0) > microLimit) continue;
+      const points = (a.points || []).concat((b.points || []).slice(1), (c.points || []).slice(1));
+      let path = 0;
+      for (let j = 1; j < points.length; j++) path += Math.abs(Number(points[j].quote) - Number(points[j - 1].quote));
+      const merged = {
+        sign: a.sign,
+        startMs: a.startMs,
+        endMs: c.endMs,
+        startQuote: a.startQuote,
+        endQuote: c.endQuote,
+        startY: a.startY,
+        endY: c.endY,
+        delta: Number(c.endQuote) - Number(a.startQuote),
+        move: Math.abs(Number(c.endQuote) - Number(a.startQuote)),
+        durationMs: Math.max(0, Number(c.endMs) - Number(a.startMs)),
+        path,
+        efficiency: Math.abs(Number(c.endQuote) - Number(a.startQuote)) / Math.max(path, 1e-9),
+        points,
+        microCorrectionsAbsorbed: Number(a.microCorrectionsAbsorbed || 0) + Number(c.microCorrectionsAbsorbed || 0) + 1,
+      };
+      compact.splice(i, 3, merged);
+      changed = true;
+      break;
+    }
+  }
+
+  return compact.map((r, idx) => ({ ...r, idx }));
+}
+
 function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const ticks = (candidate?.ticks || []).slice().sort((a, b) => Number(a.ms) - Number(b.ms));
-  if (ticks.length < 7) return null;
+  if (ticks.length < 6) return null;
   const lastMs = Number(ticks[ticks.length - 1]?.ms || 0);
   const requestedEvalMs = Math.max(0, Number(opts?.evalMs ?? lastMs ?? 0));
-  if (requestedEvalMs < 15000 || requestedEvalMs > 30000 || lastMs < 15000) return null;
+  if (requestedEvalMs < 15000 || requestedEvalMs > 25000 || lastMs < 15000) return null;
   const evalMs = requestedEvalMs;
 
   const clean = ensureTicksWithBoundary(ticks, evalMs)
     .map((p) => ({ ms: Number(p.ms), quote: Number(p.quote) }))
     .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= evalMs)
     .sort((a, b) => a.ms - b.ms);
-  if (clean.length < 7) return null;
+  if (clean.length < 6) return null;
 
   const quotes = clean.map((p) => Number(p.quote));
   const open = Number(quotes[0]);
@@ -32490,181 +28250,76 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const low = Math.min(...quotes);
   const localRange = Math.max(high - low, Math.abs(open) * 0.000001, 1e-9);
   const tol = Math.max(localRange * 0.009, Math.abs(open) * 0.00000005, 1e-9);
-  const allCandidates = [];
+  const runs = buildInicioInamovibleSwingRuns(clean, evalMs, tol, localRange);
+  if (runs.length < 3) return null;
 
-  // side=+1 busca tres impulsos alcistas que anticipan GIRO PUT.
-  // side=-1 busca tres impulsos bajistas que anticipan GIRO CALL.
-  for (const side of [1, -1]) {
-    const aligned = clean.map((p) => ({ ...p, y: Number(p.quote) * side }));
-    const alignedHigh = Math.max(...aligned.map((p) => p.y));
-    const alignedLow = Math.min(...aligned.map((p) => p.y));
-    const alignedRange = Math.max(alignedHigh - alignedLow, localRange, Math.abs(Number(aligned[0]?.y || 0)) * 0.000001, 1e-9);
-    const impulseMin = Math.max(alignedRange * 0.040, tol * 1.10, Math.abs(open) * 0.00000004, 1e-9);
-    const correctionMin = Math.max(alignedRange * 0.016, tol * 0.66, 1e-9);
-    const runs = getVisualRuns25s(clean, side, evalMs, tol, alignedRange)
-      .map((r, idx) => ({ ...r, idx, move: Number(r?.move || 0) }));
-    if (runs.length < 4) continue;
+  const lateralMin = Math.max(localRange * 0.055, tol * 1.25, Math.abs(open) * 0.00000004, 1e-9);
+  const centralMin = Math.max(localRange * 0.28, tol * 3.0, Math.abs(open) * 0.00000012, 1e-9);
+  const candidates = [];
 
-    const primaryRuns = runs.filter((r) => Number(r.sign || 0) > 0 && Number(r.move || 0) >= impulseMin);
-    if (primaryRuns.length < 3) continue;
+  for (let i = 0; i + 2 < runs.length; i++) {
+    const first = runs[i];
+    const central = runs[i + 1];
+    const last = runs[i + 2];
+    // La estructura debe ser el último bloque real visible; cualquier cola posterior solo puede ser micro ruido absorbido.
+    if (i + 2 !== runs.length - 1) continue;
+    if (!(first.sign === last.sign && central.sign === -first.sign)) continue;
 
-    const separatorPack = (a, b) => {
-      const between = runs.filter((r) => Number(r.idx) > Number(a.idx) && Number(r.idx) < Number(b.idx));
-      const corrections = between.filter((r) => Number(r.sign || 0) < 0 && Number(r.move || 0) >= correctionMin);
-      const pauses = between.filter((r) => Number(r.sign || 0) === 0 || (Number(r.sign || 0) < 0 && Number(r.move || 0) < correctionMin));
-      const internalSplit = Number(b.idx) === Number(a.idx) + 1 && (!!a.internalSplit || !!b.internalSplit);
-      // II6: una desaceleración interna no alcanza para inventar otro movimiento.
-      // Debe existir entre ambos impulsos una pausa o un retroceso observable como tramo separado.
-      const realSeparator = between.length > 0;
-      return { between, corrections, pauses, internalSplit, realSeparator, separated: realSeparator };
-    };
+    const moves = [Number(first.move || 0), Number(central.move || 0), Number(last.move || 0)];
+    if (!moves.every((v) => Number.isFinite(v) && v > 0)) continue;
+    if (moves[0] < lateralMin || moves[2] < lateralMin || moves[1] < centralMin) continue;
 
-    for (let i = 0; i + 2 < primaryRuns.length; i++) {
-      const first = primaryRuns[i];
-      const central = primaryRuns[i + 1];
-      const last = primaryRuns[i + 2];
+    const labels = moves.map((v) => classifyVisualReductionLabel(v, moves[1]));
+    if (labels[1] !== "G" || !["P", "M"].includes(labels[0]) || !["P", "M"].includes(labels[2])) continue;
+    if (!(moves[1] > moves[0] && moves[1] > moves[2])) continue;
 
-      // No aceptamos un cuarto impulso primario: el bloque debe terminar en el tercer tramo.
-      if (i + 2 !== primaryRuns.length - 1) continue;
+    const anchorOffsetMs = Number(first.startMs || 0);
+    const formedAtMs = Number(last.endMs || 0);
+    const elapsedFromAnchorMs = evalMs - anchorOffsetMs;
+    if (anchorOffsetMs < 0 || formedAtMs <= anchorOffsetMs) continue;
+    if (formedAtMs - anchorOffsetMs > 25000) continue;
+    if (elapsedFromAnchorMs < 15000 || elapsedFromAnchorMs > 25000) continue;
 
-      const sepOne = separatorPack(first, central);
-      const sepTwo = separatorPack(central, last);
-      if (!sepOne.separated || !sepTwo.separated) continue;
+    const centralEfficiency = Number(central.efficiency || 0);
+    const patternPath = moves[0] + moves[1] + moves[2];
+    const centerShare = moves[1] / Math.max(patternPath, 1e-9);
+    const displacement = Math.max(...clean
+      .filter((p) => p.ms >= anchorOffsetMs && p.ms <= formedAtMs)
+      .map((p) => p.quote)) - Math.min(...clean
+      .filter((p) => p.ms >= anchorOffsetMs && p.ms <= formedAtMs)
+      .map((p) => p.quote));
+    if (centralEfficiency < 0.58) continue;
+    if (centerShare < 0.42) continue;
+    if (displacement < Math.max(centralMin * 0.82, tol * 3.0)) continue;
 
-      // II3: el tercer impulso solo queda cerrado cuando aparece después un retroceso visible.
-      const tailRuns = runs.filter((r) => Number(r.idx) > Number(last.idx));
-      const firstTailDirectional = tailRuns.find((r) => Number(r.sign || 0) !== 0) || null;
-      if (!firstTailDirectional || Number(firstTailDirectional.sign || 0) >= 0) continue;
-      const terminalCorrection = firstTailDirectional;
-
-      const moves = [Number(first.move || 0), Number(central.move || 0), Number(last.move || 0)];
-      if (!moves.every((v) => Number.isFinite(v) && v > 0)) continue;
-
-      const terminalCorrectionMin = Math.max(alignedRange * 0.018, tol * 0.90, moves[2] * 0.035, 1e-9);
-      const terminalCorrectionMove = Number(terminalCorrection.move || 0);
-      if (terminalCorrectionMove < terminalCorrectionMin) continue;
-      const terminalCorrectionMax = Math.max(moves[2] * 0.68, moves[1] * 0.42, alignedRange * 0.19, tol * 4.0, 1e-9);
-      if (terminalCorrectionMove > terminalCorrectionMax) continue;
-
-      // Se clasifica con el tercer movimiento COMPLETO, ya cerrado por el retroceso terminal.
-      const labels = summarizeVisualMoves(moves).labels;
-      if (labels[1] !== "G" || !["P", "M"].includes(labels[0]) || !["P", "M"].includes(labels[2])) continue;
-      if (!(moves[1] > moves[0] && moves[1] > moves[2])) continue;
-
-      // II6: P no significa micro movimiento. Los ejemplos corregidos dejan el límite
-      // visual cerca de 24% del G; usamos 22% para conservar el caso válido al límite.
-      const lateralVisualRatioMin = 0.22;
-      const lateralToCentralRatios = [moves[0] / Math.max(moves[1], 1e-9), moves[2] / Math.max(moves[1], 1e-9)];
-      if (lateralToCentralRatios.some((ratio) => ratio < lateralVisualRatioMin)) continue;
-
-      const lateralMin = Math.max(alignedRange * 0.032, tol * 1.02, Math.abs(open) * 0.000000035, 1e-9);
-      const centralMin = Math.max(alignedRange * 0.16, tol * 2.40, Math.abs(open) * 0.00000010, 1e-9);
-      if (moves[0] < lateralMin || moves[2] < lateralMin || moves[1] < centralMin) continue;
-
-      const correctionRuns = [...sepOne.corrections, ...sepTwo.corrections];
-      const correctionMoves = correctionRuns.map((r) => Number(r.move || 0));
-      const cutOne = correctionMoves.length ? correctionMoves.slice(0, sepOne.corrections.length) : [];
-      const cutTwo = correctionMoves.length ? correctionMoves.slice(sepOne.corrections.length) : [];
-      const maxCutOne = cutOne.length ? Math.max(...cutOne) : 0;
-      const maxCutTwo = cutTwo.length ? Math.max(...cutTwo) : 0;
-      const cutOneLimit = Math.max(Math.min(moves[0], moves[1]) * 0.78, alignedRange * 0.055, tol * 1.55, 1e-9);
-      const cutTwoLimit = Math.max(Math.min(moves[1], moves[2]) * 0.78, alignedRange * 0.055, tol * 1.55, 1e-9);
-      if (maxCutOne > cutOneLimit || maxCutTwo > cutTwoLimit) continue;
-
-      // Los tres impulsos deben seguir desplazando el mismo extremo.
-      const progressOne = Number(central.endY) - Number(first.endY);
-      const progressTwo = Number(last.endY) - Number(central.endY);
-      const progressReqOne = Math.max(alignedRange * 0.012, tol * 0.88, moves[1] * 0.040, 1e-9);
-      const progressReqTwo = Math.max(alignedRange * 0.012, tol * 0.88, moves[2] * 0.040, 1e-9);
-      if (progressOne < progressReqOne || progressTwo < progressReqTwo) continue;
-
-      const anchorOffsetMs = Number(first.startMs || 0);
-      const setupFormedAtMs = Number(last.endMs || 0);
-      const confirmedAtMs = Number(terminalCorrection.endMs || evalMs);
-      const setupElapsedFromAnchorMs = setupFormedAtMs - anchorOffsetMs;
-      const confirmationElapsedFromAnchorMs = confirmedAtMs - anchorOffsetMs;
-      if (anchorOffsetMs < 0 || setupFormedAtMs <= anchorOffsetMs || confirmedAtMs <= setupFormedAtMs) continue;
-      // Los tres impulsos deben haber empezado dentro de los primeros 25s.
-      if (Number(last.startMs || 0) - anchorOffsetMs > 25000) continue;
-      // Gracia de cierre: el tercer tramo y su primer retroceso pueden confirmarse hasta s30.
-      if (setupElapsedFromAnchorMs > 28000 || confirmationElapsedFromAnchorMs < 15000 || confirmationElapsedFromAnchorMs > 30000) continue;
-
-      const blockPts = aligned.filter((p) => Number(p.ms) >= anchorOffsetMs && Number(p.ms) <= setupFormedAtMs);
-      if (blockPts.length < 5) continue;
-      const y0 = Number(blockPts[0]?.y);
-      const terminalEndY = Number(last.endY);
-      const yMax = Math.max(...blockPts.map((p) => Number(p.y)));
-      const yMin = Math.min(...blockPts.map((p) => Number(p.y)));
-      const netAdvance = terminalEndY - y0;
-      const oppositeDip = Math.max(0, y0 - yMin);
-      let path = 0;
-      for (let j = 1; j < blockPts.length; j++) path += Math.abs(Number(blockPts[j].y) - Number(blockPts[j - 1].y));
-      const efficiency = netAdvance / Math.max(path, 1e-9);
-      const primarySum = moves.reduce((a, b) => a + b, 0);
-      const correctionSum = correctionMoves.reduce((a, b) => a + b, 0);
-      const dominanceRatio = primarySum / Math.max(primarySum + correctionSum, 1e-9);
-      const displacementRatio = netAdvance / Math.max(primarySum, 1e-9);
-      const realDisplacement = yMax - yMin;
-
-      if (netAdvance < Math.max(alignedRange * 0.20, tol * 3.0, centralMin * 0.78)) continue;
-      if (dominanceRatio < 0.70) continue;
-      if (displacementRatio < 0.58) continue;
-      if (efficiency < 0.40) continue;
-      if (correctionSum > primarySum * 0.43) continue;
-      if (oppositeDip > netAdvance * 0.40) continue;
-      const terminalTolerance = Math.max(alignedRange * 0.014, tol * 0.88, 1e-9);
-      if (yMax - terminalEndY > terminalTolerance) continue;
-
-      // Después del retroceso que cierra el tercer tramo no debe haberse formado otro impulso fuerte.
-      const afterTerminal = runs.filter((r) => Number(r.idx) > Number(terminalCorrection.idx));
-      const strongAfterTerminal = afterTerminal.some((r) => Number(r.sign || 0) > 0 && Number(r.move || 0) >= impulseMin);
-      if (strongAfterTerminal) continue;
-
-      const centralRatio = moves[1] / Math.max(moves[0], moves[2], 1e-9);
-      const centerShare = moves[1] / Math.max(primarySum, 1e-9);
-      const score = 66
-        + Math.min(18, (centralRatio - 1) * 20)
-        + Math.min(10, efficiency * 12)
-        + Math.min(10, dominanceRatio * 11)
-        + Math.min(8, displacementRatio * 10)
-        + Math.min(5, terminalCorrectionMove / Math.max(moves[2], 1e-9) * 12)
-        - Math.max(0, confirmationElapsedFromAnchorMs - 26000) / 1300;
-
-      allCandidates.push({
-        side, first, central, last, terminalCorrection, moves, labels, runs, correctionRuns,
-        anchorOffsetMs, setupFormedAtMs, confirmedAtMs,
-        setupElapsedFromAnchorMs, confirmationElapsedFromAnchorMs,
-        efficiency, dominanceRatio, displacementRatio, realDisplacement,
-        centralRatio, centerShare, netAdvance, correctionSum, terminalCorrectionMove, score,
-        lateralVisualRatioMin, lateralToCentralRatios, sepOne, sepTwo,
-      });
-    }
+    const centralRatio = moves[1] / Math.max(moves[0], moves[2], 1e-9);
+    const score = 65
+      + Math.min(20, (centralRatio - 1) * 22)
+      + Math.min(10, centralEfficiency * 10)
+      + Math.min(8, centerShare * 12)
+      - Math.max(0, elapsedFromAnchorMs - 22000) / 1200;
+    candidates.push({ first, central, last, moves, labels, anchorOffsetMs, formedAtMs, elapsedFromAnchorMs, centralEfficiency, centerShare, displacement, centralRatio, score });
   }
 
-  const best = allCandidates.sort((a, b) => Number(b.score || 0) - Number(a.score || 0))[0] || null;
+  const best = candidates.sort((a, b) => Number(b.score || 0) - Number(a.score || 0))[0] || null;
   if (!best) return null;
 
-  // Buscamos GIRO: la señal siempre es contraria a los tres impulsos observados.
-  const direction = best.side > 0 ? "PUT" : "CALL";
+  const direction = best.central.sign > 0 ? "CALL" : "PUT";
   const pattern = best.labels.join("→");
-  const movementSideText = best.side > 0 ? "alcista" : "bajista";
-  const movementGroupText = best.side > 0 ? "comprador" : "vendedor";
-  const turnSideText = best.side > 0 ? "bajista" : "alcista";
-  const turnGroupText = best.side > 0 ? "vendedor" : "comprador";
-  const level = best.side > 0 ? high : low;
+  const centralSideText = best.central.sign > 0 ? "comprador" : "vendedor";
+  const lateralSideText = best.central.sign > 0 ? "vendedor" : "comprador";
+  const level = direction === "PUT" ? high : low;
   const zone = Math.max(tol * 4, localRange * 0.10);
-  const signalAtSec = Math.round(best.confirmationElapsedFromAnchorMs / 1000);
-  const setupAtSec = Math.round(best.setupElapsedFromAnchorMs / 1000);
+  const signalAtSec = Math.round(best.elapsedFromAnchorMs / 1000);
   const reasons = [
-    `${pattern}: tres impulsos ${movementSideText}s en la misma dirección`,
-    `tercer movimiento completo, cerrado por retroceso ${turnSideText}`,
-    `G central único; laterales ${best.labels[0]}/${best.labels[2]} menores y visuales`,
-    `cada lateral mide al menos ${(best.lateralVisualRatioMin * 100).toFixed(0)}% del G y tiene corte real`,
-    `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
-    `señal de giro ${direction} confirmada en s${signalAtSec}`,
+    `${pattern}: G central dominante`,
+    `laterales variables ${best.labels[0]} y ${best.labels[2]} menores que G`,
+    `desplazamiento ${best.displacement.toPrecision(5)}`,
+    `eficiencia central ${Math.round(best.centralEfficiency * 100)}%`,
+    `aviso dentro de s15–s25 (${signalAtSec}s)`,
   ];
-  const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II43: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje.`;
+  const status = `🧲 INICIO INAMOVIBLE · ${pattern} · G ${centralSideText} con desplazamiento. Señal a ${direction === "CALL" ? "COMPRA" : "VENTA"}. Solo aviso y registro.`;
+  const logicText = `Motor experimental V113.33-II1: detecta un único bloque de tres tramos con laterales ${lateralSideText} P/M variables y menores, alrededor de un G central ${centralSideText}. No exige laterales iguales, doble M→G→M, doble reducción ni respuesta contraria posterior. El ancla es el inicio del primer lateral; acepta pausas y microretrocesos absorbidos por zigzag adaptativo; exige desplazamiento real y emite únicamente entre 15 y 25 segundos. Esta variante es solo de estudio: no prepara ni ejecuta operaciones.`;
 
   return {
     direction,
@@ -32673,10 +28328,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     meta: {
       level,
       levelMode: "inicio_inamovible_experimental",
-      levelType: best.side > 0 ? "inicio_inamovible_bullish_exhaustion_put" : "inicio_inamovible_bearish_exhaustion_call",
+      levelType: direction === "CALL" ? "inicio_inamovible_buyer_g" : "inicio_inamovible_seller_g",
       direction,
-      movementDirection: movementSideText,
-      expectedTurnDirection: turnSideText,
       tolerance: tol,
       zone,
       zoneLow: level - zone * 0.45,
@@ -32690,106 +28343,69 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       low,
       range: localRange,
       evalSec: signalAtSec,
-      setupCompletedSec: setupAtSec,
-      terminalConfirmedSec: signalAtSec,
       analysisWindowMs: evalMs,
-      irregularityWindow: "estructura s0–s25 + cierre terminal hasta s30",
-      maxAnalysisSec: 30,
+      irregularityWindow: "flotante s15–s25",
+      maxAnalysisSec: 25,
       signalFromSec: signalAtSec,
       motorIndependiente: true,
       constructiveReductionMode: true,
       visualReductionMode: true,
       inicioInamovibleMode: true,
-      giroExpected: true,
-      sameDirectionThreeMoves: true,
-      studyOnly: false,
+      studyOnly: true,
       visualReductionScore: Math.round(best.score),
       visualReductionQuality: "EXPERIMENTAL",
       turnQualityClass: "E",
       turnQualityScore: Math.round(best.score),
-      turnQualityAutoAllowed: true,
+      turnQualityAutoAllowed: false,
       turnQualityConditions: {
-        allThreeSameDirection: true,
-        movementDirection: movementSideText,
-        expectedTurnDirection: turnSideText,
-        signalDirection: direction,
-        movementSigns: [best.side, best.side, best.side],
         lateralLabels: [best.labels[0], best.labels[2]],
         centralLabel: "G",
-        centralIsUniqueG: true,
-        thirdMoveClosed: true,
-        terminalCorrectionMove: best.terminalCorrectionMove,
-        terminalCorrectionRatio: best.terminalCorrectionMove / Math.max(best.moves[2], 1e-9),
         centralDominanceRatio: best.centralRatio,
-        lateralVisualRatioMin: best.lateralVisualRatioMin,
-        lateralToCentralRatios: best.lateralToCentralRatios,
-        realSeparators: [!!best.sepOne?.realSeparator, !!best.sepTwo?.realSeparator],
-        directionalEfficiency: best.efficiency,
-        primaryDominanceRatio: best.dominanceRatio,
-        displacementRatio: best.displacementRatio,
+        centralEfficiency: best.centralEfficiency,
         centerShare: best.centerShare,
-        realDisplacement: best.realDisplacement,
+        realDisplacement: best.displacement,
       },
-      turnQualityValidatedAtMs: best.confirmedAtMs,
-      turnQualitySetupFormedAtMs: best.setupFormedAtMs,
-      turnQualitySetupElapsedMs: best.setupElapsedFromAnchorMs,
-      visualReductionSubtype: `Inicio Inamovible ${pattern} ${movementSideText} → giro ${direction}`,
-      visualReductionGroup: movementGroupText,
-      visualReductionContraryGroup: turnGroupText,
+      turnQualityValidatedAtMs: evalMs,
+      turnQualitySetupFormedAtMs: best.formedAtMs,
+      turnQualitySetupElapsedMs: best.formedAtMs - best.anchorOffsetMs,
+      visualReductionSubtype: `Inicio Inamovible ${pattern}`,
+      visualReductionGroup: centralSideText,
+      visualReductionContraryGroup: lateralSideText,
       visualReductionPattern: pattern,
       visualReductionLabels: best.labels,
       visualReductionMoves: best.moves,
-      visualReductionRuns: best.runs,
+      visualReductionRuns: runs,
       visualReductionPrimaryRuns: [best.first, best.central, best.last],
-      visualReductionCorrectionRuns: best.correctionRuns,
-      terminalCorrectionRun: best.terminalCorrection,
       acceptedChainPattern: pattern,
       acceptedChainLabels: best.labels,
       acceptedChainRuns: [best.first, best.central, best.last],
       acceptedReductionPatternText: pattern,
       acceptedReductionBlocks: [{
         pattern,
-        direction: movementSideText,
-        expectedTurnDirection: turnSideText,
-        signalDirection: direction,
-        allThreeSameDirection: true,
-        thirdMoveClosed: true,
         startMs: best.first.startMs,
         endMs: best.last.endMs,
-        confirmedAtMs: best.confirmedAtMs,
         labels: best.labels,
         runs: [best.first, best.central, best.last],
-        correctionRuns: best.correctionRuns,
-        terminalCorrectionRun: best.terminalCorrection,
       }],
       firstConstructiveReduction: null,
       secondConstructiveReduction: null,
       thirdConstructiveReduction: null,
-      constructiveQualificationRoute: "inicio_inamovible_giro_three_same_direction_terminal_close",
-      constructiveQualificationLabel: `Inicio Inamovible ${pattern} ${movementSideText} → giro ${direction}`,
+      constructiveQualificationRoute: "inicio_inamovible_single_pmg",
+      constructiveQualificationLabel: `Inicio Inamovible ${pattern}`,
       doubleMgmSignal: false,
       anchoredMgmConfirmed: false,
       anchoredMgmFollowupType: "",
-      // El retroceso terminal es solo el cierre del tercer impulso.
-      // No es una cuarta señal ni una confirmación adicional del motor.
       constructiveConfirmationPack: null,
       irregularInitialBlock: {
         pattern,
-        direction: movementSideText,
-        expectedTurnDirection: turnSideText,
-        signalDirection: direction,
-        allThreeSameDirection: true,
-        anchoredMgm: true,
+        anchoredMgm: false,
         inicioInamovible: true,
         startMs: best.first.startMs,
         endMs: best.last.endMs,
-        confirmedAtMs: best.confirmedAtMs,
         anchorMs: best.first.startMs,
         primaryRuns: [best.first, best.central, best.last],
-        correctionRuns: best.correctionRuns,
-        terminalCorrectionRun: best.terminalCorrection,
       },
-      constructiveElapsedFromFirstMovementMs: best.confirmationElapsedFromAnchorMs,
+      constructiveElapsedFromFirstMovementMs: best.elapsedFromAnchorMs,
       visualReductionContraryRuns: [],
       visualReductionAllPrimaryRuns: [best.first, best.central, best.last],
       visualReductionAllContraryRuns: [],
@@ -32797,20 +28413,20 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       constructiveReductionConsecutive: true,
       constructiveReductionDistinct: true,
       constructiveAnchorOffsetMs: best.anchorOffsetMs,
-      constructiveFormedAtMs: best.confirmedAtMs,
+      constructiveFormedAtMs: best.formedAtMs,
       constructiveFloatingWindow: true,
-      cutsBetween: best.correctionRuns.length,
+      cutsBetween: 0,
       contraryStrong: false,
       secondReductionConfirmed: false,
       thirdReductionConfirmed: false,
       secondReductionConfirmation: null,
-      secondReductionConfirmedAtMs: null,
-      secondReductionRetraceRatio: null,
+      secondReductionConfirmedAtMs: best.formedAtMs,
+      secondReductionRetraceRatio: 0,
       secondReductionOppositeSteps: 0,
-      visualDisplacementEfficiency: best.efficiency,
-      movementFilter: "v113_33_ii21_inicio_inamovible_lateral_visual_22_corte_real_sin_filtro_angular",
+      visualDisplacementEfficiency: best.centralEfficiency,
+      movementFilter: "v113_33_ii1_central_g_laterales_pm_desplazamiento",
       priority: "STUDY_ONLY",
-      stage: "inicio_inamovible_giro_lateral_visual_corte_real_sin_filtro_angular_s15_30",
+      stage: "inicio_inamovible_confirmado_s15_25",
       logic: logicText,
       status,
     },
@@ -32867,49 +28483,6 @@ function normalizeConstructiveAbsWindow(absTicks, anchorEpochMs, nowEpochMs) {
     .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= CONSTRUCTIVE_FLOATING_WINDOW_MS)
     .sort((a, b) => a.ms - b.ms);
 }
-// II3: evita reanclar dentro de un impulso que ya venía avanzando.
-// El comienzo del primer lateral debe coincidir con un extremo local razonable
-// respecto de los segundos inmediatamente anteriores al ancla.
-function isInicioInamovibleTrueAnchor(absTicks, anchorEpochMs, match) {
-  try {
-    const anchor = Number(anchorEpochMs);
-    const meta = match?.meta || {};
-    const side = Math.sign(Number(meta?.turnQualityConditions?.movementSigns?.[0] || 0));
-    const firstMove = Math.abs(Number(meta?.visualReductionMoves?.[0] || 0));
-    if (!Number.isFinite(anchor) || !side || !(firstMove > 0)) return false;
-
-    const ordered = (Array.isArray(absTicks) ? absTicks : [])
-      .map((p) => ({ epochMs: Number(p?.epochMs), quote: Number(p?.quote) }))
-      .filter((p) => Number.isFinite(p.epochMs) && Number.isFinite(p.quote))
-      .sort((a, b) => a.epochMs - b.epochMs);
-    const previous = ordered.filter((p) => p.epochMs < anchor && p.epochMs >= anchor - 6500);
-    if (previous.length < 2) return true;
-
-    const atOrAfter = ordered.find((p) => p.epochMs >= anchor);
-    const atOrBefore = [...ordered].reverse().find((p) => p.epochMs <= anchor);
-    const anchorQuote = Number(atOrAfter?.quote ?? atOrBefore?.quote);
-    if (!Number.isFinite(anchorQuote)) return true;
-
-    const priorQuotes = previous.map((p) => p.quote);
-    const priorMin = Math.min(...priorQuotes);
-    const priorMax = Math.max(...priorQuotes);
-    const priorRange = Math.max(priorMax - priorMin, 1e-9);
-    const tolerance = Math.max(
-      Math.abs(Number(meta?.tolerance || 0)) * 2.2,
-      firstMove * 0.30,
-      priorRange * 0.16,
-      1e-9
-    );
-
-    // Alcista: el ancla debe estar cerca del mínimo local previo.
-    // Bajista: el ancla debe estar cerca del máximo local previo.
-    if (side > 0) return anchorQuote - priorMin <= tolerance;
-    return priorMax - anchorQuote <= tolerance;
-  } catch {
-    return false;
-  }
-}
-
 function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
   try {
     if (!isReduccionConstructivaContinuaMode(signalMode)) return false;
@@ -32974,7 +28547,6 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
           refined = rebaseConstructiveMatchTiming(refined, residualOffsetMs);
         }
       }
-      if (!isInicioInamovibleTrueAnchor(absTicks, anchorEpochMs, refined)) continue;
       const q = Number(refined.quality || 0) - Math.max(0, (now - anchorEpochMs) - Number(refined.meta?.constructiveFormedAtMs || 0)) / 2500;
       if (!bestPack || q > Number(bestPack.rank || 0)) {
         bestPack = { match: refined, anchorEpochMs, ticks: anchoredTicks, rank: q };
@@ -33006,22 +28578,14 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
       signalPrealertAtSec: Math.round(Number(bestPack.match.meta?.signalFromSec || 0)),
       signalRadar: true,
       signalRadarStartSec: 0,
-      signalRadarEndSec: 30,
+      signalRadarEndSec: 25,
       signalAutoEntrySec: SIGNAL_AUTO_ENTRY_SEC,
       signalRequiresManualPoints: 0,
-      signalDecisionFlow: PGP_FLOW_VERSION,
       signalConfirmations: [],
-      pgpDecision: createDefaultPGPDecisionState(),
-      signalAnchorQuote: Number(bestPack.ticks?.[0]?.quote),
-      signalAnchorReturnGuardEnabled: true,
-      signalAnchorReturnGuardVersion: SIGNAL_ANCHOR_RETURN_GUARD_VERSION,
-      signalAnchorReturnBlock: null,
-      signalOperationalBlocked: false,
-      signalOperationalBlockedReason: "",
       signalQualityClass: String(bestPack.match.meta?.turnQualityClass || "B"),
       signalQualityScore: Number(bestPack.match.meta?.turnQualityScore || 0),
-      signalAutoTradeAllowed: true,
-      signalStudyOnly: false,
+      signalAutoTradeAllowed: false,
+      signalStudyOnly: true,
       signalFloatingWindow: true,
       signalAnchorEpochMs: anchorEpochMs,
       signalAnchorSecond: Number(((anchorEpochMs % 60000) + 60000) % 60000) / 1000,
@@ -33046,7 +28610,7 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
     if (added) {
       constructiveLastSignalBySymbol[sym] = { epochMs: now, key: signalKey };
       const patternLabel = String(bestPack.match.meta?.visualReductionPattern || "P/M→G→P/M");
-      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · GIRO ${direction} · completá el flujo PGP`, 2600);
+      toast(`🧲 ${sym}: Inicio Inamovible ${patternLabel} · solo aviso y registro`, 2300);
       return true;
     }
   } catch (e) {
@@ -33773,7 +29337,6 @@ function analyzeRupturaDebilGiroCandidate(candidate, minute, opts = {}) {
 }
 
 function evaluateMinute(minute, opts = {}) {
-  if (INICIO_INAMOVIBLE_ONLY_RUNTIME) return false;
   if (areSignalsPaused()) return false;
 
   const evalOptions = opts && typeof opts === "object" ? opts : {};
@@ -33930,14 +29493,13 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
     minuteComplete: false,
     trade: null,
     signalConfirmations: [],
-    pgpDecision: createDefaultPGPDecisionState(),
     signalAutoEntry: null,
     manualGiro: createDefaultManualGiroState(),
     ...(extra && typeof extra === "object" ? extra : {}),
   };
 
   item.manualGiro = normalizeManualGiroState(item.manualGiro);
-  if (!INICIO_INAMOVIBLE_ONLY_RUNTIME) { try { updateGiroPlusClassification(item, { persist: false, notify: false }); } catch {} }
+  try { updateGiroPlusClassification(item, { persist: false, notify: false }); } catch {}
 
   if (history.some((x) => x.id === item.id)) return null;
 
@@ -33952,9 +29514,9 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
     trimSignalsDomToVisibleLimit();
   }
   updateRowChartBtn(item);
-  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(item);
+  if (shouldUseAutoHighLowExecution()) ensureSignalAutoPrecalc(item);
 
-  const fatigueTriggered = INICIO_INAMOVIBLE_ONLY_RUNTIME ? false : registerSignalForFatigueGuard(item);
+  const fatigueTriggered = registerSignalForFatigueGuard(item);
   if (fatigueTriggered) return item;
 
   if (soundEnabled) playSignalAlertSound();
@@ -33963,13 +29525,9 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
   // Así evitamos sumar una vibración adicional desde la página abierta.
   showNotification(symbol, direction, modeLabel, item);
 
-  const autoOpenBlockedByCurrentAnalysis = autoOpenChartOnSignal && isChartModalOpenForAutoLock();
   if (shouldAutoOpenChartNow()) {
     requestAnimationFrame(() => {
       try {
-        // Revalidar dentro del frame evita reemplazar un modal que se abrió
-        // entre la detección de la señal y la ejecución del auto-open.
-        if (isChartModalOpenForAutoLock()) return;
         setActiveView("signals");
         openChartModal(item, { source: "signals", signalId: item.id || "" });
 
@@ -33980,9 +29538,6 @@ function addSignal(minute, symbol, direction, ticks, extra = {}) {
         }
       } catch {}
     });
-  } else if (autoOpenBlockedByCurrentAnalysis) {
-    enqueuePendingAutoReplaySignal(item);
-    toast(`📈 Nueva señal ${symbol} ${labelDir(direction)} guardada · queda en espera hasta que cierre s65`, 2600);
   }
 
   return item;
@@ -34489,10 +30044,8 @@ function recoverPublicConnection(reason = "resume") {
   startPendingContractWatchdog({ immediate: true });
   try {
     finalizeExpiredFloatingSignalRows();
-    if (!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) {
-      scanSignalAutoPreProposals();
-      scanSignalAutoEntriesAt57();
-    }
+    scanSignalAutoPreProposals();
+    scanSignalAutoEntriesAt57();
   } catch {}
 }
 
@@ -34674,8 +30227,6 @@ ensureC100Panel();
 updateC100PanelUI();
 initWakeButton();
 initTokenAndStakeUI();
-bindVoiceAnalysisControls();
-ensureVoiceAnalysisSettingsUI();
 
 ensureResetCacheButton();
 ensureSplitClearButtons();

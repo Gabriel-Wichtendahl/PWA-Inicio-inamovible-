@@ -7,13 +7,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-  <title>Deriv · Inicio Inamovible II43</title>
+  <title>Deriv · Inicio Inamovible</title>
 
   <link rel="manifest" href="manifest.json" />
-  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
-  <link rel="apple-touch-icon" href="icon-192.png" />
-  <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=113.33-II41" />
+  <link rel="stylesheet" href="style.css?v=113.33-II1" />
 </head>
 
 <body class="neon">
@@ -119,12 +116,6 @@
 
       <div class="minuteCanvasWrap">
         <canvas id="minuteCanvas"></canvas>
-        <div id="modalVoiceControls" class="modalVoiceControls" aria-label="Audio de análisis de esta señal">
-          <button id="modalVoiceRecordBtn" class="modalVoiceBtn modalVoiceRecordBtn" type="button" title="Grabar análisis en voz alta">🎙️</button>
-          <button id="modalVoicePlayBtn" class="modalVoiceBtn hidden" type="button" title="Reproducir análisis grabado">▶</button>
-          <span id="modalVoiceMeta" class="modalVoiceMeta hidden">—</span>
-          <button id="modalVoiceDeleteBtn" class="modalVoiceBtn modalVoiceDeleteBtn hidden" type="button" title="Borrar audio de esta señal">🗑️</button>
-        </div>
         <div class="minuteCanvasToolbar" aria-label="Controles de vista del gráfico">
           <button id="modalReplayBtn" class="modalReplayBtn hidden" type="button" title="Reproducir tick por tick la vela de la señal">🔎 Replay</button>
           <button id="modalCandle1mBtn" class="modalChartViewBtn" type="button" aria-pressed="false" title="Ver mini gráfico de velas de 1 minuto">🕯️ Velas 1m</button>
@@ -176,7 +167,7 @@
       <div class="modalHeader settingsModalHeader">
         <div class="modalHeaderText">
           <div id="settingsTitle" class="modalTitle">Configuración</div>
-          <div class="modalSub">Preferencias, cuenta y token · v113.33-II43 · Inicio Inamovible Giro · PGP hasta s65 · rescate s70 · Audio+Replay sync · pase automático de señales · impresión rápida + progreso · No Touch virtual · barrera máx s120 + % MAX · cierre s120 · barrera +130%</div>
+          <div class="modalSub">Preferencias, cuenta y token · v113.33-II1 · Inicio Inamovible</div>
         </div>
         <button id="settingsCloseBtn" class="btnIcon" type="button" aria-label="Cerrar">✖</button>
       </div>
@@ -224,10 +215,10 @@
     </div>
   </div>
 
-  <script src="app.js?v=113.33-II41"></script>
+  <script src="app.js?v=113.33-II1"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js?v=113.33-II41", { updateViaCache: "none" }).then(function (reg) { reg.update().catch(function () {}); }).catch(function () {});
+      navigator.serviceWorker.register("./sw.js?v=113.33-II1", { updateViaCache: "none" }).then(function (reg) { reg.update().catch(function () {}); }).catch(function () {});
     }
   </script>
 </body>
