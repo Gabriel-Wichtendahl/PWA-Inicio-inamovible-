@@ -1,9 +1,8 @@
-/* sw.js — Deriv Inicio Inamovible v113.33-II1 */
+/* sw.js — Deriv Inicio Inamovible v113.33-II44 */
 "use strict";
 
-// Se comparte el nombre con v113.33 porque su activación elimina otros caches del mismo origen.
-// Los recursos no colisionan al publicarse esta variante en una carpeta/ruta distinta.
-const CACHE = "deriv-assets-v113-33-double-mgm-exact";
+// Caché exclusiva de Inicio Inamovible para que no colisione con la PWA estable ni con II1.
+const CACHE = "deriv-assets-v113-33-inicio-inamovible-ii44";
 
 const CORE_ASSETS = [
   "./",
@@ -32,8 +31,14 @@ self.addEventListener("install", (e) => {
 });
 
 self.addEventListener("activate", (e) => {
-  // No se eliminan caches ajenos: esta variante debe convivir con la v113.33 estable.
-  e.waitUntil(self.clients.claim());
+  // Limpia solo cachés anteriores de esta variante. Nunca toca la caché de la PWA estable.
+  e.waitUntil((async () => {
+    const names = await caches.keys();
+    await Promise.all(names
+      .filter((name) => name !== CACHE && name.startsWith("deriv-assets-v113-33-inicio-inamovible"))
+      .map((name) => caches.delete(name)));
+    await self.clients.claim();
+  })());
 });
 
 self.addEventListener("fetch", (e) => {

@@ -2803,3 +2803,89 @@ body.light .tradesDayCount{
   .tradesDayHeader{align-items:flex-start;flex-direction:column;gap:6px}
   .tradesDaySummary{width:100%;justify-content:space-between}
 }
+
+
+/* II5 · Variante exclusiva Inicio Inamovible */
+.inicioOnlyHiddenControls,
+.giroPlusBadge{
+  display:none!important;
+}
+
+/* II10: el panel original de + COMPRA / + VENTA debe permanecer visible. */
+#signalConfirmPanel{
+  display:block;
+}
+
+/* =========================
+   II34 · Audio de análisis por señal
+========================= */
+.modalVoiceControls{
+  position:absolute;
+  top:10px;
+  left:10px;
+  z-index:26;
+  display:flex;
+  align-items:center;
+  gap:5px;
+  max-width:calc(100% - 20px);
+  padding:4px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.16);
+  background:rgba(2,6,23,.66);
+  box-shadow:0 8px 24px rgba(0,0,0,.26);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+}
+.modalVoiceBtn{
+  min-width:32px;
+  height:32px;
+  padding:0 8px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.14);
+  background:rgba(255,255,255,.07);
+  color:#f8fafc;
+  font-size:14px;
+  font-weight:900;
+  line-height:1;
+  cursor:pointer;
+  touch-action:manipulation;
+}
+.modalVoiceBtn:disabled{
+  opacity:.42;
+  cursor:not-allowed;
+}
+.modalVoiceRecordBtn.is-recording{
+  min-width:82px;
+  border-color:rgba(248,113,113,.72);
+  background:rgba(127,29,29,.86);
+  color:#fff;
+  box-shadow:0 0 0 1px rgba(248,113,113,.18) inset, 0 0 18px rgba(239,68,68,.28);
+}
+.modalVoicePlayBtn.is-playing{
+  border-color:rgba(34,211,238,.62);
+  background:rgba(8,47,73,.82);
+  color:#e0f2fe;
+}
+.modalVoiceMeta{
+  max-width:150px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  padding:0 2px;
+  color:rgba(255,255,255,.86);
+  font-size:11px;
+  font-weight:800;
+  line-height:1;
+}
+.modalVoiceDeleteBtn{
+  opacity:.82;
+}
+@media (max-width:460px){
+  .modalVoiceControls{ top:8px; left:8px; gap:3px; padding:3px; }
+  .modalVoiceBtn{ min-width:30px; height:30px; padding:0 7px; font-size:13px; }
+  .modalVoiceRecordBtn.is-recording{ min-width:76px; }
+  .modalVoiceMeta{ max-width:112px; font-size:10px; }
+}
