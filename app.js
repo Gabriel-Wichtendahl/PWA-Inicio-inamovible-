@@ -1,4 +1,4 @@
-// v113.33-II39: impresión masiva robusta con progreso visible y sin consultas históricas innecesarias al imprimir sin resultado.
+// v113.33-II40: simulador defensivo No Touch en paralelo, basado en nivel fuerte cercano, sin comprar el segundo contrato.
 // Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
 // Solo se arma si AUTO58 falló por timing/proposal, con PGP 2/2 ya autorizado y sin bloqueo de ancla.
 // La barrera Higher/Lower de +130% sigue prearmándose solo en la dirección de giro,
@@ -130,7 +130,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II39";
+const APP_BUILD_VERSION = "v113.33-II40";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -187,6 +187,24 @@ const STUDY_CAPTURE_VERSION = 1;
 const STUDY_CAPTURE_RENDER_VERSION = "STUDY_CAPTURE_V113_38_PRINT_BW_HIDDEN_ARROW";
 const STUDY_PRINT_SHOW_RESULT_KEY = "studyPrintShowResult_v1";
 const studyPrintSelectedKeys = new Set();
+
+/* =========================
+   II40 · Simulador No Touch defensivo
+   - Nunca compra el segundo contrato.
+   - Cotiza NOTOUCH y registra qué habría ocurrido con el mismo riesgo total.
+========================= */
+const VIRTUAL_NOTOUCH_ENABLED = true;
+const VIRTUAL_NOTOUCH_VERSION = "VIRTUAL_NOTOUCH_DEFENSIVE_V1";
+const VIRTUAL_NOTOUCH_TARGET_RATIO = 0.20;
+const VIRTUAL_NOTOUCH_MIN_STAKE = 0.35;
+const VIRTUAL_NOTOUCH_LOOKBACK_CANDLES = 120;
+const VIRTUAL_NOTOUCH_MIN_TOUCHES = 2;
+const VIRTUAL_NOTOUCH_PREPARE_DELAY_MS = 900;
+const VIRTUAL_NOTOUCH_MIN_REMAINING_MS = 8000;
+const VIRTUAL_NOTOUCH_PROPOSAL_TIMEOUT_MS = 12000;
+let virtualNoTouchRecoveryRunning = false;
+let virtualNoTouchRecoveryLastAt = 0;
+const VIRTUAL_NOTOUCH_RECOVERY_COOLDOWN_MS = 30000;
 
 /* =========================
    Audio de análisis por señal (II34)
@@ -2239,6 +2257,619 @@ async function showStudyCaptureForItem(item) {
 
 
 /* =========================
+   II40 · No Touch virtual defensivo
+========================= */
+function virtualNoTouchMoney(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+}
+function virtualNoTouchFmtPrice(value, symbol = "") {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const decimals = Math.max(2, Math.min(6, getHighLowBarrierPresetMinDecimals(symbol) || 4));
+  return n.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "");
+}
+function getVirtualNoTouchState(item) {
+  return item?.virtualNoTouch && typeof item.virtualNoTouch === "object" ? item.virtualNoTouch : null;
+}
+function getVirtualNoTouchTradeEntryEpochMs(item) {
+  const trade = item?.trade || {};
+  const candidates = [trade.purchase_time, trade.entry_spot_time, trade.start_time, trade.buy_time];
+  for (const value of candidates) {
+    const n = studyEpochMs(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return serverNowMs();
+}
+function getVirtualNoTouchExpiryEpochMs(item) {
+  const trade = item?.trade || {};
+  const candidates = [trade.planned_expiry_time, trade.expiry_time, trade.date_expiry];
+  for (const value of candidates) {
+    const n = studyEpochMs(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  const anchor = Number(item?.signalAnchorEpochMs || 0);
+  if (Number.isFinite(anchor) && anchor > 0) return anchor + 120000;
+  const entry = getVirtualNoTouchTradeEntryEpochMs(item);
+  return entry + 60000;
+}
+function getVirtualNoTouchEntryQuote(item, entryEpochMs = getVirtualNoTouchTradeEntryEpochMs(item)) {
+  const trade = item?.trade || {};
+  const direct = [trade.entry_spot, trade.entry_tick, trade.entry_reference_quote, trade.proposal_spot];
+  for (const value of direct) {
+    const q = Number(value);
+    if (Number.isFinite(q) && q > 0) return q;
+  }
+  const symbol = String(item?.symbol || trade.symbol || "");
+  const live = Number(lastQuoteBySymbol?.[symbol]);
+  if (Number.isFinite(live) && live > 0) return live;
+  const anchor = Number(item?.signalAnchorEpochMs || 0);
+  if (Number.isFinite(anchor) && anchor > 0) {
+    const ms = Math.max(0, Math.min(60000, Number(entryEpochMs) - anchor));
+    const q = studyNearestQuoteAtMs(Array.isArray(item?.ticks) ? item.ticks : [], ms, 5000);
+    if (Number.isFinite(q) && q > 0) return q;
+  }
+  const ticks = Array.isArray(item?.ticks) ? item.ticks : [];
+  const last = Number(ticks[ticks.length - 1]?.quote);
+  return Number.isFinite(last) && last > 0 ? last : NaN;
+}
+function getVirtualNoTouchSignalRange(item, entryEpochMs) {
+  const anchor = Number(item?.signalAnchorEpochMs || 0);
+  const maxMs = Number.isFinite(anchor) && anchor > 0
+    ? Math.max(0, Math.min(60000, Number(entryEpochMs) - anchor))
+    : 60000;
+  const qs = (Array.isArray(item?.ticks) ? item.ticks : [])
+    .filter((p) => Number(p?.ms) <= maxMs)
+    .map((p) => Number(p?.quote))
+    .filter(Number.isFinite);
+  if (qs.length < 2) return 0;
+  return Math.max(...qs) - Math.min(...qs);
+}
+function buildVirtualNoTouchLevelCandidates(item, side, entryQuote, entryEpochMs) {
+  const symbol = String(item?.symbol || item?.trade?.symbol || "");
+  const safeSide = normalizeSignalConfirmationSide(side) || String(side || "").toUpperCase();
+  if (!symbol || !["CALL", "PUT"].includes(safeSide) || !Number.isFinite(Number(entryQuote))) return [];
+
+  const currentMinute = Math.floor(Number(entryEpochMs || serverNowMs()) / 60000);
+  const signalRange = Math.max(0, Number(getVirtualNoTouchSignalRange(item, entryEpochMs) || 0));
+  const candles = getGiroPolarityCandles(symbol, currentMinute, VIRTUAL_NOTOUCH_LOOKBACK_CANDLES);
+  const candleRanges = candles
+    .map((c) => Math.abs(Number(c?.high) - Number(c?.low)))
+    .filter((x) => Number.isFinite(x) && x > 0);
+  const avgRange = candleRanges.length ? candleRanges.reduce((a, b) => a + b, 0) / candleRanges.length : signalRange;
+  const tol = Math.max(getGiroPolarityTolerance(symbol, signalRange || avgRange || 0), Math.max(signalRange, avgRange, 1e-9) * 0.02, 1e-9);
+  const distanceUnit = Math.max(avgRange, signalRange, tol * 7, 1e-9);
+  const maxDistance = Math.max(avgRange * 2.75, signalRange * 1.5, tol * 14, 1e-9);
+  const wantedType = safeSide === "PUT" ? "resistance" : "support";
+  const rows = [];
+
+  // Niveles de velas de 1 minuto previas. Solo datos anteriores a la entrada.
+  if (candles.length >= 3) {
+    const raw = [];
+    for (const c of candles) {
+      raw.push({ price: Number(c.high), type: "resistance", minute: Number(c.minute) });
+      raw.push({ price: Number(c.low), type: "support", minute: Number(c.minute) });
+    }
+    const clusters = clusterGiroPolarityLevels(raw, tol * 1.25);
+    for (const cl of clusters) {
+      if (String(cl.originalType || cl.type || "") !== wantedType) continue;
+      const touches = Number(cl.touches || 0);
+      if (touches < VIRTUAL_NOTOUCH_MIN_TOUCHES) continue;
+      const level = Number(cl.price);
+      if (!Number.isFinite(level)) continue;
+      const distance = safeSide === "PUT" ? level - entryQuote : entryQuote - level;
+      if (!(distance > 0) || distance > maxDistance) continue;
+      const ageMin = Math.max(0, currentMinute - Number(cl.lastTouchMinute || currentMinute));
+      const proximity = Math.max(0, 4 - (distance / distanceUnit) * 2.2);
+      const recency = Math.max(0, 2.5 - ageMin / 24);
+      const score = touches * 2.4 + proximity + recency;
+      rows.push({
+        source: "previous_1m_cluster",
+        type: wantedType,
+        level,
+        touches,
+        distance,
+        score,
+        age_minutes: ageMin,
+        tolerance: tol,
+        avg_range: avgRange,
+        signal_range: signalRange,
+      });
+    }
+  }
+
+  // Nivel estructural dentro de la propia formación, sin usar ticks futuros.
+  const anchor = Number(item?.signalAnchorEpochMs || 0);
+  const entrySignalMs = Number.isFinite(anchor) && anchor > 0
+    ? Math.max(0, Math.min(60000, Number(entryEpochMs) - anchor))
+    : Math.min(60000, Number(item?.ticks?.[item.ticks.length - 1]?.ms || 60000));
+  const sourceTicks = (Array.isArray(item?.ticks) ? item.ticks : [])
+    .filter((p) => Number(p?.ms) <= entrySignalMs)
+    .map((p) => ({ ms: Number(p.ms), quote: Number(p.quote) }))
+    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote));
+  if (sourceTicks.length >= 8) {
+    const markerInput = safeSide === "PUT"
+      ? sourceTicks.map((p) => ({ ms: p.ms, quote: -p.quote }))
+      : sourceTicks;
+    const markers = getRecentStructuralSupportMarkers(markerInput, item, entrySignalMs) || [];
+    for (const m of markers) {
+      const level = safeSide === "PUT" ? -Number(m.level) : Number(m.level);
+      if (!Number.isFinite(level)) continue;
+      const distance = safeSide === "PUT" ? level - entryQuote : entryQuote - level;
+      if (!(distance > 0) || distance > maxDistance) continue;
+      const touches = Math.max(1, Number(m.touches || 1));
+      const proximity = Math.max(0, 4 - (distance / distanceUnit) * 2.2);
+      const structuralBonus = String(m.type || "") === "polarity" ? 2.5 : 1.4;
+      const score = 3.2 + touches * 1.6 + Number(m.score || 0) + structuralBonus + proximity;
+      rows.push({
+        source: safeSide === "PUT" ? "formation_resistance" : "formation_support",
+        type: wantedType,
+        level,
+        touches,
+        distance,
+        score,
+        age_minutes: 0,
+        tolerance: tol,
+        avg_range: avgRange,
+        signal_range: signalRange,
+      });
+    }
+  }
+
+  rows.sort((a, b) => {
+    const ds = Number(b.score || 0) - Number(a.score || 0);
+    if (Math.abs(ds) > 0.35) return ds;
+    return Number(a.distance || Infinity) - Number(b.distance || Infinity);
+  });
+  return rows;
+}
+function selectVirtualNoTouchDefensiveLevel(item, side, entryQuote, entryEpochMs) {
+  const candidates = buildVirtualNoTouchLevelCandidates(item, side, entryQuote, entryEpochMs);
+  if (!candidates.length) return null;
+  const best = candidates[0];
+  const symbol = String(item?.symbol || item?.trade?.symbol || "");
+  const safeSide = normalizeSignalConfirmationSide(side) || String(side || "").toUpperCase();
+  const precision = Math.max(0, getHighLowBarrierPresetMinDecimals(symbol));
+  const tickStep = Math.pow(10, -precision);
+  const buffer = Math.max(
+    Number(best.tolerance || 0) * 0.65,
+    Number(best.avg_range || 0) * 0.035,
+    Number(best.signal_range || 0) * 0.025,
+    tickStep * 2,
+    1e-9
+  );
+  let barrier = safeSide === "PUT" ? Number(best.level) + buffer : Number(best.level) - buffer;
+  if (safeSide === "PUT") barrier = Math.max(barrier, Number(entryQuote) + tickStep * 2);
+  else barrier = Math.min(barrier, Number(entryQuote) - tickStep * 2);
+  if (!Number.isFinite(barrier) || barrier <= 0) return null;
+  const barrierText = barrier.toFixed(precision);
+  return {
+    ...best,
+    barrier: Number(barrierText),
+    barrier_text: barrierText,
+    buffer: Number(buffer),
+    precision,
+    candidates_considered: candidates.length,
+  };
+}
+async function requestVirtualNoTouchProposal(item, state) {
+  const symbol = String(state?.symbol || item?.symbol || "");
+  const expirySec = Math.floor(Number(state?.expiry_epoch_ms || 0) / 1000);
+  const stake = Number(state?.no_touch_stake);
+  const barrier = String(state?.barrier_text || state?.barrier || "");
+  if (!symbol || !Number.isFinite(expirySec) || !Number.isFinite(stake) || stake <= 0 || !barrier) {
+    throw new Error("Datos incompletos para cotizar No Touch virtual");
+  }
+  const base = {
+    proposal: 1,
+    amount: stake,
+    basis: "stake",
+    contract_type: "NOTOUCH",
+    currency: DEFAULT_CURRENCY,
+    barrier,
+  };
+  if (isNewPatApiMode()) base.underlying_symbol = symbol;
+  else base.symbol = symbol;
+
+  // Primero intenta mantener exactamente el mismo vencimiento que la operación principal.
+  // Si Deriv no permite un NOTOUCH tan corto, usa como simulación secundaria el mínimo
+  // práctico de 2 minutos, sin comprar nada y dejando explícito que la ventana es distinta.
+  const attempts = [
+    { mode: "same_primary_expiry", req: { ...base, date_expiry: expirySec } },
+    { mode: "duration_2m_fallback", req: { ...base, duration: 2, duration_unit: "m" } },
+  ];
+  const errors = [];
+  for (const attempt of attempts) {
+    try {
+      const res = await wsRequest(attempt.req, VIRTUAL_NOTOUCH_PROPOSAL_TIMEOUT_MS);
+      if (res?.error) throw new Error(res.error.message || res.error.code || "proposal NOTOUCH error");
+      const proposal = res?.proposal;
+      if (!proposal?.id) throw new Error("Deriv no devolvió proposal NOTOUCH");
+      return { res, req: attempt.req, proposal, expiryMode: attempt.mode };
+    } catch (err) {
+      errors.push(`${attempt.mode}: ${String(err?.message || err || "error")}`);
+    }
+  }
+  throw new Error(errors.join(" | ") || "Deriv rechazó las propuestas NOTOUCH");
+}
+function getVirtualNoTouchPrimaryBaselineProfit(item) {
+  const trade = item?.trade || {};
+  const badge = String(trade.badge || "").toUpperCase();
+  const stake = Number(trade.stake);
+  if (!Number.isFinite(stake) || stake <= 0 || !["ITM", "OTM"].includes(badge)) return null;
+  const exactProfit = (trade.profit === null || trade.profit === undefined || trade.profit === "") ? NaN : Number(trade.profit);
+  if (Number.isFinite(exactProfit)) return exactProfit;
+  if (badge === "OTM") return -stake;
+  const pct = Number(trade.actual_return_pct ?? trade.payout_pct);
+  if (Number.isFinite(pct)) return stake * pct / 100;
+  const buy = Number(trade.buy_price);
+  const payout = Number(trade.payout);
+  if (Number.isFinite(buy) && buy > 0 && Number.isFinite(payout)) return payout - buy;
+  return null;
+}
+function recomputeVirtualNoTouchCombined(item) {
+  const state = getVirtualNoTouchState(item);
+  const trade = item?.trade || {};
+  if (!state || state.status !== "resolved") return false;
+  const baseline = getVirtualNoTouchPrimaryBaselineProfit(item);
+  const ntProfit = (state.virtual_profit === null || state.virtual_profit === undefined || state.virtual_profit === "") ? NaN : Number(state.virtual_profit);
+  const actualStake = Number(trade.stake);
+  const primarySimStake = Number(state.primary_sim_stake);
+  if (![baseline, ntProfit, actualStake, primarySimStake].every(Number.isFinite) || actualStake <= 0) return false;
+  const primarySimProfit = baseline * (primarySimStake / actualStake);
+  const combined = primarySimProfit + ntProfit;
+  state.combined = {
+    model: "same_total_risk_split",
+    baseline_primary_only_profit: virtualNoTouchMoney(baseline),
+    primary_sim_stake: virtualNoTouchMoney(primarySimStake),
+    primary_sim_profit: virtualNoTouchMoney(primarySimProfit),
+    no_touch_stake: virtualNoTouchMoney(state.no_touch_stake),
+    no_touch_profit: virtualNoTouchMoney(ntProfit),
+    combined_profit: virtualNoTouchMoney(combined),
+    delta_vs_primary_only: virtualNoTouchMoney(combined - baseline),
+    total_simulated_risk: virtualNoTouchMoney(primarySimStake + Number(state.ask_price || state.no_touch_stake || 0)),
+    calculated_at: Date.now(),
+  };
+  return true;
+}
+function persistVirtualNoTouchState(item, { render = false } = {}) {
+  const state = getVirtualNoTouchState(item);
+  if (!state) return;
+  const signalId = String(item?.id || "");
+  const cid = String(item?.trade?.contract_id || "");
+  let historyChanged = false;
+  if (signalId) {
+    const live = findHistoryItemById(signalId);
+    if (live && live !== item) {
+      live.virtualNoTouch = stripForAnalysisCopy(state);
+      historyChanged = true;
+    } else if (live === item) historyChanged = true;
+  }
+  if (historyChanged || (history || []).includes(item)) {
+    try { saveHistory(history); } catch {}
+  }
+  const idx = (tradesJournal || []).findIndex((entry) =>
+    (cid && String(entry?.trade?.contract_id || "") === cid) ||
+    (signalId && String(entry?.id || "") === signalId)
+  );
+  if (idx >= 0) {
+    tradesJournal[idx].virtualNoTouch = stripForAnalysisCopy(state);
+    tradesJournal[idx].saved_at = Date.now();
+    try { saveTradesJournal(tradesJournal); } catch {}
+  }
+  try {
+    document.querySelectorAll(`.row[data-id="${cssEscape(signalId)}"]`).forEach((row) => updateRowVirtualNoTouchBadgeOnRow(row, item));
+  } catch {}
+  if (render) {
+    try { if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView(); } catch {}
+  }
+}
+function resolveVirtualNoTouchSimulation(item, result, extra = {}) {
+  const state = getVirtualNoTouchState(item);
+  if (!state || state.status === "resolved" || state.status === "unavailable") return false;
+  const normalized = String(result || "").toUpperCase() === "LOSS" ? "LOSS" : "WIN";
+  state.status = "resolved";
+  state.result = normalized;
+  state.resolved_at = Date.now();
+  Object.assign(state, extra || {});
+  const ask = (state.ask_price === null || state.ask_price === undefined || state.ask_price === "") ? NaN : Number(state.ask_price);
+  const payout = (state.payout === null || state.payout === undefined || state.payout === "") ? NaN : Number(state.payout);
+  if (Number.isFinite(ask) && ask > 0) {
+    state.virtual_profit = virtualNoTouchMoney(normalized === "WIN" && Number.isFinite(payout) ? payout - ask : -ask);
+  } else {
+    state.virtual_profit = null;
+  }
+  recomputeVirtualNoTouchCombined(item);
+  persistVirtualNoTouchState(item, { render: true });
+  return true;
+}
+function evaluateVirtualNoTouchOnTick(item, epochMs, quote) {
+  const state = getVirtualNoTouchState(item);
+  if (!state || state.status !== "active") return false;
+  const ep = Number(epochMs), q = Number(quote), barrier = Number(state.barrier);
+  const start = Number(state.virtual_entry_epoch_ms || 0), expiry = Number(state.expiry_epoch_ms || 0);
+  if (![ep, q, barrier, start, expiry].every(Number.isFinite) || ep < start) return false;
+  const side = String(state.side || item?.direction || "").toUpperCase();
+  const touched = side === "PUT" ? q >= barrier : q <= barrier;
+  if (ep <= expiry && touched) {
+    state.touched = true;
+    state.first_touch_epoch_ms = ep;
+    state.first_touch_quote = q;
+    return resolveVirtualNoTouchSimulation(item, "LOSS", { outcome_source: "live_tick_touch" });
+  }
+  if (ep >= expiry) {
+    state.touched = false;
+    return resolveVirtualNoTouchSimulation(item, "WIN", { outcome_source: "live_tick_expiry" });
+  }
+  return false;
+}
+async function hydrateVirtualNoTouchOutcomeFromDerivHistory(item) {
+  const state = getVirtualNoTouchState(item);
+  if (!state || state.status !== "active") return false;
+  const now = serverNowMs();
+  const startMs = Number(state.virtual_entry_epoch_ms || 0);
+  const expiryMs = Number(state.expiry_epoch_ms || 0);
+  const barrier = Number(state.barrier);
+  const symbol = String(state.symbol || item?.symbol || "");
+  if (!symbol || ![startMs, expiryMs, barrier].every(Number.isFinite) || now < expiryMs) return false;
+  try {
+    const res = await wsRequest({
+      ticks_history: symbol,
+      start: Math.floor(startMs / 1000),
+      end: Math.ceil((expiryMs + 2000) / 1000),
+      style: "ticks",
+      count: getHistoryCountMax(),
+      adjust_start_time: 1,
+    }, 12000);
+    const times = res?.history?.times;
+    const prices = res?.history?.prices;
+    if (!Array.isArray(times) || !Array.isArray(prices)) return false;
+    const side = String(state.side || item?.direction || "").toUpperCase();
+    for (let i = 0; i < Math.min(times.length, prices.length); i++) {
+      const ep = Number(times[i]) * 1000;
+      const q = Number(prices[i]);
+      if (!Number.isFinite(ep) || !Number.isFinite(q) || ep < startMs || ep > expiryMs) continue;
+      const touched = side === "PUT" ? q >= barrier : q <= barrier;
+      if (touched) {
+        state.touched = true;
+        state.first_touch_epoch_ms = ep;
+        state.first_touch_quote = q;
+        return resolveVirtualNoTouchSimulation(item, "LOSS", { outcome_source: "ticks_history_touch" });
+      }
+    }
+    state.touched = false;
+    return resolveVirtualNoTouchSimulation(item, "WIN", { outcome_source: "ticks_history_expiry" });
+  } catch (err) {
+    state.last_recovery_error = String(err?.message || err || "");
+    persistVirtualNoTouchState(item, { render: false });
+    return false;
+  }
+}
+async function prepareVirtualNoTouchSimulation(item) {
+  if (!VIRTUAL_NOTOUCH_ENABLED || !item?.trade?.contract_id) return false;
+  const existing = getVirtualNoTouchState(item);
+  if (existing && ["preparing", "active", "resolved"].includes(String(existing.status || ""))) return false;
+  const side = normalizeSignalConfirmationSide(item?.trade?.side || item?.direction);
+  const symbol = String(item?.trade?.symbol || item?.symbol || "");
+  const totalStake = Number(item?.trade?.stake);
+  const primaryEntryEpochMs = getVirtualNoTouchTradeEntryEpochMs(item);
+  const expiryEpochMs = getVirtualNoTouchExpiryEpochMs(item);
+  const entryQuote = getVirtualNoTouchEntryQuote(item, primaryEntryEpochMs);
+  if (!side || !symbol || !Number.isFinite(totalStake) || totalStake <= VIRTUAL_NOTOUCH_MIN_STAKE || !Number.isFinite(entryQuote) || entryQuote <= 0) return false;
+
+  let noTouchStake = Math.max(VIRTUAL_NOTOUCH_MIN_STAKE, Math.round(totalStake * VIRTUAL_NOTOUCH_TARGET_RATIO * 100) / 100);
+  noTouchStake = Math.min(noTouchStake, Math.floor((totalStake - 0.01) * 100) / 100);
+  const primarySimStake = Math.round((totalStake - noTouchStake) * 100) / 100;
+  const baseState = {
+    version: VIRTUAL_NOTOUCH_VERSION,
+    status: "preparing",
+    simulated_only: true,
+    bought: false,
+    symbol,
+    side,
+    defense_role: side === "PUT" ? "resistance" : "support",
+    primary_contract_id: String(item.trade.contract_id || ""),
+    primary_entry_epoch_ms: primaryEntryEpochMs,
+    primary_entry_quote: entryQuote,
+    expiry_epoch_ms: expiryEpochMs,
+    target_split_ratio: VIRTUAL_NOTOUCH_TARGET_RATIO,
+    effective_no_touch_ratio: totalStake > 0 ? noTouchStake / totalStake : null,
+    original_total_stake: totalStake,
+    primary_sim_stake: primarySimStake,
+    no_touch_stake: noTouchStake,
+    prepared_at: Date.now(),
+  };
+  item.virtualNoTouch = baseState;
+  if (primarySimStake <= 0 || expiryEpochMs - serverNowMs() < VIRTUAL_NOTOUCH_MIN_REMAINING_MS) {
+    baseState.status = "unavailable";
+    baseState.reason = primarySimStake <= 0 ? "stake_split_not_possible" : "too_late_for_same_expiry";
+    persistVirtualNoTouchState(item, { render: true });
+    return false;
+  }
+
+  const selected = selectVirtualNoTouchDefensiveLevel(item, side, entryQuote, primaryEntryEpochMs);
+  if (!selected) {
+    baseState.status = "unavailable";
+    baseState.reason = "no_strong_nearby_level";
+    persistVirtualNoTouchState(item, { render: true });
+    toast("🛡️ NT virtual: no encontré un nivel fuerte cercano", 1700);
+    return false;
+  }
+  Object.assign(baseState, {
+    level_source: selected.source,
+    level_type: selected.type,
+    level: selected.level,
+    level_touches: selected.touches,
+    level_score: selected.score,
+    level_distance: selected.distance,
+    level_age_minutes: selected.age_minutes,
+    level_tolerance: selected.tolerance,
+    level_candidates_considered: selected.candidates_considered,
+    barrier: selected.barrier,
+    barrier_text: selected.barrier_text,
+    barrier_buffer: selected.buffer,
+    barrier_precision: selected.precision,
+  });
+  persistVirtualNoTouchState(item, { render: false });
+
+  try {
+    const pack = await requestVirtualNoTouchProposal(item, baseState);
+    const proposal = pack.proposal || {};
+    const ask = (proposal.ask_price === null || proposal.ask_price === undefined || proposal.ask_price === "") ? NaN : Number(proposal.ask_price);
+    const payout = (proposal.payout === null || proposal.payout === undefined || proposal.payout === "") ? NaN : Number(proposal.payout);
+    const spot = (proposal.spot === null || proposal.spot === undefined || proposal.spot === "") ? NaN : Number(proposal.spot);
+    const virtualEntryMs = serverNowMs();
+    baseState.status = "active";
+    baseState.expiry_mode = String(pack.expiryMode || "same_primary_expiry");
+    if (baseState.expiry_mode === "duration_2m_fallback") {
+      baseState.expiry_epoch_ms = virtualEntryMs + 2 * 60 * 1000;
+    }
+    baseState.proposal_id = String(proposal.id || "");
+    baseState.ask_price = Number.isFinite(ask) ? ask : null;
+    if (Number.isFinite(ask) && ask > 0 && ask < totalStake) {
+      baseState.primary_sim_stake = Math.round((totalStake - ask) * 100) / 100;
+      baseState.effective_no_touch_ratio = ask / totalStake;
+      baseState.no_touch_effective_cost = ask;
+    }
+    baseState.payout = Number.isFinite(payout) ? payout : null;
+    baseState.payout_total_pct = Number.isFinite(ask) && ask > 0 && Number.isFinite(payout) ? (payout / ask) * 100 : null;
+    baseState.profit_pct = Number.isFinite(ask) && ask > 0 && Number.isFinite(payout) ? ((payout - ask) / ask) * 100 : null;
+    baseState.proposal_spot = Number.isFinite(spot) ? spot : Number(lastQuoteBySymbol?.[symbol]) || entryQuote;
+    baseState.virtual_entry_epoch_ms = virtualEntryMs;
+    baseState.proposal_received_at = Date.now();
+    baseState.request_payload_mode = isNewPatApiMode() ? "underlying_symbol_absolute_barrier" : "symbol_absolute_barrier";
+    baseState.touched = false;
+    persistVirtualNoTouchState(item, { render: true });
+    const roleTxt = side === "PUT" ? "RES" : "SOP";
+    const payoutTxt = Number.isFinite(baseState.profit_pct) ? ` · +${Math.round(baseState.profit_pct)}%` : "";
+    toast(`🛡️ NT virtual listo · ${roleTxt} ${virtualNoTouchFmtPrice(baseState.level, symbol)}${payoutTxt}`, 1800);
+    return true;
+  } catch (err) {
+    baseState.status = "unavailable";
+    baseState.reason = "proposal_failed";
+    baseState.proposal_error = String(err?.message || err || "");
+    persistVirtualNoTouchState(item, { render: true });
+    toast("🛡️ NT virtual: Deriv no devolvió cotización", 1800);
+    return false;
+  }
+}
+function scheduleVirtualNoTouchSimulation(item) {
+  if (!VIRTUAL_NOTOUCH_ENABLED || !item?.trade?.contract_id) return;
+  setTimeout(() => { prepareVirtualNoTouchSimulation(item).catch(() => {}); }, VIRTUAL_NOTOUCH_PREPARE_DELAY_MS);
+}
+function getVirtualNoTouchBadgeInfo(item) {
+  const state = getVirtualNoTouchState(item);
+  if (!state) return { visible: false, label: "", title: "", key: "" };
+  const symbol = String(state.symbol || item?.symbol || "");
+  const levelTxt = virtualNoTouchFmtPrice(state.level, symbol);
+  const barrierTxt = virtualNoTouchFmtPrice(state.barrier, symbol);
+  const role = String(state.defense_role || "") === "resistance" ? "resistencia" : "soporte";
+  const profitPctValue = (state.profit_pct === null || state.profit_pct === undefined || state.profit_pct === "") ? NaN : Number(state.profit_pct);
+  const pctTxt = Number.isFinite(profitPctValue) ? ` · payout neto +${Math.round(profitPctValue)}%` : "";
+  const expiryTxt = String(state.expiry_mode || "") === "duration_2m_fallback" ? " · ventana NT 2m" : " · mismo vencimiento";
+  if (state.status === "preparing") return { visible: true, key: "preparing", label: "🛡️ NT…", title: `No Touch virtual: buscando/cotizando ${role}.` };
+  if (state.status === "unavailable") return { visible: true, key: "unavailable", label: "🛡️ NT —", title: `No Touch virtual no disponible: ${String(state.reason || "sin dato")}.` };
+  if (state.status === "active") return { visible: true, key: "active", label: "🛡️ NT VIRTUAL", title: `${role} ${levelTxt} · barrera ${barrierTxt} · stake virtual $${Number(state.no_touch_stake || 0).toFixed(2)}${pctTxt}${expiryTxt}. No se compró: simulación.` };
+  const result = String(state.result || "").toUpperCase();
+  const delta = Number(state?.combined?.delta_vs_primary_only);
+  const deltaTxt = Number.isFinite(delta) ? ` · Δ combinado ${delta >= 0 ? "+" : ""}$${delta.toFixed(2)}` : "";
+  return {
+    visible: true,
+    key: result === "WIN" ? "win" : "loss",
+    label: result === "WIN" ? "🛡️ NT ✓" : "🛡️ NT ✕",
+    title: `${result === "WIN" ? "No Touch virtual ganador" : "No Touch virtual perdedor"} · ${role} ${levelTxt} · barrera ${barrierTxt}${pctTxt}${expiryTxt}${deltaTxt}.`,
+  };
+}
+function updateRowVirtualNoTouchBadgeOnRow(row, item) {
+  if (!row) return;
+  const el = row.querySelector(".virtualNoTouchBadge");
+  if (!el) return;
+  const info = getVirtualNoTouchBadgeInfo(item);
+  if (!info.visible) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    el.title = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.textContent = info.label;
+  el.title = info.title;
+  el.style.display = "inline-flex";
+  el.style.alignItems = "center";
+  el.style.justifyContent = "center";
+  el.style.padding = "4px 7px";
+  el.style.borderRadius = "999px";
+  el.style.fontSize = "10px";
+  el.style.fontWeight = "950";
+  el.style.whiteSpace = "nowrap";
+  if (info.key === "win") {
+    el.style.border = "1px solid rgba(34,197,94,.60)";
+    el.style.background = "rgba(34,197,94,.12)";
+    el.style.color = "#bbf7d0";
+  } else if (info.key === "loss") {
+    el.style.border = "1px solid rgba(248,113,113,.55)";
+    el.style.background = "rgba(248,113,113,.10)";
+    el.style.color = "#fecaca";
+  } else {
+    el.style.border = "1px solid rgba(56,189,248,.46)";
+    el.style.background = "rgba(14,165,233,.10)";
+    el.style.color = "#bae6fd";
+  }
+}
+function getVirtualNoTouchPortfolioStats(entries) {
+  const rows = (entries || []).map((e) => getVirtualNoTouchState(e)).filter(Boolean);
+  const resolved = rows.filter((s) => s.status === "resolved");
+  const priced = resolved.filter((s) => Number.isFinite(Number(s?.combined?.combined_profit)) && Number.isFinite(Number(s?.combined?.baseline_primary_only_profit)));
+  const sum = (key) => priced.reduce((acc, s) => acc + Number(s.combined?.[key] || 0), 0);
+  return {
+    total: rows.length,
+    active: rows.filter((s) => s.status === "active" || s.status === "preparing").length,
+    unavailable: rows.filter((s) => s.status === "unavailable").length,
+    resolved: resolved.length,
+    wins: resolved.filter((s) => String(s.result || "") === "WIN").length,
+    losses: resolved.filter((s) => String(s.result || "") === "LOSS").length,
+    priced: priced.length,
+    baseline: sum("baseline_primary_only_profit"),
+    combined: sum("combined_profit"),
+    delta: sum("delta_vs_primary_only"),
+  };
+}
+async function recoverPendingVirtualNoTouchSimulations() {
+  if (virtualNoTouchRecoveryRunning || !ws || ws.readyState !== 1) return false;
+  if (Date.now() - virtualNoTouchRecoveryLastAt < VIRTUAL_NOTOUCH_RECOVERY_COOLDOWN_MS) return false;
+  virtualNoTouchRecoveryRunning = true;
+  virtualNoTouchRecoveryLastAt = Date.now();
+  let changed = false;
+  try {
+    const now = serverNowMs();
+    const candidates = (tradesJournal || []).filter((entry) => {
+      const st = getVirtualNoTouchState(entry);
+      return st?.status === "active" && Number(st.expiry_epoch_ms || 0) > 0 && now >= Number(st.expiry_epoch_ms);
+    }).slice(0, 40);
+    for (const entry of candidates) {
+      const live = entry.id ? findHistoryItemById(String(entry.id)) : null;
+      const target = live || buildModalItemFromTradeEntry(entry);
+      if (!target) continue;
+      target.virtualNoTouch = stripForAnalysisCopy(entry.virtualNoTouch || target.virtualNoTouch || null);
+      const ok = await hydrateVirtualNoTouchOutcomeFromDerivHistory(target);
+      if (ok) changed = true;
+      await sleep(REHYDRATE_SLEEP_MS);
+    }
+  } catch {}
+  finally { virtualNoTouchRecoveryRunning = false; }
+  if (changed) {
+    try { if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView(); } catch {}
+  }
+  return changed;
+}
+function scheduleVirtualNoTouchRecovery() {
+  if (virtualNoTouchRecoveryRunning) return;
+  if (Date.now() - virtualNoTouchRecoveryLastAt < VIRTUAL_NOTOUCH_RECOVERY_COOLDOWN_MS) return;
+  setTimeout(() => { recoverPendingVirtualNoTouchSimulations().catch(() => {}); }, 0);
+}
+
+/* =========================
    Trades Journal persistence
 ========================= */
 function loadTradesJournal() {
@@ -2578,7 +3209,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_V113_33_II39_20260824";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_PGP_DOBLE_CONFIRMACION_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_PREARMADA_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_V113_33_II40_20260825";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -3266,6 +3897,7 @@ function upsertTradeJournalFromSignal(it) {
     signalDetectedEpochMs: it.signalDetectedEpochMs || null,
     signalResult60: it.signalResult60 && typeof it.signalResult60 === "object" ? { ...it.signalResult60 } : null,
     giroPlus: it.giroPlus && typeof it.giroPlus === "object" ? stripForAnalysisCopy(it.giroPlus) : null,
+    virtualNoTouch: it.virtualNoTouch && typeof it.virtualNoTouch === "object" ? stripForAnalysisCopy(it.virtualNoTouch) : null,
 
     // snapshot trade
     trade: { ...(it.trade || {}) },
@@ -3292,6 +3924,7 @@ function upsertTradeJournalFromSignal(it) {
       comment: prev.comment || "",
       feedback_at: prev.feedback_at || 0,
       feedback_source: prev.feedback_source || "",
+      virtualNoTouch: entry.virtualNoTouch || prev.virtualNoTouch || null,
       account_mode: entry.account_mode || prev.account_mode || getTradeJournalAccountMode(prev) || getCurrentAccountScope(),
       account_label: entry.account_label || prev.account_label || ((entry.account_mode || prev.account_mode) === ACCOUNT_MODE_REAL ? "REAL" : "DEMO"),
     };
@@ -3337,6 +3970,7 @@ function setTradeBadge(item, badge /* 'PENDING'|'ITM'|'OTM'|'' */, extra = {}) {
   item.trade.badge = badge || "";
   if (extra && typeof extra === "object") Object.assign(item.trade, extra);
   try { annotateTradeOtmEntryPoint(item); } catch {}
+  try { if (badge === "ITM" || badge === "OTM") recomputeVirtualNoTouchCombined(item); } catch {}
   saveHistory(history);
   updateRowTradeBadge(item);
 
@@ -9906,6 +10540,10 @@ function syncTradeJournalNextOutcomesFromHistory() {
         entry.ticks = live.ticks.slice();
         changed = true;
       }
+      if (live.virtualNoTouch && JSON.stringify(entry.virtualNoTouch || null) !== JSON.stringify(live.virtualNoTouch)) {
+        entry.virtualNoTouch = stripForAnalysisCopy(live.virtualNoTouch);
+        changed = true;
+      }
       if (!entry.minuteComplete && live.minuteComplete) {
         entry.minuteComplete = true;
         changed = true;
@@ -10055,6 +10693,24 @@ function renderTradesView() {
   header.textContent = `${scopeIcon} Trades ${scopeLabel}: ${visibleTrades.length}${hasDateFilter ? ` de ${allVisibleTrades.length} · ${getTradesDateFilterLabel()}` : ""}${otherCount ? ` · ocultos de la otra cuenta: ${otherCount}` : ""}`;
   list.appendChild(header);
 
+  const ntStats = getVirtualNoTouchPortfolioStats(visibleTrades);
+  if (ntStats.total > 0) {
+    const ntHeader = document.createElement("div");
+    ntHeader.className = "tradesScopeNotice";
+    ntHeader.style.padding = "9px 12px";
+    ntHeader.style.margin = "0 0 10px";
+    ntHeader.style.borderRadius = "14px";
+    ntHeader.style.border = "1px solid rgba(56,189,248,.22)";
+    ntHeader.style.background = "rgba(3,105,161,.12)";
+    ntHeader.style.fontWeight = "800";
+    ntHeader.style.fontSize = "12px";
+    ntHeader.style.color = "rgba(224,242,254,.92)";
+    const deltaTxt = ntStats.priced ? ` · Δ vs principal ${ntStats.delta >= 0 ? "+" : ""}$${ntStats.delta.toFixed(2)}` : "";
+    ntHeader.textContent = `🛡️ No Touch virtual · ${ntStats.resolved} resueltas (${ntStats.wins}✓/${ntStats.losses}✕) · ${ntStats.active} activas${ntStats.unavailable ? ` · ${ntStats.unavailable} sin nivel/cotización` : ""}${deltaTxt}`;
+    ntHeader.title = ntStats.priced ? `Mismo riesgo total: principal solo $${ntStats.baseline.toFixed(2)} neto vs reparto principal + No Touch $${ntStats.combined.toFixed(2)} neto.` : "Simulación: no compra el No Touch real.";
+    list.appendChild(ntHeader);
+  }
+
   if (!visibleTrades.length) {
     const filterText = hasDateFilter ? ` para ${getTradesDateFilterLabel()}` : "";
     list.insertAdjacentHTML("beforeend", `<div class="tradesEmptyState">Todavía no hay trades ${scopeLabel}${filterText}.</div>`);
@@ -10091,6 +10747,7 @@ function renderTradesView() {
         signalDetectedEpochMs: merged.signalDetectedEpochMs || null,
         signalResult60: merged.signalResult60 && typeof merged.signalResult60 === "object" ? { ...merged.signalResult60 } : null,
         trade: entry.trade || merged.trade || null,
+        virtualNoTouch: entry.virtualNoTouch || merged.virtualNoTouch || null,
         study_capture_id: entry.study_capture_id || entry?.trade?.study_capture_id || merged.study_capture_id || "",
         manualGiro: normalizeManualGiroState(entry.manualGiro || merged.manualGiro),
       };
@@ -10111,6 +10768,7 @@ function renderTradesView() {
   // Si un trade quedó guardado mientras Android estaba suspendido o sin conexión,
   // completa la ventana ancla+60→ancla+120 en segundo plano y reemplaza el ⏳.
   scheduleTradeJournalNextOutcomeRecovery();
+  scheduleVirtualNoTouchRecovery();
 }
 
 
@@ -10702,6 +11360,7 @@ function compactSignalForAnalysis(item) {
     pgpDecision: item.pgpDecision ? stripForAnalysisCopy(item.pgpDecision) : null,
     visualRead: item.visualRead ? stripForAnalysisCopy(item.visualRead) : null,
     giroPlus: item.giroPlus ? stripForAnalysisCopy(item.giroPlus) : null,
+    virtualNoTouch: item.virtualNoTouch ? stripForAnalysisCopy(item.virtualNoTouch) : null,
     ticks: Array.isArray(item.ticks)
       ? item.ticks.map((t) => ({ ms: Number(t.ms), quote: Number(t.quote) })).filter((t) => Number.isFinite(t.ms) && Number.isFinite(t.quote))
       : [],
@@ -10730,6 +11389,7 @@ function compactTradeJournalForAnalysis(entry) {
     snrLevel: compactVisualLevelForAnalysis(entry.snrLevel),
     visualRead: entry.visualRead ? stripForAnalysisCopy(entry.visualRead) : null,
     giroPlus: entry.giroPlus ? stripForAnalysisCopy(entry.giroPlus) : null,
+    virtualNoTouch: entry.virtualNoTouch ? stripForAnalysisCopy(entry.virtualNoTouch) : null,
     ticks: Array.isArray(entry.ticks)
       ? entry.ticks.map((t) => ({ ms: Number(t.ms), quote: Number(t.quote) })).filter((t) => Number.isFinite(t.ms) && Number.isFinite(t.quote))
       : [],
@@ -19711,6 +20371,7 @@ function buildModalItemFromTradeEntry(entry) {
     signalDetectedEpochMs: entry.signalDetectedEpochMs || live?.signalDetectedEpochMs || null,
     signalResult60: entry.signalResult60 || live?.signalResult60 || null,
     giroPlus: entry.giroPlus || live?.giroPlus || null,
+    virtualNoTouch: entry.virtualNoTouch || live?.virtualNoTouch || null,
     trade: entry.trade || live?.trade || null,
     study_capture_id: entry.study_capture_id || entry?.trade?.study_capture_id || live?.study_capture_id || live?.trade?.study_capture_id || "",
     manualGiro: normalizeManualGiroState(entry.manualGiro || live?.manualGiro),
@@ -20813,6 +21474,7 @@ function buildRow(item, opts = {}) {
         <span class="giroPlusBadge hidden" title=""></span>
         <span class="tradeBadge hidden" title=""></span>
         <span class="otmEntryPointBadge hidden" title=""></span>
+        <span class="virtualNoTouchBadge hidden" title=""></span>
         <span class="nextArrow pending" title="Próxima vela: esperando…">⏳</span>
       </div>
     </div>
@@ -20861,6 +21523,7 @@ function buildRow(item, opts = {}) {
 
   updateRowChartBtnOnRow(row, item);
   updateRowTradeBadgeOnRow(row, item);
+  updateRowVirtualNoTouchBadgeOnRow(row, item);
   updateRowNextArrowOnRow(row, item);
   updateRowSignalStageOnRow(row, item);
   updateRowGiroPlusBadgeOnRow(row, item);
@@ -21375,6 +22038,7 @@ function applyClosedContractOutcomeFromPOC(poc, sourceLabel = "watchdog") {
             tradesJournal[idx].trade.account_mode = tradesJournal[idx].account_mode;
             tradesJournal[idx].trade.account_label = tradesJournal[idx].account_label;
           }
+          try { recomputeVirtualNoTouchCombined(tradesJournal[idx]); } catch {}
           tradesJournal[idx].saved_at = Date.now();
           saveTradesJournal(tradesJournal);
           try { if ((localStorage.getItem("activeView") || "signals") === "trades") renderTradesView(); } catch {}
@@ -21772,6 +22436,10 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
     try {
       Object.assign(tradeExtra, compactAuditFields(extractContractAuditFields(res?.buy || {})));
       if (!tradeExtra.purchase_time) tradeExtra.purchase_time = Math.floor(serverNowMs() / 1000);
+      if (!Number.isFinite(Number(tradeExtra.entry_spot))) {
+        const entryRef = Number(lastQuoteBySymbol?.[symbol]);
+        if (Number.isFinite(entryRef) && entryRef > 0) tradeExtra.entry_reference_quote = entryRef;
+      }
       if (itemCtx?.signalAutoEntry?.post58_readiness) {
         tradeExtra.entry_trigger_mode = isNextCandleExpiryTiming() ? "PREPROPOSAL_POST_TICK_58" : "AUTO58_NORMAL";
         tradeExtra.entry_trigger_ms = Math.round(Number(itemCtx.signalAutoEntry.post58_readiness.ms || 0));
@@ -21785,6 +22453,9 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
     if (itemCtx && itemCtx.id) {
       setTradeBadge(itemCtx, "PENDING", { contract_id: String(cid), ...tradeExtra });
       linkContractToSignal(cid, itemCtx.id);
+      // II40: prepara en segundo plano una cotización NOTOUCH virtual basada en nivel.
+      // No envía buy para ese segundo contrato.
+      scheduleVirtualNoTouchSimulation(itemCtx);
     }
 
     subscribeContractOutcome(cid, true);
@@ -29534,6 +30205,9 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
     for (const it of history.slice(-60)) {
       if (!it || !it.signalFloatingWindow || String(it.symbol || "") !== sym) continue;
 
+      // II40: seguimiento del No Touch virtual. No ejecuta ninguna compra.
+      try { if (evaluateVirtualNoTouchOnTick(it, ep, q)) changed = true; } catch {}
+
       // Resultado canónico: próximos 60s después de la formación,
       // desde ancla+60s hasta ancla+120s.
       const result60 = ensureSignalResult60(it);
@@ -31355,7 +32029,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Completá el flujo PGP para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II39: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones.`;
+  const logicText = `Motor experimental V113.33-II40: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa guiada: el flujograma PGP decide continuidad o búsqueda de giro; se requieren dos confirmaciones explícitas y separadas de giro para habilitar la dirección de la señal y AUTO 58. Si después de detectarse la formación el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se busca y recalibra anticipadamente solo en la dirección de giro, sin esperar el 2/2; el 2/2 continúa siendo obligatorio exclusivamente para autorizar la compra. Si AUTO58 falla exclusivamente por tiempo/proposal y el giro ya tenía 2/2 válido, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II32, el análisis PGP permanece editable hasta s65. Si el 2/2 se completa después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos PGP, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual.`;
 
   return {
     direction,
