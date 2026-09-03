@@ -535,6 +535,30 @@ body.light .settingsModalHeader{
   font-weight:900;
   word-break:break-word;
 }
+.modalTitleRow{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  min-width:0;
+}
+.modalTitleRow .modalTitle{
+  min-width:0;
+}
+.modalVoiceSavedBadge{
+  flex:0 0 auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:25px;
+  height:25px;
+  border-radius:999px;
+  border:1px solid rgba(34,211,238,.42);
+  background:rgba(8,47,73,.72);
+  box-shadow:0 0 0 1px rgba(34,211,238,.08) inset, 0 4px 14px rgba(0,0,0,.18);
+  font-size:14px;
+  line-height:1;
+}
+.modalVoiceSavedBadge.hidden{ display:none !important; }
 
 .modalSub{
   margin-top:4px;

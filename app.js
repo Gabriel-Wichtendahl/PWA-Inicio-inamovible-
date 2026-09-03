@@ -1,4 +1,4 @@
-// v113.33-II67: PRUEBA EXPERIMENTAL P/M→G→P/M CON ÚLTIMO MOVIMIENTO DÉBIL. Punto de rollback exacto: v113.33-II65.
+// v113.33-II68: conserva la PRUEBA II67 y agrega indicador visible de audio grabado en el modal. Punto de rollback de la prueba de señal: v113.33-II65.
 // Solo acepta P→G→P y exige que el tercer P se debilite internamente: reducción tick a tick
 // hacia el final y velocidad media claramente menor que el G. El primer P débil suma prioridad, pero no es requisito.
 // Si la prueba no convence, volver a II65 restaura exactamente el detector anterior.
@@ -135,7 +135,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II67";
+const APP_BUILD_VERSION = "v113.33-II68";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -955,9 +955,15 @@ function updateVoiceAnalysisUI() {
   const deleteBtn = pickEl("modalVoiceDeleteBtn");
   const metaEl = pickEl("modalVoiceMeta");
   const controls = pickEl("modalVoiceControls");
+  const savedBadge = pickEl("modalVoiceSavedBadge");
   if (!recordBtn || !playBtn || !deleteBtn || !metaEl || !controls) return;
 
   const signalId = getVoiceAnalysisSignalId(modalCurrentItem);
+  const savedRecordHere = !!(signalId && voiceAnalysisCurrentRecord && String(voiceAnalysisCurrentRecord.signalId || "") === signalId);
+  if (savedBadge) {
+    savedBadge.classList.toggle("hidden", !savedRecordHere);
+    savedBadge.title = savedRecordHere ? "Esta señal tiene un audio grabado" : "";
+  }
   controls.style.display = signalId ? "flex" : "none";
   if (!signalId) return;
 
@@ -4420,7 +4426,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_5_PUNTOS_NETOS_AMBOS_LADOS_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_S60_RETROCESO_OPCIONAL_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_EXPORT_DIAG_RETRACE_SUPPRESS_S60_REF_NULL_FIX_CUTOFF_S105_MIN130_NO_MAX_INTERNAL_TICK_REDUCTION_ALL3_MARK_ANY_PMG_WEAK_LAST_REQUIRED_ROLLBACK_II65_V113_33_II67_20260903";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_5_PUNTOS_NETOS_AMBOS_LADOS_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_S60_RETROCESO_OPCIONAL_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_EXPORT_DIAG_RETRACE_SUPPRESS_S60_REF_NULL_FIX_CUTOFF_S105_MIN130_NO_MAX_INTERNAL_TICK_REDUCTION_ALL3_MARK_ANY_PMG_WEAK_LAST_REQUIRED_ROLLBACK_II65_AUDIO_SAVED_MODAL_BADGE_V113_33_II68_20260903";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
