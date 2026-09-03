@@ -1,8 +1,8 @@
-/* sw.js — Deriv Inicio Inamovible v113.33-II63 */
+/* sw.js — Deriv Inicio Inamovible v113.33-II64 */
 "use strict";
 
 // Caché exclusiva de Inicio Inamovible para que no colisione con la PWA estable ni con II1.
-const CACHE = "deriv-assets-v113-33-inicio-inamovible-ii63";
+const CACHE = "deriv-assets-v113-33-inicio-inamovible-ii64";
 
 const CORE_ASSETS = [
   "./",
