@@ -535,15 +535,7 @@ body.light .settingsModalHeader{
   font-weight:900;
   word-break:break-word;
 }
-.modalTitleRow{
-  display:flex;
-  align-items:center;
-  gap:7px;
-  min-width:0;
-}
-.modalTitleRow .modalTitle{
-  min-width:0;
-}
+
 .modalSub{
   margin-top:4px;
   color:var(--muted);
