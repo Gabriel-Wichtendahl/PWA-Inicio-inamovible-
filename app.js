@@ -1,5 +1,7 @@
-// v113.33-II65: conserva II64 y muestra la marca de reducción interna únicamente cuando los tres movimientos P/M→G→P/M tienen reducción.
-// Es informativo: no bloquea señales ni altera la lógica operativa.
+// v113.33-II67: PRUEBA EXPERIMENTAL P/M→G→P/M CON ÚLTIMO MOVIMIENTO DÉBIL. Punto de rollback exacto: v113.33-II65.
+// Solo acepta P→G→P y exige que el tercer P se debilite internamente: reducción tick a tick
+// hacia el final y velocidad media claramente menor que el G. El primer P débil suma prioridad, pero no es requisito.
+// Si la prueba no convence, volver a II65 restaura exactamente el detector anterior.
 // v113.33-II62: corrige la entrada HL por retroceso: captura de forma segura el cierre s60 (null ya no se interpreta como 0), busca la barrera fija del cierre s60 alrededor de +130% neto y corta en s105 para dejar 15s hasta s120.
 // v113.33-II61: limpia el modo Higher/Lower por retroceso en cierre s60: desactiva la preparación AUTO58/finalRefresh cuando el modo retroceso está activo y exporta un diagnóstico legible del estado s60CloseBarrierEntry.
 // Si el 2/2 se completa después de s58, ya no intenta AUTO58 normal: arma el rescate tardío y espera precio favorable.
@@ -133,7 +135,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II65";
+const APP_BUILD_VERSION = "v113.33-II67";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -4418,7 +4420,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_5_PUNTOS_NETOS_AMBOS_LADOS_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_S60_RETROCESO_OPCIONAL_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_EXPORT_DIAG_RETRACE_SUPPRESS_S60_REF_NULL_FIX_CUTOFF_S105_MIN130_NO_MAX_INTERNAL_TICK_REDUCTION_ALL3_MARK_V113_33_II65_20260903";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_5_PUNTOS_NETOS_AMBOS_LADOS_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_S60_RETROCESO_OPCIONAL_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_EXPORT_DIAG_RETRACE_SUPPRESS_S60_REF_NULL_FIX_CUTOFF_S105_MIN130_NO_MAX_INTERNAL_TICK_REDUCTION_ALL3_MARK_ANY_PMG_WEAK_LAST_REQUIRED_ROLLBACK_II65_V113_33_II67_20260903";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -21290,6 +21292,42 @@ function normalizeSNRLevelMeta(meta) {
             : [],
         }
       : null,
+    weakLastMoveTrial: meta.weakLastMoveTrial && typeof meta.weakLastMoveTrial === "object"
+      ? {
+          enabled: !!meta.weakLastMoveTrial.enabled,
+          rollbackVersion: s(meta.weakLastMoveTrial.rollbackVersion),
+          patternRequired: s(meta.weakLastMoveTrial.patternRequired),
+          firstMovementLabel: s(meta.weakLastMoveTrial.firstMovementLabel),
+          lastMovementLabel: s(meta.weakLastMoveTrial.lastMovementLabel),
+          lastMovementInternalReductionRequired: !!meta.weakLastMoveTrial.lastMovementInternalReductionRequired,
+          lastMovementHasInternalReduction: !!meta.weakLastMoveTrial.lastMovementHasInternalReduction,
+          lastMovementEndsReduced: !!meta.weakLastMoveTrial.lastMovementEndsReduced,
+          lastMovementSlowVsG: !!meta.weakLastMoveTrial.lastMovementSlowVsG,
+          lastMovementVsGSpeedRatio: n(meta.weakLastMoveTrial.lastMovementVsGSpeedRatio),
+          firstMovementWeakPreferred: !!meta.weakLastMoveTrial.firstMovementWeakPreferred,
+          firstMovementVsGSpeedRatio: n(meta.weakLastMoveTrial.firstMovementVsGSpeedRatio),
+          lastMovementInternal: meta.weakLastMoveTrial.lastMovementInternal && typeof meta.weakLastMoveTrial.lastMovementInternal === "object"
+            ? {
+                directionalStepCount: n(meta.weakLastMoveTrial.lastMovementInternal.directionalStepCount, 0),
+                reductionPairCount: n(meta.weakLastMoveTrial.lastMovementInternal.reductionPairCount, 0),
+                firstDirectionalMove: n(meta.weakLastMoveTrial.lastMovementInternal.firstDirectionalMove),
+                lastDirectionalMove: n(meta.weakLastMoveTrial.lastMovementInternal.lastDirectionalMove),
+                lastVsFirstRatio: n(meta.weakLastMoveTrial.lastMovementInternal.lastVsFirstRatio),
+                hasReduction: !!meta.weakLastMoveTrial.lastMovementInternal.hasReduction,
+              }
+            : null,
+          firstMovementInternal: meta.weakLastMoveTrial.firstMovementInternal && typeof meta.weakLastMoveTrial.firstMovementInternal === "object"
+            ? {
+                directionalStepCount: n(meta.weakLastMoveTrial.firstMovementInternal.directionalStepCount, 0),
+                reductionPairCount: n(meta.weakLastMoveTrial.firstMovementInternal.reductionPairCount, 0),
+                firstDirectionalMove: n(meta.weakLastMoveTrial.firstMovementInternal.firstDirectionalMove),
+                lastDirectionalMove: n(meta.weakLastMoveTrial.firstMovementInternal.lastDirectionalMove),
+                lastVsFirstRatio: n(meta.weakLastMoveTrial.firstMovementInternal.lastVsFirstRatio),
+                hasReduction: !!meta.weakLastMoveTrial.firstMovementInternal.hasReduction,
+              }
+            : null,
+        }
+      : null,
     internalMovementReductions: meta.internalMovementReductions && typeof meta.internalMovementReductions === "object"
       ? {
           version: s(meta.internalMovementReductions.version),
@@ -23380,6 +23418,7 @@ function refreshOpenSignalStageBadges() {
 function getCompactSignalPatternTag(item) {
   const meta = item?.giroPolaridad || item?.snrLevel || {};
   const route = String(meta.constructiveQualificationRoute || "");
+  if (route === "inicio_inamovible_ultimo_debil_ii67") return `${String(meta.visualReductionPattern || "P/M→G→P/M")} débil`;
   if (route === "inicio_inamovible_single_pmg" || meta.inicioInamovibleMode) {
     return String(meta.visualReductionPattern || "P/M→G→P/M");
   }
@@ -23388,10 +23427,11 @@ function getCompactSignalPatternTag(item) {
 }
 function getCompactSignalInternalReductionTag(item) {
   const meta = item?.giroPolaridad || item?.snrLevel || {};
+  if (meta?.weakLastMoveTrial?.enabled || String(meta?.constructiveQualificationRoute || "") === "inicio_inamovible_ultimo_debil_ii67") {
+    return "Último reduce ✓";
+  }
   const study = meta?.internalMovementReductions;
   const movements = Array.isArray(study?.movements) ? study.movements.slice(0, 3) : [];
-  // II65: solo marcar visualmente cuando LOS TRES movimientos tienen reducción interna.
-  // El detalle parcial se conserva en el JSON para estudio, pero no ensucia la lista de Señales.
   const allThree = study?.allThreeHaveReduction === true ||
     (movements.length === 3 && movements.every((m) => m?.hasReduction === true));
   if (!allThree) return "";
@@ -33937,7 +33977,7 @@ function buildInicioInternalTickReductionStudy(best) {
   const movements = runs.map((run, i) => analyzeInicioInternalTickReduction(run, labels[i] || `T${i + 1}`, side, i));
   const withReduction = movements.filter((m) => !!m.hasReduction).length;
   return {
-    version: 'II65_INTERNAL_TICK_REDUCTION_V1',
+    version: 'II67_INTERNAL_TICK_REDUCTION_V1',
     studyOnly: true,
     affectsSignalAcceptance: false,
     method: 'tick_directional_steps_pair_reduction_10pct',
@@ -34030,6 +34070,9 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
 
       // Se clasifica con el tercer movimiento COMPLETO, ya cerrado por el retroceso terminal.
       const labels = summarizeVisualMoves(moves).labels;
+      // II67 PRUEBA: se conservan todas las variantes P/M→G→P/M de II65.
+      // El requisito experimental se aplica a la DEBILIDAD del tercer movimiento, no a su etiqueta P/M.
+      // II65 es el rollback exacto si se abandona esta prueba.
       if (labels[1] !== "G" || !["P", "M"].includes(labels[0]) || !["P", "M"].includes(labels[2])) continue;
       if (!(moves[1] > moves[0] && moves[1] > moves[2])) continue;
 
@@ -34071,6 +34114,29 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       // Gracia de cierre: el tercer tramo y su primer retroceso pueden confirmarse hasta s30.
       if (setupElapsedFromAnchorMs > 28000 || confirmationElapsedFromAnchorMs < 15000 || confirmationElapsedFromAnchorMs > 30000) continue;
 
+      // II67 PRUEBA ÚLTIMO MOVIMIENTO DÉBIL: el tercer P/M no puede ser un impulso agresivo.
+      // Debe mostrar reducción interna real, terminar con un paso menor que el primero y desacelerar respecto del G.
+      const firstInternalWeakStudy = analyzeInicioInternalTickReduction(first, labels[0], side, 0);
+      const lastInternalWeakStudy = analyzeInicioInternalTickReduction(last, labels[2], side, 2);
+      const firstDurationMs = Math.max(1, Number(first.endMs || 0) - Number(first.startMs || 0));
+      const centralDurationMs = Math.max(1, Number(central.endMs || 0) - Number(central.startMs || 0));
+      const lastDurationMs = Math.max(1, Number(last.endMs || 0) - Number(last.startMs || 0));
+      const firstSpeed = moves[0] / firstDurationMs;
+      const centralSpeed = moves[1] / centralDurationMs;
+      const lastSpeed = moves[2] / lastDurationMs;
+      const firstVsCentralSpeedRatio = firstSpeed / Math.max(centralSpeed, 1e-12);
+      const lastVsCentralSpeedRatio = lastSpeed / Math.max(centralSpeed, 1e-12);
+      const lastEndsReduced = Number.isFinite(Number(lastInternalWeakStudy?.lastVsFirstRatio))
+        && Number(lastInternalWeakStudy.lastVsFirstRatio) <= 0.90;
+      const lastHasInternalReduction = !!lastInternalWeakStudy?.hasReduction
+        && Number(lastInternalWeakStudy?.directionalStepCount || 0) >= 2
+        && Number(lastInternalWeakStudy?.reductionPairCount || 0) >= 1;
+      const lastIsSlowVsG = lastVsCentralSpeedRatio <= 0.80;
+      if (!lastHasInternalReduction || !lastEndsReduced || !lastIsSlowVsG) continue;
+
+      // El primer movimiento P/M débil es una preferencia, nunca un bloqueo duro.
+      const firstWeakPreferred = !!firstInternalWeakStudy?.hasReduction || firstVsCentralSpeedRatio <= 0.85;
+
       const blockPts = aligned.filter((p) => Number(p.ms) >= anchorOffsetMs && Number(p.ms) <= setupFormedAtMs);
       if (blockPts.length < 5) continue;
       const y0 = Number(blockPts[0]?.y);
@@ -34110,6 +34176,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         + Math.min(10, dominanceRatio * 11)
         + Math.min(8, displacementRatio * 10)
         + Math.min(5, terminalCorrectionMove / Math.max(moves[2], 1e-9) * 12)
+        + (firstWeakPreferred ? 5 : 0)
+        + Math.min(5, Math.max(0, (0.80 - lastVsCentralSpeedRatio) * 12))
         - Math.max(0, confirmationElapsedFromAnchorMs - 26000) / 1300;
 
       allCandidates.push({
@@ -34119,6 +34187,19 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         efficiency, dominanceRatio, displacementRatio, realDisplacement,
         centralRatio, centerShare, netAdvance, correctionSum, terminalCorrectionMove, score,
         lateralVisualRatioMin, lateralToCentralRatios, sepOne, sepTwo,
+        weakLastMoveTrial: {
+          enabled: true,
+          rollbackVersion: "v113.33-II65",
+          lastRequired: true,
+          lastHasInternalReduction,
+          lastEndsReduced,
+          lastIsSlowVsG,
+          lastVsCentralSpeedRatio,
+          lastInternal: lastInternalWeakStudy,
+          firstWeakPreferred,
+          firstVsCentralSpeedRatio,
+          firstInternal: firstInternalWeakStudy,
+        },
       });
     }
   }
@@ -34126,6 +34207,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const best = allCandidates.sort((a, b) => Number(b.score || 0) - Number(a.score || 0))[0] || null;
   if (!best) return null;
   const internalMovementReductions = buildInicioInternalTickReductionStudy(best);
+  const weakLastMoveTrial = best?.weakLastMoveTrial || null;
 
   // Buscamos GIRO: la señal siempre es contraria a los tres impulsos observados.
   const direction = best.side > 0 ? "PUT" : "CALL";
@@ -34140,14 +34222,17 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
   const setupAtSec = Math.round(best.setupElapsedFromAnchorMs / 1000);
   const reasons = [
     `${pattern}: tres impulsos ${movementSideText}s en la misma dirección`,
+    `PRUEBA II67: último ${best.labels[2]} reduce internamente y termina perdiendo fuerza`,
+    `velocidad último ${best.labels[2]} = ${(Number(weakLastMoveTrial?.lastVsCentralSpeedRatio || 0) * 100).toFixed(0)}% de la velocidad del G`,
+    weakLastMoveTrial?.firstWeakPreferred ? `primer ${best.labels[0]} también débil (preferencia cumplida)` : `primer ${best.labels[0]} sin requisito duro de debilidad`,
     `tercer movimiento completo, cerrado por retroceso ${turnSideText}`,
-    `G central único; laterales ${best.labels[0]}/${best.labels[2]} menores y visuales`,
+    `G central único; laterales ${best.labels[0]} y ${best.labels[2]} menores y visuales`,
     `cada lateral mide al menos ${(best.lateralVisualRatioMin * 100).toFixed(0)}% del G y tiene corte real`,
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
-  const status = `🧲 INICIO INAMOVIBLE · ${pattern} ${movementSideText} completo · giro esperado ${turnSideText}. Señal ${direction}. Marcá 5 puntos netos hacia COMPRA o VENTA para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II65: busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). El central debe ser el único G; cada lateral P/M debe medir al menos 22% del G y existir como movimiento visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa manual por puntaje: cada punto de COMPRA suma +1 y cada punto de VENTA suma -1; hacen falta 5 puntos NETOS hacia cualquiera de los dos lados para habilitar esa dirección y AUTO 58. Si después de detectarse la formación y hasta s60 el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. Desde s60 en adelante el guard de ancla termina y no participa del rescate s60–s70. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se prepara anticipadamente; desde el primer punto manual la preparación puede seguir el lado hacia el que se inclina el puntaje. La compra exige exclusivamente alcanzar 5 puntos netos hacia COMPRA o VENTA. Si AUTO58 falla exclusivamente por tiempo/proposal y el lado ya tenía 5 puntos netos válidos, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II59, el puntaje permanece editable hasta s65. Si los 5 puntos netos se completan después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos manuales, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje. En II44, la interfaz usa como dato principal la GANANCIA NETA máxima (por ejemplo, payout total 230% = +130% neto), oculta la distancia técnica del badge principal, calcula promedio/mediana/80%/90% también en ganancia neta, corrige valores sin curva que antes podían aparecer como +0%, y amplía la curva virtual con muestras tanto más cercanas como más lejanas para poder estimar también trades cuyo cierre favorable no alcanzó la barrera usada. En II47 se elimina la prueba del borde fantasma de la vela Replay y se la reemplaza por un fondo guía fijo detrás de la vela japonesa: franjas horizontales tenues e inmóviles, más una línea de apertura levemente resaltada, para ayudar a percibir micro-movimientos sin generar mareo. En II48 se corrige GAN. MÁX: la distancia máxima s120 se mide con la misma referencia de precio usada por la curva distancia→payout (curve.entry_quote / entry_reference_quote), evitando mezclarla con entry_spot y mostrar una ganancia máxima inferior a la ganancia real del trade. En II49 el gráfico de líneas del modal marca cada tick visible con un punto pequeño, igual que la referencia visual del Replay, manteniendo el último tick destacado y sin modificar la escala ni la lógica operativa. En II50 se corrige el guard de retorno al ancla: solo puede bloquear durante la formación s0–s60; una vez alcanzado s60 sin retorno, el rescate tardío s60–s70 continúa aunque el precio toque o atraviese el ancla después. En II51 los puntos de tick del gráfico de líneas del modal se hacen apenas más visibles (radio 1.85 px y mayor opacidad), sin modificar la línea, la escala ni la lógica operativa. En II52 esos puntos también se dibujan en las capturas de estudio y en la bitácora imprimible, con puntos negros sutiles sobre la línea para que la cadencia de ticks siga visible al descargar o imprimir. En II53 esos puntos de impresión se vuelven más visibles: cada tick se dibuja con un halo blanco fino y un centro negro más marcado, para que no se pierda dentro de la línea al imprimir. En II54 se incrementa todavía más la visibilidad en impresión: cada tick usa un disco blanco más grande, un aro negro fino y un centro negro más ancho, pensado para que siga viéndose incluso al reducir dos capturas por hoja. En II55 la zona de impresión agrega selección masiva: “Seleccionar ITMs” toma todos los ITM visibles y también los OTM por PUNTO ENTRADA; “Seleccionar OTMs” toma únicamente OTM direccionales y excluye esos casos. Ambas opciones respetan cuenta y filtro de fecha visibles. En II56 la preparación de la bitácora usa timeout por captura, pausas cortas para liberar memoria y blobs/object URLs en lugar de data URLs pesadas, reduciendo cuelgues en Android cuando se imprimen muchas operaciones seguidas. En II57, específicamente para la bitácora A4 masiva, cada imagen se renderiza en una resolución optimizada para papel y se codifica en JPEG liviano; así baja mucho la memoria acumulada al imprimir lotes grandes, mientras la captura individual descargable sigue en alta resolución. En II58, cuando la selección es grande, la bitácora se divide automáticamente en sublotes de hasta 40 capturas y los va enviando a impresión uno por uno, para evitar el cuelgue recurrente alrededor de la captura 61 en Android/WebView. En II59 se reemplaza la autorización PGP 2/2 por el sistema anterior de puntaje direccional: 5 puntos netos hacia COMPRA o 5 hacia VENTA habilitan ese lado, y los puntos contrarios se descuentan del neto. En II60 se agrega un modo opcional de entrada Higher/Lower “Retroceso · barrera cierre s60”: con 5 puntos netos no compra en AUTO58; fija una barrera absoluta exactamente en el precio de cierre s60 y espera un retroceso posterior. Solo compra si esa barrera cotiza entre 225% y 235% total (+125% a +135% neto), con vencimiento fijo s120. En II60 el corte original era s108. En II61, cuando ese modo está activo se desactiva por completo la preparación vieja de s50/s56/AUTO58 y el export incluye el estado completo s60CloseBarrierEntry, con motivo exacto de no entrada, intentos, retrocesos vistos y payouts observados. En II62 se corrige el fallo por el cual reference_price=null podía interpretarse como 0: al llegar a s60 se captura o reconstruye el cierre real, la barrera absoluta queda fijada en ese cierre y se cotiza durante el retroceso hasta encontrar 225–235% total (objetivo +130% neto). La ventana termina en s105 para conservar al menos 15 segundos hasta el vencimiento fijo s120. En II63 se elimina el techo de payout únicamente para este modo: la barrera sigue fija exactamente en el cierre s60 y la entrada se habilita cuando la proposal alcanza como mínimo 230% total (+130% neto); 230% o cualquier valor superior es válido, siempre antes de s105 y con vencimiento fijo s120. En II64 se agrega, solo para estudio y sin bloquear señales, un análisis de reducción interna por ticks dentro de cada uno de los tres movimientos P/M→G→P/M: compara los avances consecutivos del mismo sentido y registra pares cuya magnitud se reduce al menos 10%. En II65 la marca visual de reducción interna aparece únicamente si los tres movimientos tienen al menos una reducción; las reducciones parciales siguen guardadas en el JSON pero no se muestran en la lista.`;
+  const status = `🧪 II67 ÚLTIMO DÉBIL · ${pattern} ${movementSideText} · ${best.labels[2]} final reduce y desacelera · giro esperado ${turnSideText}. Señal ${direction}. Marcá 5 puntos netos hacia COMPRA o VENTA para autorizar la operación.`;
+  const logicText = `Motor experimental V113.33-II67 (PRUEBA reversible; rollback exacto II65): conserva las variantes P→G→P, P→G→M, M→G→P y M→G→M del mismo grupo (${movementGroupText}). El central debe ser el único G y ambos laterales P/M deben medir al menos 22% del G. El requisito nuevo es el tercer movimiento, sea P o M: debe mostrar reducción interna tick a tick, terminar con un avance al menos 10% menor que el primero y tener una velocidad media no mayor al 80% de la velocidad del G. Que el primer movimiento P/M también sea débil solo suma prioridad y no bloquea. Cada movimiento debe existir como tramo visual separado por una pausa o retroceso real. Una simple desaceleración dentro del G no crea el tercer movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se reclasifica. La señal es siempre contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa manual por puntaje: cada punto de COMPRA suma +1 y cada punto de VENTA suma -1; hacen falta 5 puntos NETOS hacia cualquiera de los dos lados para habilitar esa dirección y AUTO 58. Si después de detectarse la formación y hasta s60 el precio vuelve a tocar o atravesar el precio del ancla, la operativa queda bloqueada de forma irreversible. Desde s60 en adelante el guard de ancla termina y no participa del rescate s60–s70. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se prepara anticipadamente; desde el primer punto manual la preparación puede seguir el lado hacia el que se inclina el puntaje. La compra exige exclusivamente alcanzar 5 puntos netos hacia COMPRA o VENTA. Si AUTO58 falla exclusivamente por tiempo/proposal y el lado ya tenía 5 puntos netos válidos, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II59, el puntaje permanece editable hasta s65. Si los 5 puntos netos se completan después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos manuales, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje. En II44, la interfaz usa como dato principal la GANANCIA NETA máxima (por ejemplo, payout total 230% = +130% neto), oculta la distancia técnica del badge principal, calcula promedio/mediana/80%/90% también en ganancia neta, corrige valores sin curva que antes podían aparecer como +0%, y amplía la curva virtual con muestras tanto más cercanas como más lejanas para poder estimar también trades cuyo cierre favorable no alcanzó la barrera usada. En II47 se elimina la prueba del borde fantasma de la vela Replay y se la reemplaza por un fondo guía fijo detrás de la vela japonesa: franjas horizontales tenues e inmóviles, más una línea de apertura levemente resaltada, para ayudar a percibir micro-movimientos sin generar mareo. En II48 se corrige GAN. MÁX: la distancia máxima s120 se mide con la misma referencia de precio usada por la curva distancia→payout (curve.entry_quote / entry_reference_quote), evitando mezclarla con entry_spot y mostrar una ganancia máxima inferior a la ganancia real del trade. En II49 el gráfico de líneas del modal marca cada tick visible con un punto pequeño, igual que la referencia visual del Replay, manteniendo el último tick destacado y sin modificar la escala ni la lógica operativa. En II50 se corrige el guard de retorno al ancla: solo puede bloquear durante la formación s0–s60; una vez alcanzado s60 sin retorno, el rescate tardío s60–s70 continúa aunque el precio toque o atraviese el ancla después. En II51 los puntos de tick del gráfico de líneas del modal se hacen apenas más visibles (radio 1.85 px y mayor opacidad), sin modificar la línea, la escala ni la lógica operativa. En II52 esos puntos también se dibujan en las capturas de estudio y en la bitácora imprimible, con puntos negros sutiles sobre la línea para que la cadencia de ticks siga visible al descargar o imprimir. En II53 esos puntos de impresión se vuelven más visibles: cada tick se dibuja con un halo blanco fino y un centro negro más marcado, para que no se pierda dentro de la línea al imprimir. En II54 se incrementa todavía más la visibilidad en impresión: cada tick usa un disco blanco más grande, un aro negro fino y un centro negro más ancho, pensado para que siga viéndose incluso al reducir dos capturas por hoja. En II55 la zona de impresión agrega selección masiva: “Seleccionar ITMs” toma todos los ITM visibles y también los OTM por PUNTO ENTRADA; “Seleccionar OTMs” toma únicamente OTM direccionales y excluye esos casos. Ambas opciones respetan cuenta y filtro de fecha visibles. En II56 la preparación de la bitácora usa timeout por captura, pausas cortas para liberar memoria y blobs/object URLs en lugar de data URLs pesadas, reduciendo cuelgues en Android cuando se imprimen muchas operaciones seguidas. En II57, específicamente para la bitácora A4 masiva, cada imagen se renderiza en una resolución optimizada para papel y se codifica en JPEG liviano; así baja mucho la memoria acumulada al imprimir lotes grandes, mientras la captura individual descargable sigue en alta resolución. En II58, cuando la selección es grande, la bitácora se divide automáticamente en sublotes de hasta 40 capturas y los va enviando a impresión uno por uno, para evitar el cuelgue recurrente alrededor de la captura 61 en Android/WebView. En II59 se reemplaza la autorización PGP 2/2 por el sistema anterior de puntaje direccional: 5 puntos netos hacia COMPRA o 5 hacia VENTA habilitan ese lado, y los puntos contrarios se descuentan del neto. En II60 se agrega un modo opcional de entrada Higher/Lower “Retroceso · barrera cierre s60”: con 5 puntos netos no compra en AUTO58; fija una barrera absoluta exactamente en el precio de cierre s60 y espera un retroceso posterior. Solo compra si esa barrera cotiza entre 225% y 235% total (+125% a +135% neto), con vencimiento fijo s120. En II60 el corte original era s108. En II61, cuando ese modo está activo se desactiva por completo la preparación vieja de s50/s56/AUTO58 y el export incluye el estado completo s60CloseBarrierEntry, con motivo exacto de no entrada, intentos, retrocesos vistos y payouts observados. En II62 se corrige el fallo por el cual reference_price=null podía interpretarse como 0: al llegar a s60 se captura o reconstruye el cierre real, la barrera absoluta queda fijada en ese cierre y se cotiza durante el retroceso hasta encontrar 225–235% total (objetivo +130% neto). La ventana termina en s105 para conservar al menos 15 segundos hasta el vencimiento fijo s120. En II63 se elimina el techo de payout únicamente para este modo: la barrera sigue fija exactamente en el cierre s60 y la entrada se habilita cuando la proposal alcanza como mínimo 230% total (+130% neto); 230% o cualquier valor superior es válido, siempre antes de s105 y con vencimiento fijo s120. En II64 se agrega, solo para estudio y sin bloquear señales, un análisis de reducción interna por ticks dentro de cada uno de los tres movimientos P/M→G→P/M: compara los avances consecutivos del mismo sentido y registra pares cuya magnitud se reduce al menos 10%. En II65 la marca visual de reducción interna aparece únicamente si los tres movimientos tienen al menos una reducción; las reducciones parciales siguen guardadas en el JSON pero no se muestran en la lista. En II66 se inició una PRUEBA reversible restringida a P→G→P. En II67 se corrige esa restricción: vuelven a aceptarse P→G→P, P→G→M, M→G→P y M→G→M, pero el tercer movimiento P/M debe debilitarse internamente, terminar con un avance al menos 10% menor que el inicial y tener velocidad media no mayor al 80% de la velocidad del G; un primer movimiento débil suma prioridad pero no es obligatorio.`;
 
   return {
     direction,
@@ -34212,6 +34297,15 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
         displacementRatio: best.displacementRatio,
         centerShare: best.centerShare,
         realDisplacement: best.realDisplacement,
+        weakLastMoveTrial: true,
+        weakLastMoveRollbackVersion: "v113.33-II65",
+        lastMovementInternalReductionRequired: true,
+        lastMovementHasInternalReduction: !!weakLastMoveTrial?.lastHasInternalReduction,
+        lastMovementEndsReduced: !!weakLastMoveTrial?.lastEndsReduced,
+        lastMovementSlowVsG: !!weakLastMoveTrial?.lastIsSlowVsG,
+        lastMovementVsGSpeedRatio: Number(weakLastMoveTrial?.lastVsCentralSpeedRatio),
+        firstMovementWeakPreferred: !!weakLastMoveTrial?.firstWeakPreferred,
+        firstMovementVsGSpeedRatio: Number(weakLastMoveTrial?.firstVsCentralSpeedRatio),
       },
       turnQualityValidatedAtMs: best.confirmedAtMs,
       turnQualitySetupFormedAtMs: best.setupFormedAtMs,
@@ -34230,6 +34324,22 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       acceptedChainLabels: best.labels,
       acceptedChainRuns: [best.first, best.central, best.last],
       internalMovementReductions,
+      weakLastMoveTrial: weakLastMoveTrial ? {
+        enabled: true,
+        rollbackVersion: "v113.33-II65",
+        patternRequired: "P/M→G→P/M",
+        firstMovementLabel: best.labels[0],
+        lastMovementLabel: best.labels[2],
+        lastMovementInternalReductionRequired: true,
+        lastMovementHasInternalReduction: !!weakLastMoveTrial.lastHasInternalReduction,
+        lastMovementEndsReduced: !!weakLastMoveTrial.lastEndsReduced,
+        lastMovementSlowVsG: !!weakLastMoveTrial.lastIsSlowVsG,
+        lastMovementVsGSpeedRatio: Number(weakLastMoveTrial.lastVsCentralSpeedRatio),
+        lastMovementInternal: weakLastMoveTrial.lastInternal || null,
+        firstMovementWeakPreferred: !!weakLastMoveTrial.firstWeakPreferred,
+        firstMovementVsGSpeedRatio: Number(weakLastMoveTrial.firstVsCentralSpeedRatio),
+        firstMovementInternal: weakLastMoveTrial.firstInternal || null,
+      } : null,
       acceptedReductionPatternText: pattern,
       acceptedReductionBlocks: [{
         pattern,
@@ -34249,8 +34359,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       firstConstructiveReduction: null,
       secondConstructiveReduction: null,
       thirdConstructiveReduction: null,
-      constructiveQualificationRoute: "inicio_inamovible_giro_three_same_direction_terminal_close",
-      constructiveQualificationLabel: `Inicio Inamovible ${pattern} ${movementSideText} → giro ${direction}`,
+      constructiveQualificationRoute: "inicio_inamovible_ultimo_debil_ii67",
+      constructiveQualificationLabel: `Inicio Inamovible ${pattern} · ÚLTIMO DÉBIL ${movementSideText} → giro ${direction}`,
       doubleMgmSignal: false,
       anchoredMgmConfirmed: false,
       anchoredMgmFollowupType: "",
