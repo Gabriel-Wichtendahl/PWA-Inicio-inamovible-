@@ -1,4 +1,4 @@
-// v113.33-II71: mantiene EXACTAMENTE el detector de señales de II65 (como en II70) y adapta el modal de señal a tablets, conservando el indicador 🎙️ en tarjetas de Señales/Trades.
+// v113.33-II72: conserva II71 y corrige la limpieza de audios: Borrar Señales preserva audios vinculados a Trades; Borrar Trades elimina los audios de esos trades.
 // La prueba de último movimiento débil de II66–II69 queda eliminada: no bloquea ni puntúa señales.
 // II65 sigue siendo la referencia exacta de la lógica de detección.
 // v113.33-II62: corrige la entrada HL por retroceso: captura de forma segura el cierre s60 (null ya no se interpreta como 0), busca la barrera fija del cierre s60 alrededor de +130% neto y corta en s105 para dejar 15s hasta s120.
@@ -134,7 +134,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II71";
+const APP_BUILD_VERSION = "v113.33-II72";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -4488,7 +4488,7 @@ const RUPTURA_DEBIL_GIRO_LOGIC_VERSION = "RUPTURA_DEBIL_GIRO_CONFIRMACION_20_30S
 const ALCISTA_IRREGULAR_25S_LOGIC_VERSION = "ALCISTA_IRREGULAR_QUIEBRES_30S_CALIBRADO_V106_6_20260604";
 const ALCISTA_REDUCCION_30S_LOGIC_VERSION = "ALCISTA_REDUCCION_30S_FLEX_V106_6_20260604";
 const REDUCCION_VISUAL_25S_LOGIC_VERSION = "REDUCCION_VISUAL_30S_DOS_REDUCCIONES_CLARAS_V107_1_20260608";
-const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_5_PUNTOS_NETOS_AMBOS_LADOS_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_S60_RETROCESO_OPCIONAL_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_EXPORT_DIAG_RETRACE_SUPPRESS_S60_REF_NULL_FIX_CUTOFF_S105_MIN130_NO_MAX_INTERNAL_TICK_REDUCTION_ALL3_MARK_AUDIO_CARD_BADGE_TABLET_MODAL_V113_33_II71_20260909";
+const REDUCCION_CONSTRUCTIVA_LOGIC_VERSION = "INICIO_INAMOVIBLE_GIRO_5_PUNTOS_NETOS_AMBOS_LADOS_BLOQUEO_ANCLA_MODAL_FIJO_CIERRE_60_RF_HL_BARRERA_S60_RETROCESO_OPCIONAL_130_PRECISION_FLOOR_CACHE_REPAIR_FINAL_EXCLUSIVE_AUTO58_FALLBACK_RELATIVE_FRESH_RECOVERY_S70_LATE_ANALYSIS_S65_DEBUG_AUTOREPLAY_IMMEDIATE_HANDOFF_PRESERVE_OTM_ENTRY_POINT_AUDIO_SYNC_SEQUENTIAL_SIGNAL_HANDOFF_CLEAR_SIGNALS_DELETE_AUDIO_PRINT_HIDDEN_ARROW_PRINT_PROGRESS_VIRTUAL_NOTOUCH_DEFENSIVE_MAX_WINNING_BARRIER_S120_PAYOUT_CURVE_EXPORT_DIAG_RETRACE_SUPPRESS_S60_REF_NULL_FIX_CUTOFF_S105_MIN130_NO_MAX_INTERNAL_TICK_REDUCTION_ALL3_MARK_AUDIO_CARD_BADGE_TABLET_MODAL_TRADE_AUDIO_PRESERVE_V113_33_II72_20260909";
 const GIRO_POLARIDAD_CANDLES_KEY = "giroPolarityCandles_v1";
 const GIRO_POLARIDAD_MAX_CANDLES = 140;
 const GIRO_APRENDIZAJE_STORE_KEY = "giroAprendizajeExamples_v1";
@@ -12790,18 +12790,53 @@ function ensureTradesTab() {
 /* =========================
    ✅ Clear por pestaña (inline)
 ========================= */
+function getTradeJournalAudioSignalIds(entries = tradesJournal) {
+  const out = new Set();
+  for (const entry of (Array.isArray(entries) ? entries : [])) {
+    if (!entry) continue;
+    const candidates = [
+      entry.id,
+      entry.signal_id,
+      entry.signalId,
+      entry?.signal?.id,
+      entry?.trade?.signal_id,
+      entry?.trade?.signalId,
+    ];
+    const contractIds = [
+      entry?.trade?.contract_id,
+      entry?.contract_id,
+      entry?.signalAutoEntry?.contract_id,
+    ];
+    for (const cid of contractIds) {
+      const linked = cid ? tradeLinks.get(String(cid)) : "";
+      if (linked) candidates.push(linked);
+    }
+    for (const value of candidates) {
+      const key = String(value || "").trim();
+      if (key) out.add(key);
+    }
+  }
+  return out;
+}
+
 async function clearSignalsOnly() {
   const removedSignals = Array.isArray(history) ? [...history] : [];
-  const signalIdsToDelete = Array.from(new Set(
+  const removedSignalIds = Array.from(new Set(
     removedSignals
       .map((item) => getVoiceAnalysisSignalId(item))
       .filter(Boolean)
   ));
 
+  // II72: un audio que ya pertenece a un Trade no se considera huérfano.
+  // "Borrar Señales" solo elimina audios de señales SIN trade guardado.
+  const protectedByTrade = getTradeJournalAudioSignalIds();
+  const signalIdsToDelete = removedSignalIds.filter((id) => !protectedByTrade.has(String(id)));
+  const protectedSignalIds = removedSignalIds.filter((id) => protectedByTrade.has(String(id)));
+
   if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") {
     const activeRecordingId = String(voiceAnalysisRecordingSignalId || "");
     if (activeRecordingId && signalIdsToDelete.includes(activeRecordingId)) {
-      toast("⏹ Detené la grabación actual antes de borrar las señales.", 2200);
+      toast("⏹ Detené la grabación actual antes de borrar esa señal.", 2200);
       return;
     }
   }
@@ -12831,36 +12866,85 @@ async function clearSignalsOnly() {
     } catch {}
   }
 
+  let protectedAudioCount = 0;
+  for (const signalId of protectedSignalIds) {
+    try {
+      const rec = await getVoiceAnalysisRecord(signalId);
+      if (rec) protectedAudioCount += 1;
+    } catch {}
+  }
+
   try { await refreshVoiceAnalysisStorageUI(); } catch {}
 
+  const keptText = protectedAudioCount > 0 ? ` · audios de Trades conservados: ${protectedAudioCount}` : "";
   if (deletedAudioCount > 0) {
-    toast(`🧹 Señales borradas · audios borrados: ${deletedAudioCount}`, 1800);
+    toast(`🧹 Señales borradas · audios sin trade borrados: ${deletedAudioCount}${keptText}`, 2300);
   } else {
-    toast("🧹 Señales borradas", 1600);
+    toast(`🧹 Señales borradas${keptText}`, 2000);
   }
 }
-function clearTradesOnly() {
+
+async function clearTradesOnly() {
   const scope = getCurrentAccountScope();
-  const before = (tradesJournal || []).length;
-  tradesJournal = (tradesJournal || []).filter((entry) => {
+  const beforeEntries = Array.isArray(tradesJournal) ? [...tradesJournal] : [];
+  const removedEntries = [];
+  const keptEntries = [];
+
+  for (const entry of beforeEntries) {
     const m = getTradeJournalAccountMode(entry);
     // Registros viejos sin cuenta pertenecen visualmente a DEMO, por compatibilidad.
     const visibleInScope = m ? m === scope : scope === ACCOUNT_MODE_DEMO;
-    return !visibleInScope;
-  });
+    if (visibleInScope) removedEntries.push(entry);
+    else keptEntries.push(entry);
+  }
+
+  const removedAudioIds = getTradeJournalAudioSignalIds(removedEntries);
+  const stillProtectedIds = getTradeJournalAudioSignalIds(keptEntries);
+  const audioIdsToDelete = Array.from(removedAudioIds).filter((id) => !stillProtectedIds.has(id));
+
+  if (voiceAnalysisRecorder && voiceAnalysisRecorder.state !== "inactive") {
+    const activeRecordingId = String(voiceAnalysisRecordingSignalId || "");
+    if (activeRecordingId && audioIdsToDelete.includes(activeRecordingId)) {
+      toast("⏹ Detené la grabación actual antes de borrar esos Trades.", 2200);
+      return;
+    }
+  }
+
+  const currentAudioSignalId = String(voiceAnalysisCurrentRecord?.signalId || "");
+  if (currentAudioSignalId && audioIdsToDelete.includes(currentAudioSignalId)) {
+    stopVoiceAnalysisPlayback();
+    voiceAnalysisCurrentRecord = null;
+    releaseVoiceAnalysisObjectUrl();
+    updateVoiceAnalysisUI();
+  }
+
+  tradesJournal = keptEntries;
   saveTradesJournal(tradesJournal);
   practiceQueue = [];
   clearPracticeQueueState();
   practiceRound = null;
   resetPracticeSimilarState();
+
+  let deletedAudioCount = 0;
+  for (const signalId of audioIdsToDelete) {
+    try {
+      const rec = await getVoiceAnalysisRecord(signalId);
+      if (rec) {
+        await deleteVoiceAnalysisRecord(signalId);
+        deletedAudioCount += 1;
+      }
+    } catch {}
+  }
+  try { await refreshVoiceAnalysisStorageUI(); } catch {}
+
   try {
     const av = localStorage.getItem("activeView") || "signals";
     updateCounter(av);
     if (av === "trades") renderTradesView();
     if (av === "practice") ensurePracticeReady();
   } catch {}
-  const removed = Math.max(0, before - (tradesJournal || []).length);
-  toast(`🗑️ Trades ${getTradingAccountLabel()} borrados: ${removed}`, 1800);
+  const removed = removedEntries.length;
+  toast(`🗑️ Trades ${getTradingAccountLabel()} borrados: ${removed}${deletedAudioCount ? ` · audios borrados: ${deletedAudioCount}` : ""}`, 2200);
 }
 
 function stripForAnalysisCopy(value, depth = 0) {
@@ -14091,9 +14175,9 @@ function ensureInlineClearButtons() {
   ensureViewActionButton("signals", {
     id: "clearSignalsInlineBtn",
     text: "🧹 Borrar Señales",
-    title: "Borra el historial de señales y también sus audios de análisis",
+    title: "Borra señales y solo los audios que NO pertenecen a Trades",
     onClick: () => {
-      if (!confirm("¿Borrar el historial de señales y también los audios de análisis asociados? (Trades se conserva)")) return;
+      if (!confirm("¿Borrar el historial de señales? Se borrarán solo los audios de señales SIN trade; los audios de Trades se conservan.")) return;
       clearSignalsOnly();
     },
   });
@@ -16324,13 +16408,13 @@ function ensureSplitClearButtons() {
     btn.type = "button";
     btn.className = "btn btnGhost";
     btn.textContent = "🗑️ Borrar Trades";
-    btn.title = "Borra solo el historial de trades guardados para estudio";
+    btn.title = "Borra el historial de Trades y también sus audios asociados";
     host.appendChild(btn);
   }
 
   btn.onclick = () => {
-    if (!confirm("¿Borrar SOLO el historial de trades guardados para estudio?")) return;
-    clearTradesOnly();
+    if (!confirm("¿Borrar SOLO el historial de Trades guardados para estudio y sus audios asociados?")) return;
+    void clearTradesOnly();
   };
 
   try { ensureSettingsSelfCheckButton(); } catch {}
