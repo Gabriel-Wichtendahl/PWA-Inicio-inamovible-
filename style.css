@@ -3071,3 +3071,5 @@ body.light .tradesDayCount{
     grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr);
   }
 }
+
+/* II74: modalLastMediumLevelBtn reutiliza modalChartViewBtn; nivel dibujado solo en canvas de línea. */
