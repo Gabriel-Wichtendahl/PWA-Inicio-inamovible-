@@ -7,13 +7,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-  <title>Deriv · Inicio Inamovible II81 · PRUEBA PGM + MIC ENTRE FLECHAS + REPLAY SEPARADO</title>
+  <title>Deriv · Inicio Inamovible II82 · PRUEBA PGM + REPLAY ICONO JUNTO AL MIC</title>
 
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=113.33-II81" />
+  <link rel="stylesheet" href="style.css?v=113.33-II82" />
 </head>
 
 <body class="neon">
@@ -126,7 +126,7 @@
           <button id="modalVoiceDeleteBtn" class="modalVoiceBtn modalVoiceDeleteBtn hidden" type="button" title="Borrar audio de esta señal">🗑️</button>
         </div>
         <div class="minuteCanvasToolbar" aria-label="Controles de vista del gráfico">
-          <button id="modalReplayBtn" class="modalReplayBtn hidden" type="button" title="Reproducir tick por tick la vela de la señal">🔎 Replay</button>
+          <button id="modalReplayBtn" class="modalReplayBtn hidden" type="button" title="Reproducir tick por tick la vela de la señal">↻</button>
           <button id="modalCandle1mBtn" class="modalChartViewBtn" type="button" aria-pressed="false" title="Ver mini gráfico de velas de 1 minuto">🕯️ Velas 1m</button>
           <button id="modalLastMediumLevelBtn" class="modalChartViewBtn" type="button" aria-pressed="false" title="Mostrar un nivel horizontal desde el inicio estructural del último movimiento mediano">📏 Nivel M OFF</button>
         </div>
@@ -226,10 +226,10 @@
     </div>
   </div>
 
-  <script src="app.js?v=113.33-II81"></script>
+  <script src="app.js?v=113.33-II82"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js?v=113.33-II81", { updateViaCache: "none" }).then(function (reg) { reg.update().catch(function () {}); }).catch(function () {});
+      navigator.serviceWorker.register("./sw.js?v=113.33-II82", { updateViaCache: "none" }).then(function (reg) { reg.update().catch(function () {}); }).catch(function () {});
     }
   </script>
 </body>

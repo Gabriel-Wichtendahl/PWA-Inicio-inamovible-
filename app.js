@@ -18209,10 +18209,19 @@ function ensureModalFooterControlsLayout() {
     if (modalVoiceControls && statusCenter && modalVoiceControls.parentElement !== statusCenter) {
       statusCenter.insertBefore(modalVoiceControls, statusCenter.firstChild || null);
     }
-    if (modalFooterChartTools) {
-      if (modalReplayBtn && modalReplayBtn.parentElement !== modalFooterChartTools) {
-        modalFooterChartTools.appendChild(modalReplayBtn);
+    if (modalReplayBtn) {
+      modalReplayBtn.textContent = '↻';
+      modalReplayBtn.setAttribute('aria-label', 'Replay');
+      modalReplayBtn.title = 'Abrir Replay tick por tick de esta vela';
+      if (modalVoiceControls && modalReplayBtn.parentElement !== modalVoiceControls) {
+        if (modalVoiceRecordBtn && modalVoiceRecordBtn.parentElement === modalVoiceControls) {
+          modalVoiceRecordBtn.insertAdjacentElement('afterend', modalReplayBtn);
+        } else {
+          modalVoiceControls.appendChild(modalReplayBtn);
+        }
       }
+    }
+    if (modalFooterChartTools) {
       if (modalCandle1mBtn && modalCandle1mBtn.parentElement !== modalFooterChartTools) {
         modalFooterChartTools.appendChild(modalCandle1mBtn);
       }
@@ -20565,6 +20574,8 @@ function updateModalChartViewBtnUI() {
   }
   if (modalReplayBtn) {
     modalReplayBtn.classList.remove("hidden");
+    modalReplayBtn.textContent = "↻";
+    modalReplayBtn.setAttribute("aria-label", "Replay");
     modalReplayBtn.title = isCandles
       ? "Abrir Replay tick por tick de esta vela"
       : "Abrir Replay tick por tick (activa velas 1m automáticamente)";
