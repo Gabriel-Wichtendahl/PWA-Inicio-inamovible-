@@ -570,23 +570,7 @@ body.light .settingsModalHeader{
 
 
 .minuteCanvasToolbar{
-  position:absolute;
-  right:10px;
-  bottom:10px;
-  z-index:26;
-  display:flex;
-  align-items:center;
-  justify-content:flex-end;
-  gap:6px;
-  flex-wrap:wrap;
-  max-width:calc(100% - 20px);
-  padding:6px;
-  border-radius:16px;
-  border:1px solid rgba(255,255,255,.16);
-  background:rgba(2,6,23,.58);
-  box-shadow:0 10px 24px rgba(0,0,0,.24);
-  backdrop-filter:blur(10px);
-  -webkit-backdrop-filter:blur(10px);
+  display:none !important;
 }
 
 .minuteCanvasToolbar .modalVoiceControls{
@@ -750,6 +734,50 @@ body.light .settingsModalHeader{
   height:100%;
   min-height:36px;
   border-radius:13px;
+}
+
+
+.modalStatusCenter{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+
+.modalStatusCenter .modalVoiceControls{
+  position:static;
+  inset:auto;
+  z-index:auto;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  flex-wrap:wrap;
+  gap:6px;
+  width:100%;
+  max-width:none;
+  padding:5px 8px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.14);
+  background:rgba(255,255,255,.045);
+  box-shadow:none;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+
+.modalStatusCenter .modalVoiceBtn{
+  min-width:36px;
+  height:36px;
+  padding:0 9px;
+  border-radius:12px;
+}
+
+.modalStatusCenter .modalVoiceMeta{
+  max-width:120px;
+  font-size:11px;
+}
+
+.modalStatusCenter .candleStatusBar{
+  min-height:34px;
 }
 
 .modalReadingInfoRow{
@@ -2983,11 +3011,9 @@ body.light .tradesDayCount{
   .modalVoiceBtn{ min-width:30px; height:30px; padding:0 7px; font-size:13px; }
   .modalVoiceRecordBtn.is-recording{ min-width:76px; }
   .modalVoiceMeta{ max-width:112px; font-size:10px; }
-  .minuteCanvasToolbar{ right:8px; bottom:8px; gap:4px; padding:4px; max-width:calc(100% - 16px); }
-  .minuteCanvasToolbar .modalVoiceBtn,
-  .minuteCanvasToolbar .modalChartViewBtn,
-  .minuteCanvasToolbar .modalReplayBtn{ min-width:32px; height:32px; min-height:32px; padding:0 8px; font-size:13px; }
-  .minuteCanvasToolbar .modalVoiceMeta{ max-width:76px; font-size:10px; }
+  .modalStatusCenter .modalVoiceControls{ gap:4px; padding:4px 6px; }
+  .modalStatusCenter .modalVoiceBtn{ min-width:32px; height:32px; padding:0 8px; font-size:13px; }
+  .modalStatusCenter .modalVoiceMeta{ max-width:92px; font-size:10px; }
 }
 
 
@@ -3040,12 +3066,8 @@ body.light .tradesDayCount{
     padding:10px 12px;
   }
 
-  #chartModal .minuteCanvasToolbar{
-    right:14px;
-    bottom:14px;
+  #chartModal .modalStatusCenter{
     gap:8px;
-    padding:7px;
-    max-width:calc(100% - 28px);
   }
 
   #chartModal .modalVoiceControls{
@@ -3078,6 +3100,7 @@ body.light .tradesDayCount{
   #chartModal .modalStatusNavRow{
     grid-template-columns:52px minmax(0,1fr) 52px;
     gap:10px;
+    align-items:start;
   }
 
   #chartModal .modalStatusNavSlot .modalQuickBtn,
@@ -3165,17 +3188,14 @@ body.light .tradesDayCount{
   }
 
 
-  #chartModal .minuteCanvasToolbar .modalVoiceBtn,
-  #chartModal .minuteCanvasToolbar .modalChartViewBtn,
-  #chartModal .minuteCanvasToolbar .modalReplayBtn{
+  #chartModal .modalStatusCenter .modalVoiceBtn{
     min-width:40px;
     height:40px;
-    min-height:40px;
     font-size:15px;
     border-radius:12px;
   }
 
-  #chartModal .minuteCanvasToolbar .modalVoiceMeta{
+  #chartModal .modalStatusCenter .modalVoiceMeta{
     max-width:120px;
     font-size:12px;
   }

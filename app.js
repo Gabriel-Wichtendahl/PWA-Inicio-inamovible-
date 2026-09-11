@@ -18166,6 +18166,26 @@ function ensureModalCandleStatusBar() {
   return modalCandleStatusEl;
 }
 
+function ensureModalStatusCenter() {
+  const statusRow = document.querySelector("#chartModal .modalStatusNavRow") || null;
+  if (!statusRow) return null;
+  let center = document.getElementById("modalStatusCenter");
+  if (!center) {
+    center = document.createElement("div");
+    center.id = "modalStatusCenter";
+    center.className = "modalStatusCenter";
+  }
+  if (center.parentElement !== statusRow) {
+    const nextSlot = modalFooterNextSlot || statusRow.lastElementChild || null;
+    statusRow.insertBefore(center, nextSlot);
+  }
+  const statusBar = ensureModalCandleStatusBar();
+  if (statusBar && statusBar.parentElement !== center) {
+    center.appendChild(statusBar);
+  }
+  return center;
+}
+
 function ensureModalFooterControlsLayout() {
   if (modalFooterControlsRelocated) return;
 
@@ -18185,21 +18205,24 @@ function ensureModalFooterControlsLayout() {
 
     const toolbar = chartModal ? chartModal.querySelector('.minuteCanvasToolbar') : null;
     const modalVoiceControls = $("modalVoiceControls");
+    const statusCenter = ensureModalStatusCenter();
+    if (modalVoiceControls && statusCenter && modalVoiceControls.parentElement !== statusCenter) {
+      statusCenter.insertBefore(modalVoiceControls, statusCenter.firstChild || null);
+    }
+    if (modalFooterChartTools) {
+      if (modalReplayBtn && modalReplayBtn.parentElement !== modalFooterChartTools) {
+        modalFooterChartTools.appendChild(modalReplayBtn);
+      }
+      if (modalCandle1mBtn && modalCandle1mBtn.parentElement !== modalFooterChartTools) {
+        modalFooterChartTools.appendChild(modalCandle1mBtn);
+      }
+      if (modalLastMediumLevelBtn && modalLastMediumLevelBtn.parentElement !== modalFooterChartTools) {
+        modalFooterChartTools.appendChild(modalLastMediumLevelBtn);
+      }
+    }
     if (toolbar) {
-      if (modalVoiceControls && modalVoiceControls.parentElement !== toolbar) {
-        toolbar.appendChild(modalVoiceControls);
-      }
-      if (modalReplayBtn && modalReplayBtn.parentElement !== toolbar) {
-        toolbar.appendChild(modalReplayBtn);
-      }
-      if (modalCandle1mBtn && modalCandle1mBtn.parentElement !== toolbar) {
-        toolbar.appendChild(modalCandle1mBtn);
-      }
-      if (modalLastMediumLevelBtn && modalLastMediumLevelBtn.parentElement !== toolbar) {
-        toolbar.appendChild(modalLastMediumLevelBtn);
-      }
-      toolbar.style.display = 'flex';
-      toolbar.removeAttribute('aria-hidden');
+      toolbar.style.display = 'none';
+      toolbar.setAttribute('aria-hidden', 'true');
     }
     if (modalNavVoteBar) {
       modalNavVoteBar.style.display = 'none';
@@ -20541,8 +20564,10 @@ function updateModalChartViewBtnUI() {
       : "Ver mini gráfico de velas de 1 minuto con el nivel marcado";
   }
   if (modalReplayBtn) {
-    modalReplayBtn.classList.toggle("hidden", !isCandles);
-    modalReplayBtn.title = "Abrir zoom y reproducir tick por tick la vela de la señal";
+    modalReplayBtn.classList.remove("hidden");
+    modalReplayBtn.title = isCandles
+      ? "Abrir Replay tick por tick de esta vela"
+      : "Abrir Replay tick por tick (activa velas 1m automáticamente)";
   }
   updateModalLastMediumLevelBtnUI();
 }
