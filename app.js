@@ -18185,6 +18185,14 @@ function ensureModalFooterControlsLayout() {
     if (modalCandle1mBtn && modalFooterChartTools && modalCandle1mBtn.parentElement !== modalFooterChartTools) {
       modalFooterChartTools.appendChild(modalCandle1mBtn);
     }
+    const modalVoiceControls = $("modalVoiceControls");
+    if (modalVoiceControls && modalFooterChartTools && modalVoiceControls.parentElement !== modalFooterChartTools) {
+      if (modalReplayBtn && modalReplayBtn.parentElement === modalFooterChartTools) {
+        modalFooterChartTools.insertBefore(modalVoiceControls, modalReplayBtn);
+      } else {
+        modalFooterChartTools.appendChild(modalVoiceControls);
+      }
+    }
     if (modalReplayBtn && modalFooterChartTools && modalReplayBtn.parentElement !== modalFooterChartTools) {
       modalFooterChartTools.appendChild(modalReplayBtn);
     }

@@ -769,6 +769,32 @@ body.light .settingsModalHeader{
   border-radius:12px;
 }
 
+.modalFooterChartTools .modalVoiceControls{
+  position:static;
+  inset:auto;
+  z-index:auto;
+  max-width:none;
+  padding:0;
+  gap:6px;
+  border:none;
+  background:transparent;
+  box-shadow:none;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+
+.modalFooterChartTools .modalVoiceBtn{
+  min-width:36px;
+  height:36px;
+  padding:0 9px;
+  border-radius:12px;
+}
+
+.modalFooterChartTools .modalVoiceMeta{
+  max-width:96px;
+  font-size:11px;
+}
+
 .modalFooterChartTools .hidden{
   display:none !important;
 }
@@ -3047,6 +3073,30 @@ body.light .tradesDayCount{
     position:static;
     font-size:13px;
     padding:10px 12px;
+  }
+
+  #chartModal .modalFooterChartTools .modalVoiceControls{
+    position:static;
+    max-width:none;
+    padding:0;
+    gap:8px;
+    border:none;
+    background:transparent;
+    box-shadow:none;
+    backdrop-filter:none;
+    -webkit-backdrop-filter:none;
+  }
+
+  #chartModal .modalFooterChartTools .modalVoiceBtn{
+    min-width:40px;
+    height:40px;
+    font-size:15px;
+    border-radius:12px;
+  }
+
+  #chartModal .modalFooterChartTools .modalVoiceMeta{
+    max-width:140px;
+    font-size:12px;
   }
 
   #chartModal .openDerivBtn{
