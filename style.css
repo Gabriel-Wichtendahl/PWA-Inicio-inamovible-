@@ -568,6 +568,58 @@ body.light .settingsModalHeader{
   background:rgba(255,255,255,.03);
 }
 
+
+.minuteCanvasToolbar{
+  position:absolute;
+  right:10px;
+  bottom:10px;
+  z-index:26;
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:6px;
+  flex-wrap:wrap;
+  max-width:calc(100% - 20px);
+  padding:6px;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.16);
+  background:rgba(2,6,23,.58);
+  box-shadow:0 10px 24px rgba(0,0,0,.24);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+}
+
+.minuteCanvasToolbar .modalVoiceControls{
+  position:static;
+  inset:auto;
+  z-index:auto;
+  max-width:none;
+  padding:0;
+  gap:6px;
+  border:none;
+  background:transparent;
+  box-shadow:none;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+
+.minuteCanvasToolbar .modalVoiceBtn,
+.minuteCanvasToolbar .modalChartViewBtn,
+.minuteCanvasToolbar .modalReplayBtn{
+  position:static;
+  inset:auto;
+  min-width:36px;
+  height:36px;
+  min-height:36px;
+  padding:0 10px;
+  border-radius:12px;
+}
+
+.minuteCanvasToolbar .modalVoiceMeta{
+  max-width:90px;
+  font-size:11px;
+}
+
 .modalChartViewBtn{
   position:absolute;
   top:10px;
@@ -2931,6 +2983,11 @@ body.light .tradesDayCount{
   .modalVoiceBtn{ min-width:30px; height:30px; padding:0 7px; font-size:13px; }
   .modalVoiceRecordBtn.is-recording{ min-width:76px; }
   .modalVoiceMeta{ max-width:112px; font-size:10px; }
+  .minuteCanvasToolbar{ right:8px; bottom:8px; gap:4px; padding:4px; max-width:calc(100% - 16px); }
+  .minuteCanvasToolbar .modalVoiceBtn,
+  .minuteCanvasToolbar .modalChartViewBtn,
+  .minuteCanvasToolbar .modalReplayBtn{ min-width:32px; height:32px; min-height:32px; padding:0 8px; font-size:13px; }
+  .minuteCanvasToolbar .modalVoiceMeta{ max-width:76px; font-size:10px; }
 }
 
 
@@ -2981,6 +3038,14 @@ body.light .tradesDayCount{
     right:14px;
     font-size:13px;
     padding:10px 12px;
+  }
+
+  #chartModal .minuteCanvasToolbar{
+    right:14px;
+    bottom:14px;
+    gap:8px;
+    padding:7px;
+    max-width:calc(100% - 28px);
   }
 
   #chartModal .modalVoiceControls{
@@ -3096,6 +3161,22 @@ body.light .tradesDayCount{
 
   #chartModal .modalFooterChartTools .modalVoiceMeta{
     max-width:140px;
+    font-size:12px;
+  }
+
+
+  #chartModal .minuteCanvasToolbar .modalVoiceBtn,
+  #chartModal .minuteCanvasToolbar .modalChartViewBtn,
+  #chartModal .minuteCanvasToolbar .modalReplayBtn{
+    min-width:40px;
+    height:40px;
+    min-height:40px;
+    font-size:15px;
+    border-radius:12px;
+  }
+
+  #chartModal .minuteCanvasToolbar .modalVoiceMeta{
+    max-width:120px;
     font-size:12px;
   }
 

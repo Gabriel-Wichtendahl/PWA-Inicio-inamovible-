@@ -18182,28 +18182,24 @@ function ensureModalFooterControlsLayout() {
     if (modalDislikeBtn && modalFooterVoteSlot && modalDislikeBtn.parentElement !== modalFooterVoteSlot) {
       modalFooterVoteSlot.appendChild(modalDislikeBtn);
     }
-    if (modalCandle1mBtn && modalFooterChartTools && modalCandle1mBtn.parentElement !== modalFooterChartTools) {
-      modalFooterChartTools.appendChild(modalCandle1mBtn);
-    }
-    const modalVoiceControls = $("modalVoiceControls");
-    if (modalVoiceControls && modalFooterChartTools && modalVoiceControls.parentElement !== modalFooterChartTools) {
-      if (modalReplayBtn && modalReplayBtn.parentElement === modalFooterChartTools) {
-        modalFooterChartTools.insertBefore(modalVoiceControls, modalReplayBtn);
-      } else {
-        modalFooterChartTools.appendChild(modalVoiceControls);
-      }
-    }
-    if (modalReplayBtn && modalFooterChartTools && modalReplayBtn.parentElement !== modalFooterChartTools) {
-      modalFooterChartTools.appendChild(modalReplayBtn);
-    }
-    if (modalLastMediumLevelBtn && modalFooterChartTools && modalLastMediumLevelBtn.parentElement !== modalFooterChartTools) {
-      modalFooterChartTools.appendChild(modalLastMediumLevelBtn);
-    }
 
     const toolbar = chartModal ? chartModal.querySelector('.minuteCanvasToolbar') : null;
+    const modalVoiceControls = $("modalVoiceControls");
     if (toolbar) {
-      toolbar.style.display = 'none';
-      toolbar.setAttribute('aria-hidden', 'true');
+      if (modalVoiceControls && modalVoiceControls.parentElement !== toolbar) {
+        toolbar.appendChild(modalVoiceControls);
+      }
+      if (modalReplayBtn && modalReplayBtn.parentElement !== toolbar) {
+        toolbar.appendChild(modalReplayBtn);
+      }
+      if (modalCandle1mBtn && modalCandle1mBtn.parentElement !== toolbar) {
+        toolbar.appendChild(modalCandle1mBtn);
+      }
+      if (modalLastMediumLevelBtn && modalLastMediumLevelBtn.parentElement !== toolbar) {
+        toolbar.appendChild(modalLastMediumLevelBtn);
+      }
+      toolbar.style.display = 'flex';
+      toolbar.removeAttribute('aria-hidden');
     }
     if (modalNavVoteBar) {
       modalNavVoteBar.style.display = 'none';
