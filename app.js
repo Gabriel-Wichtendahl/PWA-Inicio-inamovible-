@@ -32822,6 +32822,37 @@ function getDominantGroupDirection(item) {
   if (dir === 'CALL') return { sign: -1, label: 'BAJISTA' };
   return { sign: 0, label: 'DOMINANTE' };
 }
+function visualHealthSimilarity(values, neutral = 60) {
+  const arr = (Array.isArray(values) ? values : []).map(Number).filter((v) => Number.isFinite(v) && v > 0);
+  if (arr.length < 3) return neutral;
+  const med = medianNumber(arr);
+  if (!Number.isFinite(med) || med <= 0) return neutral;
+  const mad = medianNumber(arr.map((v) => Math.abs(v - med)));
+  const rel = Number.isFinite(mad) ? mad / med : 1;
+  // II86: tolerancia visual humana. Una dispersión moderada todavía se ve "pareja" a ojo.
+  return clampHealth(100 - rel * 80, 15, 100);
+}
+function visualHealthProgression(sizes) {
+  const arr = (Array.isArray(sizes) ? sizes : []).map(Number).filter((v) => Number.isFinite(v) && v > 0).slice(-8);
+  if (arr.length < 3) return 60;
+  let total = 0;
+  let weight = 0;
+  for (let i = 1; i < arr.length; i++) {
+    const a = arr[i - 1], b = arr[i];
+    if (!(a > 0) || !(b > 0)) continue;
+    const r = b / a;
+    const w = 0.65 + 0.35 * (i / Math.max(1, arr.length - 1));
+    let p = 35;
+    if (r >= 0.68 && r <= 1.55) p = 100;
+    else if (r > 1.55 && r <= 2.20) p = 92;
+    else if (r >= 0.55 && r < 0.68) p = 78;
+    else if (r > 2.20 && r <= 3.00) p = 72;
+    else if (r >= 0.42 && r < 0.55) p = 55;
+    total += p * w;
+    weight += w;
+  }
+  return weight > 0 ? clampHealth(total / weight) : 60;
+}
 function computeDominantGroupHealth(item, elapsedMs = null) {
   if (!item) return null;
   const dir = getDominantGroupDirection(item);
@@ -32831,77 +32862,113 @@ function computeDominantGroupHealth(item, elapsedMs = null) {
     .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
     .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= Math.min(60000, endMs))
     .sort((a,b) => a.ms - b.ms);
-  if (pts.length < 3) return { score: 50, label: dir.label, state: 'FORMANDO', trend: '→', count: 0, symmetry: 50, progression: 50, stability: 50 };
+  if (pts.length < 3) return { score: 50, rawScore: 50, label: dir.label, state: 'FORMANDO', trend: '→', count: 0, symmetry: 50, progression: 50, stability: 50, pushSimilarity: 50, responseSimilarity: 50 };
 
-  const dominantMoves = [];
+  const directional = [];
   for (let i = 1; i < pts.length; i++) {
     const delta = pts[i].quote - pts[i - 1].quote;
-    if (delta * dir.sign > 0) dominantMoves.push({ ms: pts[i].ms, size: Math.abs(delta) });
+    if (!Number.isFinite(delta) || delta === 0) continue;
+    directional.push({ ms: pts[i].ms, side: delta * dir.sign > 0 ? 1 : -1, size: Math.abs(delta) });
   }
-  if (dominantMoves.length < 3) return { score: 50, label: dir.label, state: 'FORMANDO', trend: '→', count: dominantMoves.length, symmetry: 50, progression: 50, stability: 50 };
+  const dominantMovesAll = directional.filter((m) => m.side === 1);
+  if (dominantMovesAll.length < 3) return { score: 50, rawScore: 50, label: dir.label, state: 'FORMANDO', trend: '→', count: dominantMovesAll.length, symmetry: 50, progression: 50, stability: 50, pushSimilarity: 50, responseSimilarity: 50 };
 
-  // La lectura debe reaccionar a la salud actual sin olvidar del todo la secuencia reciente.
-  const recent = dominantMoves.slice(-10);
-  const sizes = recent.map((m) => m.size).filter((v) => v > 0);
+  // Desplazamientos dominantes recientes: suficiente memoria para ver la "forma" sin quedar clavado al pasado.
+  const dominantRecent = dominantMovesAll.slice(-12);
+  const sizes = dominantRecent.map((m) => m.size).filter((v) => v > 0);
+
+  // Armamos bloques consecutivos: avance dominante y respuesta contraria.
+  const runs = [];
+  let runSide = 0, runSize = 0, runStart = 0, runEnd = 0;
+  for (const m of directional) {
+    if (!runSide || m.side !== runSide) {
+      if (runSide) runs.push({ side: runSide, size: runSize, startMs: runStart, endMs: runEnd });
+      runSide = m.side;
+      runSize = m.size;
+      runStart = m.ms;
+      runEnd = m.ms;
+    } else {
+      runSize += m.size;
+      runEnd = m.ms;
+    }
+  }
+  if (runSide) runs.push({ side: runSide, size: runSize, startMs: runStart, endMs: runEnd });
+
+  const dominantRuns = runs.filter((r) => r.side === 1).slice(-6).map((r) => r.size);
+  const responseRatios = [];
+  for (let i = 0; i < runs.length - 1; i++) {
+    const a = runs[i], b = runs[i + 1];
+    if (a.side === 1 && b.side === -1 && a.size > 0) responseRatios.push(b.size / a.size);
+  }
+  const recentResponseRatios = responseRatios.slice(-6);
+
+  const symmetry = visualHealthSimilarity(sizes, 60);
+  const pushSimilarity = visualHealthSimilarity(dominantRuns, 60);
+  const responseSimilarity = visualHealthSimilarity(recentResponseRatios, 60);
+  const progression = visualHealthProgression(sizes);
+
   const med = medianNumber(sizes);
-  if (!Number.isFinite(med) || med <= 0) return null;
+  const relative = Number.isFinite(med) && med > 0 ? sizes.map((v) => v / med) : [];
+  const maxVsMedian = relative.length ? Math.max(...relative) : 1;
+  const repeatedExtreme = relative.filter((x) => x > 3.20).length;
+  const singleExtreme = maxVsMedian > 4.50;
 
-  const deviations = sizes.map((v) => Math.abs(v - med));
-  const mad = medianNumber(deviations);
-  const robustSpread = Number.isFinite(mad) ? mad / med : 1;
-  const symmetry = clampHealth(100 - robustSpread * 82);
-
-  let pairPoints = 0;
-  let pairWeight = 0;
-  let reductionCount = 0;
-  let explosionCount = 0;
-  let healthyIncreaseCount = 0;
-  let lastRatios = [];
+  const ratios = [];
   for (let i = 1; i < sizes.length; i++) {
-    const a = sizes[i - 1], b = sizes[i];
-    if (!(a > 0) || !(b > 0)) continue;
-    const r = b / a;
-    lastRatios.push(r);
-    const w = 0.55 + 0.45 * (i / Math.max(1, sizes.length - 1));
-    let p;
-    // II85: tolerancia visual humana. Diferencias moderadas siguen viéndose "parejas" a ojo.
-    if (r >= 0.70 && r <= 1.45) p = 100;               // simetría visual amplia
-    else if (r > 1.45 && r <= 2.00) { p = 94; healthyIncreaseCount++; } // aumento progresivo sano
-    else if (r >= 0.58 && r < 0.70) { p = 78; }        // variación menor: no la tratamos como reducción clara
-    else if (r >= 0.45 && r < 0.58) { p = 54; reductionCount++; }
-    else if (r < 0.45) { p = 28; reductionCount++; }
-    else if (r > 2.00 && r <= 2.80) p = 68;            // aumento fuerte, pero todavía tolerable a ojo
-    else { p = 25; explosionCount++; }
-    pairPoints += p * w;
-    pairWeight += w;
+    if (sizes[i - 1] > 0) ratios.push(sizes[i] / sizes[i - 1]);
   }
-  const progression = pairWeight > 0 ? clampHealth(pairPoints / pairWeight) : 50;
+  const last3 = ratios.slice(-3);
+  const strongReductions = last3.filter((r) => r < 0.55).length;
 
-  const maxVsMedian = Math.max(...sizes) / med;
-  const minVsMedian = Math.min(...sizes) / med;
+  // La estabilidad ahora castiga desorden repetido, no un tick grande aislado.
   let stability = 100;
-  if (maxVsMedian > 2.65) stability -= Math.min(48, (maxVsMedian - 2.65) * 22);
-  if (minVsMedian < 0.34) stability -= Math.min(26, (0.34 - minVsMedian) * 55);
-  stability -= explosionCount * 6;
+  if (repeatedExtreme >= 2) stability -= 18 + Math.min(18, (repeatedExtreme - 2) * 6);
+  else if (singleExtreme) stability -= 8;
+  if (strongReductions >= 2) stability -= 10;
+  if (symmetry < 35 && pushSimilarity < 45) stability -= 12;
+  if (responseSimilarity < 30) stability -= 8;
   stability = clampHealth(stability);
 
-  let score = symmetry * 0.46 + progression * 0.36 + stability * 0.18;
-  const last3 = lastRatios.slice(-3);
-  if (last3.length >= 2 && last3.every((r) => r >= 0.72 && r <= 2.00) && last3.some((r) => r > 1.12)) score += 5;
-  if (last3.length >= 2 && last3.filter((r) => r < 0.52).length >= 2) score -= 8;
-  score = Math.round(clampHealth(score));
-
-  let state = 'SIMÉTRICO';
-  if (explosionCount > 0 || maxVsMedian > 3.10) state = 'EXAGERADO';
-  else if (last3.length >= 2 && last3.filter((r) => r < 0.52).length >= 2) state = 'REDUCCIÓN';
-  else if (robustSpread > 0.62 || progression < 44) state = 'IRREGULAR';
-  else if (healthyIncreaseCount >= 2 && last3.some((r) => r > 1.15)) state = 'PROGRESIVO';
+  // Calibración II86 sobre la muestra de 20 señales del 12/09:
+  // las continuaciones mostraron mayor similitud del desplazamiento dominante y de la cadencia avance→respuesta.
+  let rawScore = symmetry * 0.46 + pushSimilarity * 0.20 + responseSimilarity * 0.18 + progression * 0.16;
+  rawScore = rawScore * 0.88 + stability * 0.12;
+  if (last3.length >= 2 && last3.every((r) => r >= 0.72 && r <= 2.10) && last3.some((r) => r > 1.10)) rawScore += 3;
+  if (strongReductions >= 2) rawScore -= 6;
+  rawScore = clampHealth(rawScore);
 
   const curve = Array.isArray(item.dominantGroupHealthCurve) ? item.dominantGroupHealthCurve : [];
   const prev = curve.length ? curve[curve.length - 1] : null;
+  let score = rawScore;
+  // Suavizado visual: conserva memoria de la salud previa y evita saltos bruscos por un único tick.
+  if (prev && Number.isFinite(Number(prev.score))) {
+    score = Number(prev.score) * 0.68 + rawScore * 0.32;
+  }
+  score = Math.round(clampHealth(score));
+
+  let state = 'SIMÉTRICO';
+  if (repeatedExtreme >= 2 || maxVsMedian > 5.20) state = 'EXAGERADO';
+  else if (strongReductions >= 2) state = 'REDUCCIÓN';
+  else if ((symmetry < 38 && pushSimilarity < 48) || responseSimilarity < 28) state = 'IRREGULAR';
+  else if (progression >= 82 && last3.some((r) => r > 1.18 && r <= 2.20)) state = 'PROGRESIVO';
+
   const diff = prev && Number.isFinite(Number(prev.score)) ? score - Number(prev.score) : 0;
-  const trend = diff >= 3 ? '↑' : diff <= -3 ? '↓' : '→';
-  return { score, label: dir.label, state, trend, count: sizes.length, symmetry: Math.round(symmetry), progression: Math.round(progression), stability: Math.round(stability), maxVsMedian: Number(maxVsMedian.toFixed(2)) };
+  const trend = diff >= 2 ? '↑' : diff <= -2 ? '↓' : '→';
+  return {
+    score,
+    rawScore: Math.round(rawScore),
+    label: dir.label,
+    state,
+    trend,
+    count: sizes.length,
+    symmetry: Math.round(symmetry),
+    progression: Math.round(progression),
+    stability: Math.round(stability),
+    pushSimilarity: Math.round(pushSimilarity),
+    responseSimilarity: Math.round(responseSimilarity),
+    maxVsMedian: Number(maxVsMedian.toFixed(2)),
+    responseSamples: recentResponseRatios.length
+  };
 }
 function updateDominantGroupHealth(item, elapsedMs = null, persistCurve = true) {
   const h = computeDominantGroupHealth(item, elapsedMs);
@@ -32914,7 +32981,7 @@ function updateDominantGroupHealth(item, elapsedMs = null, persistCurve = true) 
     const last = curve[curve.length - 1];
     const shouldAdd = !last || ms - Number(last.ms || 0) >= 500 || Math.abs(Number(last.score || 0) - h.score) >= 3 || ms >= 60000;
     if (shouldAdd) {
-      curve.push({ ms, score: h.score, state: h.state, symmetry: h.symmetry, progression: h.progression, stability: h.stability });
+      curve.push({ ms, score: h.score, rawScore: h.rawScore, state: h.state, symmetry: h.symmetry, progression: h.progression, stability: h.stability, pushSimilarity: h.pushSimilarity, responseSimilarity: h.responseSimilarity });
       if (curve.length > 140) curve.splice(0, curve.length - 140);
     }
   }
@@ -32939,7 +33006,7 @@ function updateModalDominantHealthUI(item = modalCurrentItem) {
   modalDominantHealthLabel.textContent = `❤️ ${h.label} · ${h.state}`;
   modalDominantHealthScore.textContent = `${h.score} ${h.trend}`;
   modalDominantHealthFill.style.width = `${clampHealth(h.score)}%`;
-  modalDominantHealth.title = `Salud del grupo dominante · simetría ${h.symmetry}% · progresión ${h.progression}% · estabilidad ${h.stability}%`;
+  modalDominantHealth.title = `Salud del grupo dominante · ticks ${h.symmetry}% · desplazamientos ${h.pushSimilarity ?? '—'}% · respuestas ${h.responseSimilarity ?? '—'}% · progresión ${h.progression}%`;
 }
 
 function getConstructiveLabelRank(label) {
