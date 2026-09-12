@@ -5411,6 +5411,10 @@ const modalFooterPrevSlot = $("modalFooterPrevSlot");
 const modalFooterNextSlot = $("modalFooterNextSlot");
 const modalFooterVoteSlot = $("modalFooterVoteSlot");
 const modalFooterChartTools = $("modalFooterChartTools");
+const modalDominantHealth = $("modalDominantHealth");
+const modalDominantHealthLabel = $("modalDominantHealthLabel");
+const modalDominantHealthScore = $("modalDominantHealthScore");
+const modalDominantHealthFill = $("modalDominantHealthFill");
 const modalReadingInfoRow = $("modalReadingInfoRow");
 const modalSequenceText = $("modalSequenceText");
 const modalSequenceDetail = $("modalSequenceDetail");
@@ -20552,6 +20556,7 @@ function updateModalCandleStatusUI() {
   updateProcessMiniPanelUI();
   updateModalNavVoteUI();
   updateModalFooterReadingUI();
+  updateModalDominantHealthUI(modalCurrentItem);
 
   applyModalExecutionButtonUI(locked, candleClosed);
   applyGiroOnlyTradeButtons(modalCurrentItem, locked, candleClosed);
@@ -32761,6 +32766,7 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
           const point = { ms: Math.max(0, Math.min(60000, ms)), quote: q };
           if (last && Math.round(Number(last.ms)) === Math.round(point.ms)) it.ticks[it.ticks.length - 1] = point;
           else it.ticks.push(point);
+          updateDominantGroupHealth(it, point.ms, true);
           changed = true;
         }
         if (ms >= 60000 && !it.minuteComplete) {
@@ -32789,12 +32795,152 @@ function updateConstructiveFloatingSignalsOnTick(symbol, epochMs, quote) {
         setCompactModalHeader(modalCurrentItem);
         updateModalCandleStatusUI();
         updateModalFooterReadingUI();
+        updateModalDominantHealthUI(modalCurrentItem);
         requestModalDraw(false);
       }
     }
     if (changed) saveHistory(history);
   } catch {}
 }
+function medianNumber(values) {
+  const arr = (Array.isArray(values) ? values : []).map(Number).filter((v) => Number.isFinite(v)).sort((a,b) => a-b);
+  if (!arr.length) return NaN;
+  const m = Math.floor(arr.length / 2);
+  return arr.length % 2 ? arr[m] : (arr[m - 1] + arr[m]) / 2;
+}
+function clampHealth(v, lo = 0, hi = 100) {
+  return Math.max(lo, Math.min(hi, Number(v) || 0));
+}
+function getDominantGroupDirection(item) {
+  const meta = item?.giroPolaridad || item?.snrLevel || {};
+  const groupTxt = String(meta.visualReductionGroup || meta.dominantGroup || '').toLowerCase();
+  if (groupTxt.includes('compr')) return { sign: 1, label: 'ALCISTA' };
+  if (groupTxt.includes('vend')) return { sign: -1, label: 'BAJISTA' };
+  const dir = String(item?.direction || meta.direction || '').toUpperCase();
+  // La señal de Inicio Inamovible es contraria a los tres impulsos dominantes.
+  if (dir === 'PUT') return { sign: 1, label: 'ALCISTA' };
+  if (dir === 'CALL') return { sign: -1, label: 'BAJISTA' };
+  return { sign: 0, label: 'DOMINANTE' };
+}
+function computeDominantGroupHealth(item, elapsedMs = null) {
+  if (!item) return null;
+  const dir = getDominantGroupDirection(item);
+  if (!dir.sign) return null;
+  const endMs = Number.isFinite(Number(elapsedMs)) ? Number(elapsedMs) : 60000;
+  const pts = (Array.isArray(item.ticks) ? item.ticks : [])
+    .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
+    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= Math.min(60000, endMs))
+    .sort((a,b) => a.ms - b.ms);
+  if (pts.length < 3) return { score: 50, label: dir.label, state: 'FORMANDO', trend: '→', count: 0, symmetry: 50, progression: 50, stability: 50 };
+
+  const dominantMoves = [];
+  for (let i = 1; i < pts.length; i++) {
+    const delta = pts[i].quote - pts[i - 1].quote;
+    if (delta * dir.sign > 0) dominantMoves.push({ ms: pts[i].ms, size: Math.abs(delta) });
+  }
+  if (dominantMoves.length < 3) return { score: 50, label: dir.label, state: 'FORMANDO', trend: '→', count: dominantMoves.length, symmetry: 50, progression: 50, stability: 50 };
+
+  // La lectura debe reaccionar a la salud actual sin olvidar del todo la secuencia reciente.
+  const recent = dominantMoves.slice(-12);
+  const sizes = recent.map((m) => m.size).filter((v) => v > 0);
+  const med = medianNumber(sizes);
+  if (!Number.isFinite(med) || med <= 0) return null;
+
+  const deviations = sizes.map((v) => Math.abs(v - med));
+  const mad = medianNumber(deviations);
+  const robustSpread = Number.isFinite(mad) ? mad / med : 1;
+  const symmetry = clampHealth(100 - robustSpread * 135);
+
+  let pairPoints = 0;
+  let pairWeight = 0;
+  let reductionCount = 0;
+  let explosionCount = 0;
+  let healthyIncreaseCount = 0;
+  let lastRatios = [];
+  for (let i = 1; i < sizes.length; i++) {
+    const a = sizes[i - 1], b = sizes[i];
+    if (!(a > 0) || !(b > 0)) continue;
+    const r = b / a;
+    lastRatios.push(r);
+    const w = 0.55 + 0.45 * (i / Math.max(1, sizes.length - 1));
+    let p;
+    if (r >= 0.86 && r <= 1.22) p = 100;               // simetría
+    else if (r > 1.22 && r <= 1.65) { p = 92; healthyIncreaseCount++; } // aumento progresivo sano
+    else if (r >= 0.72 && r < 0.86) { p = 62; reductionCount++; }
+    else if (r >= 0.55 && r < 0.72) { p = 35; reductionCount++; }
+    else if (r < 0.55) { p = 15; reductionCount++; }
+    else if (r > 1.65 && r <= 2.15) p = 55;
+    else { p = 12; explosionCount++; }
+    pairPoints += p * w;
+    pairWeight += w;
+  }
+  const progression = pairWeight > 0 ? clampHealth(pairPoints / pairWeight) : 50;
+
+  const maxVsMedian = Math.max(...sizes) / med;
+  const minVsMedian = Math.min(...sizes) / med;
+  let stability = 100;
+  if (maxVsMedian > 2.0) stability -= Math.min(55, (maxVsMedian - 2.0) * 30);
+  if (minVsMedian < 0.45) stability -= Math.min(32, (0.45 - minVsMedian) * 70);
+  stability -= explosionCount * 8;
+  stability = clampHealth(stability);
+
+  let score = symmetry * 0.43 + progression * 0.39 + stability * 0.18;
+  const last3 = lastRatios.slice(-3);
+  if (last3.length >= 2 && last3.every((r) => r >= 0.96 && r <= 1.62) && last3.some((r) => r > 1.08)) score += 6;
+  if (last3.length >= 2 && last3.filter((r) => r < 0.82).length >= 2) score -= 10;
+  score = Math.round(clampHealth(score));
+
+  let state = 'SIMÉTRICO';
+  if (explosionCount > 0 || maxVsMedian > 2.35) state = 'EXAGERADO';
+  else if (last3.length >= 2 && last3.filter((r) => r < 0.82).length >= 2) state = 'REDUCCIÓN';
+  else if (robustSpread > 0.42 || progression < 52) state = 'IRREGULAR';
+  else if (healthyIncreaseCount >= 2 && last3.some((r) => r > 1.08)) state = 'PROGRESIVO';
+
+  const curve = Array.isArray(item.dominantGroupHealthCurve) ? item.dominantGroupHealthCurve : [];
+  const prev = curve.length ? curve[curve.length - 1] : null;
+  const diff = prev && Number.isFinite(Number(prev.score)) ? score - Number(prev.score) : 0;
+  const trend = diff >= 3 ? '↑' : diff <= -3 ? '↓' : '→';
+  return { score, label: dir.label, state, trend, count: sizes.length, symmetry: Math.round(symmetry), progression: Math.round(progression), stability: Math.round(stability), maxVsMedian: Number(maxVsMedian.toFixed(2)) };
+}
+function updateDominantGroupHealth(item, elapsedMs = null, persistCurve = true) {
+  const h = computeDominantGroupHealth(item, elapsedMs);
+  if (!item || !h) return h;
+  item.dominantGroupHealth = { ...h, updatedMs: Math.max(0, Math.min(60000, Number(elapsedMs) || 0)) };
+  if (persistCurve) {
+    item.dominantGroupHealthCurve ||= [];
+    const curve = item.dominantGroupHealthCurve;
+    const ms = item.dominantGroupHealth.updatedMs;
+    const last = curve[curve.length - 1];
+    const shouldAdd = !last || ms - Number(last.ms || 0) >= 500 || Math.abs(Number(last.score || 0) - h.score) >= 3 || ms >= 60000;
+    if (shouldAdd) {
+      curve.push({ ms, score: h.score, state: h.state, symmetry: h.symmetry, progression: h.progression, stability: h.stability });
+      if (curve.length > 140) curve.splice(0, curve.length - 140);
+    }
+  }
+  return h;
+}
+function updateModalDominantHealthUI(item = modalCurrentItem) {
+  if (!modalDominantHealth || !modalDominantHealthLabel || !modalDominantHealthScore || !modalDominantHealthFill) return;
+  if (!item) {
+    modalDominantHealth.style.display = 'none';
+    return;
+  }
+  const elapsed = getItemElapsedMs(item);
+  const h = updateDominantGroupHealth(item, elapsed, false) || item.dominantGroupHealth || null;
+  if (!h) {
+    modalDominantHealth.style.display = 'none';
+    return;
+  }
+  modalDominantHealth.style.display = '';
+  modalDominantHealth.classList.toggle('is-low', h.score < 45);
+  modalDominantHealth.classList.toggle('is-mid', h.score >= 45 && h.score < 70);
+  modalDominantHealth.classList.toggle('is-high', h.score >= 70);
+  modalDominantHealthLabel.textContent = `❤️ ${h.label} · ${h.state}`;
+  modalDominantHealthScore.textContent = `${h.score} ${h.trend}`;
+  modalDominantHealthFill.style.width = `${clampHealth(h.score)}%`;
+  modalDominantHealth.title = `Salud del grupo dominante · simetría ${h.symmetry}% · progresión ${h.progression}% · estabilidad ${h.stability}%`;
+}
+
 function getConstructiveLabelRank(label) {
   const l = String(label || "").toUpperCase();
   if (l === "G") return 3;

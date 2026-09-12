@@ -7,13 +7,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-  <title>Deriv · Inicio Inamovible II83 · PRUEBA PGM + BLOQUEO SEÑALES DURANTE TRADE</title>
+  <title>Deriv · Inicio Inamovible II84 · PRUEBA PGM + SALUD GRUPO DOMINANTE</title>
 
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <link rel="stylesheet" href="style.css?v=113.33-II83" />
+  <link rel="stylesheet" href="style.css?v=113.33-II84" />
 </head>
 
 <body class="neon">
@@ -140,6 +140,16 @@
         </div>
       </div>
 
+      <div id="modalDominantHealth" class="modalDominantHealth" role="status" aria-live="polite">
+        <div class="modalDominantHealthTop">
+          <span id="modalDominantHealthLabel" class="modalDominantHealthLabel">❤️ Salud dominante · —</span>
+          <span id="modalDominantHealthScore" class="modalDominantHealthScore">—</span>
+        </div>
+        <div class="modalDominantHealthTrack" aria-hidden="true">
+          <div id="modalDominantHealthFill" class="modalDominantHealthFill"></div>
+        </div>
+      </div>
+
       <div class="modalFooter">
         <div class="modalStatusNavRow">
           <div id="modalFooterPrevSlot" class="modalStatusNavSlot"></div>
@@ -226,10 +236,10 @@
     </div>
   </div>
 
-  <script src="app.js?v=113.33-II83"></script>
+  <script src="app.js?v=113.33-II84"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js?v=113.33-II83", { updateViaCache: "none" }).then(function (reg) { reg.update().catch(function () {}); }).catch(function () {});
+      navigator.serviceWorker.register("./sw.js?v=113.33-II84", { updateViaCache: "none" }).then(function (reg) { reg.update().catch(function () {}); }).catch(function () {});
     }
   </script>
 </body>

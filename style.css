@@ -714,6 +714,59 @@ body.light .settingsModalHeader{
   overflow:visible;
 }
 
+.modalDominantHealth{
+  width:100%;
+  box-sizing:border-box;
+  margin:0 0 7px;
+  padding:7px 10px 8px;
+  border-radius:13px;
+  border:1px solid rgba(255,255,255,.13);
+  background:rgba(255,255,255,.038);
+  box-shadow:0 0 0 1px rgba(255,255,255,.02) inset;
+}
+.modalDominantHealthTop{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  min-width:0;
+}
+.modalDominantHealthLabel{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:11px;
+  line-height:1.2;
+  font-weight:900;
+  color:rgba(226,232,240,.9);
+}
+.modalDominantHealthScore{
+  flex:0 0 auto;
+  font-size:13px;
+  line-height:1;
+  font-weight:950;
+  color:#f8fafc;
+}
+.modalDominantHealthTrack{
+  width:100%;
+  height:4px;
+  margin-top:6px;
+  overflow:hidden;
+  border-radius:999px;
+  background:rgba(148,163,184,.18);
+}
+.modalDominantHealthFill{
+  width:0%;
+  height:100%;
+  border-radius:inherit;
+  background:linear-gradient(90deg, rgba(248,113,113,.88) 0%, rgba(250,204,21,.88) 48%, rgba(74,222,128,.9) 100%);
+  transition:width .18s ease;
+}
+.modalDominantHealth.is-low{ border-color:rgba(248,113,113,.28); }
+.modalDominantHealth.is-mid{ border-color:rgba(250,204,21,.26); }
+.modalDominantHealth.is-high{ border-color:rgba(74,222,128,.26); }
+
 .modalStatusNavRow{
   display:grid;
   grid-template-columns:44px minmax(0,1fr) 44px;
@@ -3109,6 +3162,15 @@ body.light .tradesDayCount{
   #chartModal .modalFooter{
     gap:14px;
   }
+
+  #chartModal .modalDominantHealth{
+    margin-bottom:10px;
+    padding:9px 12px 10px;
+    border-radius:15px;
+  }
+  #chartModal .modalDominantHealthLabel{ font-size:12px; }
+  #chartModal .modalDominantHealthScore{ font-size:15px; }
+  #chartModal .modalDominantHealthTrack{ height:5px; margin-top:7px; }
 
   #chartModal .modalStatusNavRow{
     grid-template-columns:52px minmax(0,1fr) 52px;
