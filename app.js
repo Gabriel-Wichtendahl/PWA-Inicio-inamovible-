@@ -11597,16 +11597,18 @@ function isLiveStandaloneViewActive() {
 }
 function areSignalsPaused(viewName = null) {
   // Pausa manual global + pausa automática cuando se abre la pestaña En vivo.
-  // En vivo es un modo aparte: sigue recibiendo ticks para dibujar, pero no crea nuevas señales
-  // ni dispara autoentradas de señales mientras esa pestaña está activa.
+  // II83: mientras haya una operación real/demo pendiente de resultado, el motor sigue recibiendo
+  // ticks pero no puede emitir señales nuevas hasta que Deriv confirme ITM/OTM y quite el contract_id.
   if (isMentalCooldownActive()) return true;
   if (isSignalFatigueCooldownActive()) return true;
+  if ((disciplinePendingContracts || []).length > 0) return true;
   const view = viewName || getActiveViewName();
   return !!liveAnalysisPaused || view === "live";
 }
 function getSignalsPauseReason(viewName = null) {
   if (isMentalCooldownActive()) return "mental_cooldown";
   if (isSignalFatigueCooldownActive()) return "signal_fatigue";
+  if ((disciplinePendingContracts || []).length > 0) return "trade_pending_result";
   const view = viewName || getActiveViewName();
   if (view === "live") return "live_tab";
   if (liveAnalysisPaused) return "manual";
@@ -11618,16 +11620,19 @@ function applyLiveAnalysisPauseUI() {
   const reason = getSignalsPauseReason();
   const paused = areSignalsPaused();
   const autoLive = reason === "live_tab";
+  const tradePending = reason === "trade_pending_result";
   // Botón compacto: solo icono para no ocupar espacio en la fila de pestañas.
-  btn.textContent = autoLive ? "👁️" : (paused ? "▶️" : "⏸️");
-  btn.dataset.state = autoLive ? "live_auto_pause" : (paused ? "paused" : "live");
-  btn.setAttribute("aria-label", autoLive ? "En vivo pausa señales automáticamente" : (paused ? "Reanudar análisis en vivo" : "Pausar análisis en vivo"));
+  btn.textContent = tradePending ? "⏳" : (autoLive ? "👁️" : (paused ? "▶️" : "⏸️"));
+  btn.dataset.state = tradePending ? "trade_pending_result" : (autoLive ? "live_auto_pause" : (paused ? "paused" : "live"));
+  btn.setAttribute("aria-label", tradePending ? "Esperando resultado de la operación: nuevas señales bloqueadas" : (autoLive ? "En vivo pausa señales automáticamente" : (paused ? "Reanudar análisis en vivo" : "Pausar análisis en vivo")));
   btn.setAttribute("aria-pressed", paused ? "true" : "false");
-  btn.title = autoLive
-    ? "La pestaña En vivo pausa señales automáticamente. Volvé a Señales para reanudar análisis."
-    : paused
-      ? "PAUSADO manualmente: tocar para reanudar análisis en vivo."
-      : "LIVE: tocar para pausar nuevas señales.";
+  btn.title = tradePending
+    ? "Esperando resultado de la operación. No se emitirán señales nuevas hasta confirmar ITM/OTM."
+    : autoLive
+      ? "La pestaña En vivo pausa señales automáticamente. Volvé a Señales para reanudar análisis."
+      : paused
+        ? "PAUSADO manualmente: tocar para reanudar análisis en vivo."
+        : "LIVE: tocar para pausar nuevas señales.";
   btn.style.borderColor = paused ? "rgba(248,113,113,.72)" : "rgba(34,211,238,.46)";
   btn.style.background = paused
     ? "linear-gradient(180deg, rgba(127,29,29,.42), rgba(127,29,29,.20))"
@@ -22585,6 +22590,7 @@ function removePendingContract(cid) {
   pendingContractPollInFlight.delete(s);
   saveDiscipline();
   if (!disciplinePendingContracts.length) stopPendingContractWatchdog();
+  try { applyLiveAnalysisPauseUI(); } catch {}
 }
 function isDisciplineBypassedForCurrentAccount() {
   // V70: la disciplina de bloqueo se aplica solo en REAL.
@@ -24922,6 +24928,12 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
 
     const cid = res?.buy?.contract_id;
     if (!cid) throw new Error("buy ok pero sin contract_id (no puedo trackear ITM/OTM)");
+
+    // II83: bloquear emisión de señales desde el mismo instante en que la compra queda confirmada.
+    // subscribeContractOutcome vuelve a agregarlo de forma idempotente, pero hacerlo acá evita
+    // cualquier ventana entre BUY confirmado y la suscripción al resultado.
+    addPendingContract(cid);
+    applyLiveAnalysisPauseUI();
 
     resetSignalFatigueCycleAfterRealTrade(cid);
 
