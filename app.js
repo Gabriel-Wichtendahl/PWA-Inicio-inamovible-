@@ -32841,7 +32841,7 @@ function computeDominantGroupHealth(item, elapsedMs = null) {
   if (dominantMoves.length < 3) return { score: 50, label: dir.label, state: 'FORMANDO', trend: '→', count: dominantMoves.length, symmetry: 50, progression: 50, stability: 50 };
 
   // La lectura debe reaccionar a la salud actual sin olvidar del todo la secuencia reciente.
-  const recent = dominantMoves.slice(-12);
+  const recent = dominantMoves.slice(-10);
   const sizes = recent.map((m) => m.size).filter((v) => v > 0);
   const med = medianNumber(sizes);
   if (!Number.isFinite(med) || med <= 0) return null;
@@ -32849,7 +32849,7 @@ function computeDominantGroupHealth(item, elapsedMs = null) {
   const deviations = sizes.map((v) => Math.abs(v - med));
   const mad = medianNumber(deviations);
   const robustSpread = Number.isFinite(mad) ? mad / med : 1;
-  const symmetry = clampHealth(100 - robustSpread * 135);
+  const symmetry = clampHealth(100 - robustSpread * 82);
 
   let pairPoints = 0;
   let pairWeight = 0;
@@ -32864,13 +32864,14 @@ function computeDominantGroupHealth(item, elapsedMs = null) {
     lastRatios.push(r);
     const w = 0.55 + 0.45 * (i / Math.max(1, sizes.length - 1));
     let p;
-    if (r >= 0.86 && r <= 1.22) p = 100;               // simetría
-    else if (r > 1.22 && r <= 1.65) { p = 92; healthyIncreaseCount++; } // aumento progresivo sano
-    else if (r >= 0.72 && r < 0.86) { p = 62; reductionCount++; }
-    else if (r >= 0.55 && r < 0.72) { p = 35; reductionCount++; }
-    else if (r < 0.55) { p = 15; reductionCount++; }
-    else if (r > 1.65 && r <= 2.15) p = 55;
-    else { p = 12; explosionCount++; }
+    // II85: tolerancia visual humana. Diferencias moderadas siguen viéndose "parejas" a ojo.
+    if (r >= 0.70 && r <= 1.45) p = 100;               // simetría visual amplia
+    else if (r > 1.45 && r <= 2.00) { p = 94; healthyIncreaseCount++; } // aumento progresivo sano
+    else if (r >= 0.58 && r < 0.70) { p = 78; }        // variación menor: no la tratamos como reducción clara
+    else if (r >= 0.45 && r < 0.58) { p = 54; reductionCount++; }
+    else if (r < 0.45) { p = 28; reductionCount++; }
+    else if (r > 2.00 && r <= 2.80) p = 68;            // aumento fuerte, pero todavía tolerable a ojo
+    else { p = 25; explosionCount++; }
     pairPoints += p * w;
     pairWeight += w;
   }
@@ -32879,22 +32880,22 @@ function computeDominantGroupHealth(item, elapsedMs = null) {
   const maxVsMedian = Math.max(...sizes) / med;
   const minVsMedian = Math.min(...sizes) / med;
   let stability = 100;
-  if (maxVsMedian > 2.0) stability -= Math.min(55, (maxVsMedian - 2.0) * 30);
-  if (minVsMedian < 0.45) stability -= Math.min(32, (0.45 - minVsMedian) * 70);
-  stability -= explosionCount * 8;
+  if (maxVsMedian > 2.65) stability -= Math.min(48, (maxVsMedian - 2.65) * 22);
+  if (minVsMedian < 0.34) stability -= Math.min(26, (0.34 - minVsMedian) * 55);
+  stability -= explosionCount * 6;
   stability = clampHealth(stability);
 
-  let score = symmetry * 0.43 + progression * 0.39 + stability * 0.18;
+  let score = symmetry * 0.46 + progression * 0.36 + stability * 0.18;
   const last3 = lastRatios.slice(-3);
-  if (last3.length >= 2 && last3.every((r) => r >= 0.96 && r <= 1.62) && last3.some((r) => r > 1.08)) score += 6;
-  if (last3.length >= 2 && last3.filter((r) => r < 0.82).length >= 2) score -= 10;
+  if (last3.length >= 2 && last3.every((r) => r >= 0.72 && r <= 2.00) && last3.some((r) => r > 1.12)) score += 5;
+  if (last3.length >= 2 && last3.filter((r) => r < 0.52).length >= 2) score -= 8;
   score = Math.round(clampHealth(score));
 
   let state = 'SIMÉTRICO';
-  if (explosionCount > 0 || maxVsMedian > 2.35) state = 'EXAGERADO';
-  else if (last3.length >= 2 && last3.filter((r) => r < 0.82).length >= 2) state = 'REDUCCIÓN';
-  else if (robustSpread > 0.42 || progression < 52) state = 'IRREGULAR';
-  else if (healthyIncreaseCount >= 2 && last3.some((r) => r > 1.08)) state = 'PROGRESIVO';
+  if (explosionCount > 0 || maxVsMedian > 3.10) state = 'EXAGERADO';
+  else if (last3.length >= 2 && last3.filter((r) => r < 0.52).length >= 2) state = 'REDUCCIÓN';
+  else if (robustSpread > 0.62 || progression < 44) state = 'IRREGULAR';
+  else if (healthyIncreaseCount >= 2 && last3.some((r) => r > 1.15)) state = 'PROGRESIVO';
 
   const curve = Array.isArray(item.dominantGroupHealthCurve) ? item.dominantGroupHealthCurve : [];
   const prev = curve.length ? curve[curve.length - 1] : null;
