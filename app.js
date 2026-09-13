@@ -21571,7 +21571,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   // y se deja un aura translúcida estable que envuelve el rango completo actual de la vela
   // (máximo y mínimo alcanzados hasta ahora). Ese marco solo se expande cuando la vela
   // hace nuevos extremos, así el ojo puede ver el recorrido sin cambiar el cuerpo.
-  const isBullCandle = C >= O;
+  const isBullCandle = close >= open;
   const wickColor = isBullCandle ? "rgba(248,113,113,0.94)" : "rgba(74,222,128,0.94)";
   const auraFill = isBullCandle ? "rgba(248,113,113,0.12)" : "rgba(74,222,128,0.12)";
   const auraStroke = isBullCandle ? "rgba(252,165,165,0.42)" : "rgba(134,239,172,0.42)";
