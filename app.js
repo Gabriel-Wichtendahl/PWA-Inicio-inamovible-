@@ -21545,7 +21545,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   ctx.restore();
 
   // Vela grande formándose con el mismo recorrido ya visto.
-  const yH = yOf(high), yL = yOf(low), yO = yOf(open), yC = yOf(close);
+  const yH = yOf(high), yL = yOf(low), yO = yOf(open), yC = yOf(close), yPrev = yOf(Number(previousSeenTick?.quote ?? close));
   const up = close >= open;
   const col = up ? "rgba(34,197,94,.96)" : "rgba(248,113,113,.96)";
   const bodyTop = Math.min(yO, yC);
@@ -21593,7 +21593,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.setLineDash([]);
   }
 
-  // II95 · punto blanco en el tick anterior + aura neutra.
+  // II96 · fix replay + punto blanco en tick anterior + aura neutra.
   // El cuerpo conserva su color original. La mecha usa el color del grupo contrario
   // y se deja un aura translúcida estable que envuelve el rango completo actual de la vela
   // (máximo y mínimo alcanzados hasta ahora). Ese marco solo se expande cuando la vela
