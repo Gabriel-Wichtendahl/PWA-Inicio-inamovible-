@@ -21319,6 +21319,62 @@ function drawModalReplayFrame() {
   drawModalReplayCanvas(canvas, modalCurrentItem, Number(modalReplayState.currentMs || 0), null);
   updateModalReplayControlsUI();
 }
+
+function getCurrentCandleHighlightWindow(points) {
+  const src = Array.isArray(points) ? points.filter((p) => Number.isFinite(Number(p?.quote)) && Number.isFinite(Number(p?.ms))) : [];
+  if (src.length < 2) return null;
+
+  let lastDir = 0;
+  for (let i = src.length - 1; i >= 1; i--) {
+    const diff = Number(src[i].quote) - Number(src[i - 1].quote);
+    const sign = diff > 0 ? 1 : diff < 0 ? -1 : 0;
+    if (sign) { lastDir = sign; break; }
+  }
+  if (!lastDir) return null;
+
+  let startIdx = src.length - 1;
+  let oppositeAllowanceUsed = false;
+  let sameAbs = 0;
+  const tailDiffs = [];
+
+  for (let i = src.length - 1; i >= 1; i--) {
+    const diff = Number(src[i].quote) - Number(src[i - 1].quote);
+    if (!Number.isFinite(diff) || Math.abs(diff) < 1e-12) continue;
+    const sign = diff > 0 ? 1 : -1;
+    const abs = Math.abs(diff);
+
+    if (sign === lastDir) {
+      startIdx = i - 1;
+      sameAbs += abs;
+      tailDiffs.push(abs);
+      continue;
+    }
+
+    const recentMean = tailDiffs.length
+      ? tailDiffs.reduce((a, b) => a + b, 0) / tailDiffs.length
+      : sameAbs;
+    const humanTolerance = Math.max(recentMean * 0.55, sameAbs * 0.22);
+    if (!oppositeAllowanceUsed && abs <= humanTolerance) {
+      startIdx = i - 1;
+      oppositeAllowanceUsed = true;
+      continue;
+    }
+    break;
+  }
+
+  const start = src[startIdx];
+  const end = src[src.length - 1];
+  if (!start || !end) return null;
+  return {
+    sign: lastDir,
+    startMs: Number(start.ms),
+    endMs: Number(end.ms),
+    startQuote: Number(start.quote),
+    endQuote: Number(end.quote),
+    pointCount: Math.max(2, src.length - startIdx),
+  };
+}
+
 function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   if (!canvas || !item) return;
   const ctx = canvas.getContext("2d");
@@ -21508,6 +21564,56 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.lineTo(guideX2, yO);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  // II87 · resalta solo el tramo actual de la vela viva.
+  // Se toma el desplazamiento más reciente del precio dentro de la vela,
+  // tolerando una micro-oscilación aislada para parecerse más a lo que el ojo humano
+  // interpreta como “el mismo tramo”. La marca vive solo en el bloque de la vela
+  // grande; no toca el gráfico de líneas.
+  const currentCandleLeg = getCurrentCandleHighlightWindow(seen);
+  if (currentCandleLeg) {
+    const legStartY = yOf(Number(currentCandleLeg.startQuote));
+    const legEndY = yOf(Number(currentCandleLeg.endQuote));
+    if (Number.isFinite(legStartY) && Number.isFinite(legEndY)) {
+      const legTop = Math.min(legStartY, legEndY);
+      const legH = Math.max(8, Math.abs(legEndY - legStartY));
+      const legFill = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.13)" : "rgba(248,113,113,0.13)";
+      const legStroke = currentCandleLeg.sign >= 0 ? "rgba(74,222,128,0.82)" : "rgba(252,165,165,0.82)";
+      const legGlow = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.34)" : "rgba(248,113,113,0.34)";
+      const legX = Math.max(guideX1, candleX - bodyW * 0.92);
+      const legW = Math.min(Math.max(bodyW * 1.84, 24), Math.max(18, guideX2 - legX));
+
+      ctx.save();
+      ctx.fillStyle = legFill;
+      drawRoundedRect(ctx, legX, Math.max(candleTop, legTop - 4), legW, Math.min(candleBot - Math.max(candleTop, legTop - 4), legH + 8), 8);
+      ctx.fill();
+
+      ctx.strokeStyle = legStroke;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      drawRoundedRect(ctx, legX, Math.max(candleTop, legTop - 4), legW, Math.min(candleBot - Math.max(candleTop, legTop - 4), legH + 8), 8);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.strokeStyle = legStroke;
+      ctx.shadowColor = legGlow;
+      ctx.shadowBlur = 10;
+      ctx.lineWidth = Math.max(4, bodyW * 0.16);
+      ctx.beginPath();
+      ctx.moveTo(candleX, legStartY);
+      ctx.lineTo(candleX, legEndY);
+      ctx.stroke();
+
+      ctx.fillStyle = legStroke;
+      ctx.strokeStyle = "rgba(2,6,23,0.72)";
+      ctx.lineWidth = 1.35;
+      ctx.beginPath();
+      ctx.arc(candleX, legStartY, 3.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   ctx.strokeStyle = col;
