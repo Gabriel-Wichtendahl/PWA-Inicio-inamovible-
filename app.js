@@ -21592,7 +21592,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.setLineDash([]);
   }
 
-  // II93 · punto blanco por nuevo tick + aura neutra.
+  // II94 · punto blanco centrado en la vela + aura neutra.
   // El cuerpo conserva su color original. La mecha usa el color del grupo contrario
   // y se deja un aura translúcida estable que envuelve el rango completo actual de la vela
   // (máximo y mínimo alcanzados hasta ahora). Ese marco solo se expande cuando la vela
@@ -21637,7 +21637,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.strokeStyle = currentDotStroke;
     ctx.lineWidth = 1.9;
     ctx.beginPath();
-    ctx.arc(candleX + bodyW * 0.72, yC, 4.2, 0, Math.PI * 2);
+    ctx.arc(candleX, yC, 4.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
