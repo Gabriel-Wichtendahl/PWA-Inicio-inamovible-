@@ -21566,16 +21566,34 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.setLineDash([]);
   }
 
-  // II89 · la vela conserva su color base y el tramo actual se marca sólido.
-  // La vela sigue viéndose como antes (verde/roja según el cuerpo), pero el último
-  // recorrido continuo se repinta dentro de la propia vela con un color firme, sin
-  // transparencia molesta. Cuando aparece un retroceso nuevo, la marca cambia desde
-  // ese nuevo giro visual.
-  const currentCandleLeg = getCurrentCandleHighlightWindow(seen);
+  // II90 · volvemos a la vela clásica y agregamos una lectura más simple.
+  // El cuerpo conserva su color original. La mecha usa el color del grupo contrario
+  // y se deja un aura translúcida estable que envuelve el rango completo actual de la vela
+  // (máximo y mínimo alcanzados hasta ahora). Ese marco solo se expande cuando la vela
+  // hace nuevos extremos, así el ojo puede ver el recorrido sin cambiar el cuerpo.
+  const isBullCandle = C >= O;
+  const wickColor = isBullCandle ? "rgba(248,113,113,0.94)" : "rgba(74,222,128,0.94)";
+  const auraFill = isBullCandle ? "rgba(248,113,113,0.12)" : "rgba(74,222,128,0.12)";
+  const auraStroke = isBullCandle ? "rgba(252,165,165,0.42)" : "rgba(134,239,172,0.42)";
+  const auraTop = Math.min(yH, yL) - 4;
+  const auraBot = Math.max(yH, yL) + 4;
+  const auraX = candleX - bodyW * 0.92;
+  const auraW = bodyW * 1.84;
 
-  ctx.strokeStyle = col;
+  ctx.save();
+  ctx.fillStyle = auraFill;
+  drawRoundedRect(ctx, auraX, auraTop, auraW, Math.max(10, auraBot - auraTop), 8);
+  ctx.fill();
+  ctx.strokeStyle = auraStroke;
+  ctx.lineWidth = 1.15;
+  drawRoundedRect(ctx, auraX, auraTop, auraW, Math.max(10, auraBot - auraTop), 8);
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.strokeStyle = wickColor;
   ctx.lineWidth = 2.4;
   ctx.beginPath(); ctx.moveTo(candleX, yH); ctx.lineTo(candleX, yL); ctx.stroke();
+
   ctx.fillStyle = col;
   drawRoundedRect(ctx, candleX - bodyW / 2, bodyTop, bodyW, bodyH, 5);
   ctx.fill();
@@ -21584,49 +21602,6 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   ctx.lineWidth = 1;
   drawRoundedRect(ctx, candleX - bodyW / 2 - 3, bodyTop - 3, bodyW + 6, bodyH + 6, 6);
   ctx.stroke();
-
-  if (currentCandleLeg) {
-    const legStartY = yOf(Number(currentCandleLeg.startQuote));
-    const legEndY = yOf(Number(currentCandleLeg.endQuote));
-    if (Number.isFinite(legStartY) && Number.isFinite(legEndY)) {
-      const legTop = Math.max(candleTop, Math.min(legStartY, legEndY));
-      const legBot = Math.min(candleBot, Math.max(legStartY, legEndY));
-      const legFill = currentCandleLeg.sign >= 0 ? "rgba(22,163,74,0.98)" : "rgba(220,38,38,0.98)";
-      const legStroke = currentCandleLeg.sign >= 0 ? "rgba(187,247,208,0.96)" : "rgba(254,202,202,0.96)";
-      const legBodyX = candleX - bodyW / 2 + 1.2;
-      const legBodyW = Math.max(8, bodyW - 2.4);
-      const legBodyTop = Math.max(bodyTop, legTop);
-      const legBodyBot = Math.min(bodyTop + bodyH, legBot);
-      const legBodyH = Math.max(0, legBodyBot - legBodyTop);
-
-      ctx.save();
-      ctx.strokeStyle = legFill;
-      ctx.lineWidth = Math.max(4.2, bodyW * 0.20);
-      ctx.beginPath();
-      ctx.moveTo(candleX, legTop);
-      ctx.lineTo(candleX, legBot);
-      ctx.stroke();
-
-      if (legBodyH >= 3) {
-        ctx.fillStyle = legFill;
-        drawRoundedRect(ctx, legBodyX, legBodyTop, legBodyW, legBodyH, 4.5);
-        ctx.fill();
-        ctx.strokeStyle = legStroke;
-        ctx.lineWidth = 1.0;
-        drawRoundedRect(ctx, legBodyX, legBodyTop, legBodyW, legBodyH, 4.5);
-        ctx.stroke();
-      }
-
-      ctx.fillStyle = legStroke;
-      ctx.strokeStyle = "rgba(2,6,23,0.82)";
-      ctx.lineWidth = 1.1;
-      ctx.beginPath();
-      ctx.arc(candleX, legStartY, 2.9, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
   ctx.fillStyle = "rgba(226,232,240,.72)";
   ctx.font = "800 10px system-ui, -apple-system, Segoe UI, sans-serif";
   ctx.textAlign = "center";
