@@ -5872,6 +5872,23 @@ let modalLive = false;
 let modalDrawRaf = null;
 let modalLastDrawAt = 0;
 let modalChartView = "line"; // "line" | "candles1m"
+let modalCurrentTickDotState = { key: "", until: 0 };
+let modalCurrentTickDotRaf = null;
+const MODAL_CURRENT_TICK_DOT_MS = 720;
+
+function ensureModalCurrentTickDotAnimation() {
+  if (modalCurrentTickDotRaf) return;
+  const step = () => {
+    modalCurrentTickDotRaf = null;
+    if (!chartModal || chartModal.classList.contains("hidden") || !modalCurrentItem) return;
+    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    if (now <= Number(modalCurrentTickDotState.until || 0)) {
+      requestModalDraw(true);
+      modalCurrentTickDotRaf = requestAnimationFrame(step);
+    }
+  };
+  modalCurrentTickDotRaf = requestAnimationFrame(step);
+}
 // II75: nivel visual opcional y sutil desde el inicio estructural del 3º movimiento M.
 // Es solo una ayuda de lectura del modal; no participa en detector, puntaje ni entrada.
 const MODAL_LAST_MEDIUM_LEVEL_KEY = "deriv_inicio_inamovible_modal_last_medium_level_v1";
@@ -21408,6 +21425,15 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   if (lastIdx < 0) lastIdx = 0;
   if (lastIdx >= ticks.length) lastIdx = ticks.length - 1;
   const seen = ticks.slice(0, lastIdx + 1);
+  const lastSeenTick = seen[seen.length - 1] || ticks[0] || { ms: 0, quote: 0 };
+  const tickFlashKey = `${String(item?.id || "")}|${Number(lastSeenTick.ms || 0)}|${Number(lastSeenTick.quote || 0)}`;
+  const tickFlashNow = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+  if (modalCurrentTickDotState.key !== tickFlashKey) {
+    modalCurrentTickDotState.key = tickFlashKey;
+    modalCurrentTickDotState.until = tickFlashNow + MODAL_CURRENT_TICK_DOT_MS;
+    ensureModalCurrentTickDotAnimation();
+  }
+  const showCurrentTickDot = tickFlashNow <= Number(modalCurrentTickDotState.until || 0);
   const open = Number(ticks[0].quote);
   const cur = Number(seen[seen.length - 1]?.quote ?? open);
   const highs = seen.map((p) => Number(p.quote)).filter(Number.isFinite);
@@ -21566,15 +21592,15 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.setLineDash([]);
   }
 
-  // II90 · volvemos a la vela clásica y agregamos una lectura más simple.
+  // II93 · punto blanco por nuevo tick + aura neutra.
   // El cuerpo conserva su color original. La mecha usa el color del grupo contrario
   // y se deja un aura translúcida estable que envuelve el rango completo actual de la vela
   // (máximo y mínimo alcanzados hasta ahora). Ese marco solo se expande cuando la vela
   // hace nuevos extremos, así el ojo puede ver el recorrido sin cambiar el cuerpo.
   const isBullCandle = close >= open;
   const wickColor = isBullCandle ? "rgba(248,113,113,0.94)" : "rgba(74,222,128,0.94)";
-  const auraFill = isBullCandle ? "rgba(248,113,113,0.12)" : "rgba(74,222,128,0.12)";
-  const auraStroke = isBullCandle ? "rgba(252,165,165,0.42)" : "rgba(134,239,172,0.42)";
+  const auraFill = "rgba(226,232,240,0.11)";
+  const auraStroke = "rgba(226,232,240,0.28)";
   const auraTop = Math.min(yH, yL) - 4;
   const auraBot = Math.max(yH, yL) + 4;
   const auraX = candleX - bodyW * 0.92;
@@ -21602,6 +21628,20 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   ctx.lineWidth = 1;
   drawRoundedRect(ctx, candleX - bodyW / 2 - 3, bodyTop - 3, bodyW + 6, bodyH + 6, 6);
   ctx.stroke();
+
+  if (showCurrentTickDot) {
+    const currentDotFill = "rgba(255,255,255,0.98)";
+    const currentDotStroke = col;
+    ctx.save();
+    ctx.fillStyle = currentDotFill;
+    ctx.strokeStyle = currentDotStroke;
+    ctx.lineWidth = 1.9;
+    ctx.beginPath();
+    ctx.arc(candleX + bodyW * 0.72, yC, 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
   ctx.fillStyle = "rgba(226,232,240,.72)";
   ctx.font = "800 10px system-ui, -apple-system, Segoe UI, sans-serif";
   ctx.textAlign = "center";
