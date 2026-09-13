@@ -21566,23 +21566,21 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.setLineDash([]);
   }
 
-  // II88 · el tramo actual se pinta dentro de la propia vela viva.
-  // La vela completa queda más neutra y solo el último recorrido continuo
-  // cambia de color: verde si el tramo vigente es comprador, rojo si es vendedor.
-  // Cuando aparece un retroceso nuevo, el color se reinicia desde ese giro visual.
+  // II89 · la vela conserva su color base y el tramo actual se marca sólido.
+  // La vela sigue viéndose como antes (verde/roja según el cuerpo), pero el último
+  // recorrido continuo se repinta dentro de la propia vela con un color firme, sin
+  // transparencia molesta. Cuando aparece un retroceso nuevo, la marca cambia desde
+  // ese nuevo giro visual.
   const currentCandleLeg = getCurrentCandleHighlightWindow(seen);
 
-  const baseWickColor = "rgba(226,232,240,.34)";
-  const baseBodyFill = "rgba(226,232,240,.13)";
-  const baseBodyStroke = "rgba(255,255,255,.26)";
-  ctx.strokeStyle = baseWickColor;
+  ctx.strokeStyle = col;
   ctx.lineWidth = 2.4;
   ctx.beginPath(); ctx.moveTo(candleX, yH); ctx.lineTo(candleX, yL); ctx.stroke();
-  ctx.fillStyle = baseBodyFill;
+  ctx.fillStyle = col;
   drawRoundedRect(ctx, candleX - bodyW / 2, bodyTop, bodyW, bodyH, 5);
   ctx.fill();
 
-  ctx.strokeStyle = baseBodyStroke;
+  ctx.strokeStyle = "rgba(255,255,255,.30)";
   ctx.lineWidth = 1;
   drawRoundedRect(ctx, candleX - bodyW / 2 - 3, bodyTop - 3, bodyW + 6, bodyH + 6, 6);
   ctx.stroke();
@@ -21593,21 +21591,17 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     if (Number.isFinite(legStartY) && Number.isFinite(legEndY)) {
       const legTop = Math.max(candleTop, Math.min(legStartY, legEndY));
       const legBot = Math.min(candleBot, Math.max(legStartY, legEndY));
-      const legH = Math.max(8, legBot - legTop);
-      const legFill = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.78)" : "rgba(248,113,113,0.78)";
-      const legStroke = currentCandleLeg.sign >= 0 ? "rgba(74,222,128,0.98)" : "rgba(252,165,165,0.98)";
-      const legGlow = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.28)" : "rgba(248,113,113,0.28)";
-      const legBodyX = candleX - bodyW / 2 + 1.4;
-      const legBodyW = Math.max(8, bodyW - 2.8);
+      const legFill = currentCandleLeg.sign >= 0 ? "rgba(22,163,74,0.98)" : "rgba(220,38,38,0.98)";
+      const legStroke = currentCandleLeg.sign >= 0 ? "rgba(187,247,208,0.96)" : "rgba(254,202,202,0.96)";
+      const legBodyX = candleX - bodyW / 2 + 1.2;
+      const legBodyW = Math.max(8, bodyW - 2.4);
       const legBodyTop = Math.max(bodyTop, legTop);
       const legBodyBot = Math.min(bodyTop + bodyH, legBot);
       const legBodyH = Math.max(0, legBodyBot - legBodyTop);
 
       ctx.save();
-      ctx.strokeStyle = legStroke;
-      ctx.shadowColor = legGlow;
-      ctx.shadowBlur = 10;
-      ctx.lineWidth = Math.max(4.2, bodyW * 0.19);
+      ctx.strokeStyle = legFill;
+      ctx.lineWidth = Math.max(4.2, bodyW * 0.20);
       ctx.beginPath();
       ctx.moveTo(candleX, legTop);
       ctx.lineTo(candleX, legBot);
@@ -21618,16 +21612,16 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
         drawRoundedRect(ctx, legBodyX, legBodyTop, legBodyW, legBodyH, 4.5);
         ctx.fill();
         ctx.strokeStyle = legStroke;
-        ctx.lineWidth = 1.05;
+        ctx.lineWidth = 1.0;
         drawRoundedRect(ctx, legBodyX, legBodyTop, legBodyW, legBodyH, 4.5);
         ctx.stroke();
       }
 
       ctx.fillStyle = legStroke;
-      ctx.strokeStyle = "rgba(2,6,23,0.72)";
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = "rgba(2,6,23,0.82)";
+      ctx.lineWidth = 1.1;
       ctx.beginPath();
-      ctx.arc(candleX, legStartY, 3.1, 0, Math.PI * 2);
+      ctx.arc(candleX, legStartY, 2.9, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       ctx.restore();
