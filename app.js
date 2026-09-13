@@ -21566,67 +21566,73 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.setLineDash([]);
   }
 
-  // II87 · resalta solo el tramo actual de la vela viva.
-  // Se toma el desplazamiento más reciente del precio dentro de la vela,
-  // tolerando una micro-oscilación aislada para parecerse más a lo que el ojo humano
-  // interpreta como “el mismo tramo”. La marca vive solo en el bloque de la vela
-  // grande; no toca el gráfico de líneas.
+  // II88 · el tramo actual se pinta dentro de la propia vela viva.
+  // La vela completa queda más neutra y solo el último recorrido continuo
+  // cambia de color: verde si el tramo vigente es comprador, rojo si es vendedor.
+  // Cuando aparece un retroceso nuevo, el color se reinicia desde ese giro visual.
   const currentCandleLeg = getCurrentCandleHighlightWindow(seen);
+
+  const baseWickColor = "rgba(226,232,240,.34)";
+  const baseBodyFill = "rgba(226,232,240,.13)";
+  const baseBodyStroke = "rgba(255,255,255,.26)";
+  ctx.strokeStyle = baseWickColor;
+  ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.moveTo(candleX, yH); ctx.lineTo(candleX, yL); ctx.stroke();
+  ctx.fillStyle = baseBodyFill;
+  drawRoundedRect(ctx, candleX - bodyW / 2, bodyTop, bodyW, bodyH, 5);
+  ctx.fill();
+
+  ctx.strokeStyle = baseBodyStroke;
+  ctx.lineWidth = 1;
+  drawRoundedRect(ctx, candleX - bodyW / 2 - 3, bodyTop - 3, bodyW + 6, bodyH + 6, 6);
+  ctx.stroke();
+
   if (currentCandleLeg) {
     const legStartY = yOf(Number(currentCandleLeg.startQuote));
     const legEndY = yOf(Number(currentCandleLeg.endQuote));
     if (Number.isFinite(legStartY) && Number.isFinite(legEndY)) {
-      const legTop = Math.min(legStartY, legEndY);
-      const legH = Math.max(8, Math.abs(legEndY - legStartY));
-      const legFill = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.13)" : "rgba(248,113,113,0.13)";
-      const legStroke = currentCandleLeg.sign >= 0 ? "rgba(74,222,128,0.82)" : "rgba(252,165,165,0.82)";
-      const legGlow = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.34)" : "rgba(248,113,113,0.34)";
-      const legX = Math.max(guideX1, candleX - bodyW * 0.92);
-      const legW = Math.min(Math.max(bodyW * 1.84, 24), Math.max(18, guideX2 - legX));
+      const legTop = Math.max(candleTop, Math.min(legStartY, legEndY));
+      const legBot = Math.min(candleBot, Math.max(legStartY, legEndY));
+      const legH = Math.max(8, legBot - legTop);
+      const legFill = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.78)" : "rgba(248,113,113,0.78)";
+      const legStroke = currentCandleLeg.sign >= 0 ? "rgba(74,222,128,0.98)" : "rgba(252,165,165,0.98)";
+      const legGlow = currentCandleLeg.sign >= 0 ? "rgba(34,197,94,0.28)" : "rgba(248,113,113,0.28)";
+      const legBodyX = candleX - bodyW / 2 + 1.4;
+      const legBodyW = Math.max(8, bodyW - 2.8);
+      const legBodyTop = Math.max(bodyTop, legTop);
+      const legBodyBot = Math.min(bodyTop + bodyH, legBot);
+      const legBodyH = Math.max(0, legBodyBot - legBodyTop);
 
       ctx.save();
-      ctx.fillStyle = legFill;
-      drawRoundedRect(ctx, legX, Math.max(candleTop, legTop - 4), legW, Math.min(candleBot - Math.max(candleTop, legTop - 4), legH + 8), 8);
-      ctx.fill();
-
-      ctx.strokeStyle = legStroke;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 4]);
-      drawRoundedRect(ctx, legX, Math.max(candleTop, legTop - 4), legW, Math.min(candleBot - Math.max(candleTop, legTop - 4), legH + 8), 8);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
       ctx.strokeStyle = legStroke;
       ctx.shadowColor = legGlow;
       ctx.shadowBlur = 10;
-      ctx.lineWidth = Math.max(4, bodyW * 0.16);
+      ctx.lineWidth = Math.max(4.2, bodyW * 0.19);
       ctx.beginPath();
-      ctx.moveTo(candleX, legStartY);
-      ctx.lineTo(candleX, legEndY);
+      ctx.moveTo(candleX, legTop);
+      ctx.lineTo(candleX, legBot);
       ctx.stroke();
+
+      if (legBodyH >= 3) {
+        ctx.fillStyle = legFill;
+        drawRoundedRect(ctx, legBodyX, legBodyTop, legBodyW, legBodyH, 4.5);
+        ctx.fill();
+        ctx.strokeStyle = legStroke;
+        ctx.lineWidth = 1.05;
+        drawRoundedRect(ctx, legBodyX, legBodyTop, legBodyW, legBodyH, 4.5);
+        ctx.stroke();
+      }
 
       ctx.fillStyle = legStroke;
       ctx.strokeStyle = "rgba(2,6,23,0.72)";
-      ctx.lineWidth = 1.35;
+      ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.arc(candleX, legStartY, 3.4, 0, Math.PI * 2);
+      ctx.arc(candleX, legStartY, 3.1, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       ctx.restore();
     }
   }
-
-  ctx.strokeStyle = col;
-  ctx.lineWidth = 2.4;
-  ctx.beginPath(); ctx.moveTo(candleX, yH); ctx.lineTo(candleX, yL); ctx.stroke();
-  ctx.fillStyle = col;
-  drawRoundedRect(ctx, candleX - bodyW / 2, bodyTop, bodyW, bodyH, 5);
-  ctx.fill();
-
-  ctx.strokeStyle = "rgba(255,255,255,.30)";
-  ctx.lineWidth = 1;
-  drawRoundedRect(ctx, candleX - bodyW / 2 - 3, bodyTop - 3, bodyW + 6, bodyH + 6, 6);
-  ctx.stroke();
   ctx.fillStyle = "rgba(226,232,240,.72)";
   ctx.font = "800 10px system-ui, -apple-system, Segoe UI, sans-serif";
   ctx.textAlign = "center";
