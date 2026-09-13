@@ -20998,7 +20998,7 @@ function drawDerivLikeOneMinuteCandles(canvas, item, ticks = []) {
     const open = Number(c.open), high = Number(c.high), low = Number(c.low), close = Number(c.close);
     const up = close >= open;
     const col = up ? "rgba(34,197,94,0.95)" : "rgba(248,113,113,0.95)";
-    const yH = yOf(high), yL = yOf(low), yO = yOf(open), yC = yOf(close), yPrev = yOf(Number(previousSeenTick.quote));
+    const yH = yOf(high), yL = yOf(low), yO = yOf(open), yC = yOf(close);
     ctx.save();
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.5;
@@ -21545,7 +21545,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   ctx.restore();
 
   // Vela grande formándose con el mismo recorrido ya visto.
-  const yH = yOf(high), yL = yOf(low), yO = yOf(open), yC = yOf(close), yPrev = yOf(Number(previousSeenTick?.quote ?? close));
+  const yH = yOf(high), yL = yOf(low), yO = yOf(open), yC = yOf(close);
   const up = close >= open;
   const col = up ? "rgba(34,197,94,.96)" : "rgba(248,113,113,.96)";
   const bodyTop = Math.min(yO, yC);
@@ -21593,7 +21593,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.setLineDash([]);
   }
 
-  // II96 · fix replay + punto blanco en tick anterior + aura neutra.
+  // II97 · fix replay + punto blanco en tick actual + aura neutra.
   // El cuerpo conserva su color original. La mecha usa el color del grupo contrario
   // y se deja un aura translúcida estable que envuelve el rango completo actual de la vela
   // (máximo y mínimo alcanzados hasta ahora). Ese marco solo se expande cuando la vela
@@ -21638,7 +21638,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     ctx.strokeStyle = currentDotStroke;
     ctx.lineWidth = 1.9;
     ctx.beginPath();
-    ctx.arc(candleX, yPrev, 4.2, 0, Math.PI * 2);
+    ctx.arc(candleX, yC, 3.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
