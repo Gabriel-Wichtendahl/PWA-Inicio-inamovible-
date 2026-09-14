@@ -5293,6 +5293,13 @@ function setTradeBadge(item, badge /* 'PENDING'|'ITM'|'OTM'|'' */, extra = {}) {
   if (extra && typeof extra === "object") Object.assign(item.trade, extra);
   try { annotateTradeOtmEntryPoint(item); } catch {}
   try { if (badge === "ITM" || badge === "OTM") recomputeVirtualNoTouchCombined(item); } catch {}
+  if (badge === "ITM" || badge === "OTM") {
+    try {
+      if (String(signalDecisionResultLock?.signalId || "") === String(item.id || "")) {
+        clearSignalDecisionResultLock("trade_result", item, { tradeBadge: String(badge) });
+      }
+    } catch {}
+  }
   saveHistory(history);
   updateRowTradeBadge(item);
 
@@ -7610,7 +7617,7 @@ function cancelSignalAutoEntryNoPreProposal(item, side, readiness, reason = "AUT
 function scanSignalAutoPreProposals() {
   if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) return false;
   try {
-    if (areSignalsPaused()) return false;
+    if (areSignalOperationsPaused()) return false;
     if (!isNextCandleExpiryTiming() || shouldUseAutoHighLowExecution()) return false;
     const nowMinute = currentServerMinute();
     let started = false;
@@ -11587,6 +11594,136 @@ function saveBool(key, value) {
   localStorage.setItem(key, value ? "1" : "0");
 }
 
+const SIGNAL_DECISION_RESULT_LOCK_KEY = "inicioSignalDecisionResultLock_v1";
+const SIGNAL_DECISION_RESULT_LOCK_VERSION = "II98_POINTS_5_UNTIL_RESULT_V1";
+const SIGNAL_DECISION_RESULT_LOCK_GRACE_MS = 15000;
+let signalDecisionResultLock = null;
+
+function loadSignalDecisionResultLock() {
+  try {
+    const raw = localStorage.getItem(SIGNAL_DECISION_RESULT_LOCK_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    signalDecisionResultLock = parsed && parsed.active ? parsed : null;
+  } catch {
+    signalDecisionResultLock = null;
+  }
+}
+function saveSignalDecisionResultLock() {
+  try {
+    if (signalDecisionResultLock && signalDecisionResultLock.active) {
+      localStorage.setItem(SIGNAL_DECISION_RESULT_LOCK_KEY, JSON.stringify(signalDecisionResultLock));
+    } else {
+      localStorage.removeItem(SIGNAL_DECISION_RESULT_LOCK_KEY);
+    }
+  } catch {}
+}
+function findSignalDecisionLockItem(lock = signalDecisionResultLock) {
+  const id = String(lock?.signalId || "");
+  return id ? findHistoryItemById(id) : null;
+}
+function getSignalDecisionResultDeadlineEpochMs(item) {
+  try {
+    const result60 = ensureSignalResult60(item);
+    const direct = Number(result60?.deadlineEpochMs || 0);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+  } catch {}
+  const anchor = Number(item?.signalAnchorEpochMs || 0);
+  if (Number.isFinite(anchor) && anchor > 0) return anchor + 120000;
+  const minute = Number(item?.minute);
+  if (Number.isFinite(minute) && minute > 0) return minute * 60000 + 120000;
+  return serverNowMs() + 120000;
+}
+function clearSignalDecisionResultLock(reason = "result_available", item = null, extra = {}) {
+  const lock = signalDecisionResultLock;
+  if (!lock?.active) return false;
+  const target = item || findSignalDecisionLockItem(lock);
+  if (target) {
+    target.signalDecisionResultLock = {
+      ...(target.signalDecisionResultLock || {}),
+      version: SIGNAL_DECISION_RESULT_LOCK_VERSION,
+      active: false,
+      releasedAt: Date.now(),
+      releaseReason: String(reason || "result_available"),
+      ...extra,
+    };
+    try { saveHistory(history); } catch {}
+  }
+  signalDecisionResultLock = null;
+  saveSignalDecisionResultLock();
+  try { applyLiveAnalysisPauseUI(); } catch {}
+  try { updateTickHealthUI(); } catch {}
+  return true;
+}
+function refreshSignalDecisionResultLock() {
+  const lock = signalDecisionResultLock;
+  if (!lock?.active) return false;
+  const item = findSignalDecisionLockItem(lock);
+
+  if (item) {
+    const badge = String(item?.trade?.badge || "").toUpperCase();
+    if (badge === "ITM" || badge === "OTM") {
+      clearSignalDecisionResultLock("trade_result", item, { tradeBadge: badge });
+      return false;
+    }
+
+    try {
+      if (isSignalResult60Resolved(item)) {
+        clearSignalDecisionResultLock("signal_result", item, { signalOutcome: normalizeSignalResult60Outcome(item?.signalResult60?.outcome || item?.nextOutcome || "") });
+        return false;
+      }
+      if (!isFloatingSignalItem(item)) {
+        const out = normalizeSignalResult60Outcome(item?.nextOutcome || "");
+        if (out) {
+          clearSignalDecisionResultLock("signal_result", item, { signalOutcome: out });
+          return false;
+        }
+      }
+    } catch {}
+  }
+
+  const deadline = Number(lock.resultDeadlineEpochMs || 0);
+  const now = serverNowMs();
+  if (item && Number.isFinite(deadline) && deadline > 0 && now >= deadline) {
+    try { scheduleSignalResult60Hydration(item); } catch {}
+  }
+  // Salvavidas: al superar el instante donde el resultado ya debería existir
+  // más una pequeña gracia de red, no dejamos el bloqueo pegado para siempre.
+  if (Number.isFinite(deadline) && deadline > 0 && now >= deadline + SIGNAL_DECISION_RESULT_LOCK_GRACE_MS) {
+    clearSignalDecisionResultLock("signal_result_time", item, { resultDeadlineEpochMs: deadline });
+    return false;
+  }
+  return true;
+}
+function isSignalDecisionResultLockActive() {
+  return refreshSignalDecisionResultLock();
+}
+function armSignalDecisionResultLock(item, side) {
+  if (!item) return false;
+  if (isSignalDecisionResultLockActive()) return false;
+  const safeSide = normalizeSignalConfirmationSide(side) || getSignalEnabledTradeSide(item);
+  if (!safeSide) return false;
+  const resultDeadlineEpochMs = getSignalDecisionResultDeadlineEpochMs(item);
+  const lock = {
+    version: SIGNAL_DECISION_RESULT_LOCK_VERSION,
+    active: true,
+    signalId: String(item.id || ""),
+    symbol: String(item.symbol || ""),
+    side: safeSide,
+    armedAt: Date.now(),
+    armedAtSignalMs: Math.round(getSignalElapsedMsRaw(item)),
+    resultDeadlineEpochMs: Number(resultDeadlineEpochMs || 0) || null,
+    accountMode: getCurrentAccountScope(),
+  };
+  signalDecisionResultLock = lock;
+  item.signalDecisionResultLock = { ...lock };
+  saveSignalDecisionResultLock();
+  try { saveHistory(history); } catch {}
+  try { applyLiveAnalysisPauseUI(); } catch {}
+  try { updateTickHealthUI(); } catch {}
+  toast(`🔒 ${safeSide === "CALL" ? "COMPRA" : "VENTA"} decidida · nuevas señales bloqueadas hasta el resultado`, 2400);
+  return true;
+}
+
 const LIVE_ANALYSIS_PAUSED_KEY = "liveAnalysisPaused_v1";
 const LIVE_ANALYSIS_PAUSE_MIGRATION_KEY = "liveAnalysisPauseFix_v51";
 let liveAnalysisPaused = false;
@@ -11616,6 +11753,18 @@ function getActiveViewName() {
 function isLiveStandaloneViewActive() {
   return getActiveViewName() === "live";
 }
+function areSignalOperationsPaused(viewName = null) {
+  // II98: este helper conserva las pausas que realmente deben frenar la operativa
+  // de la señal ACTUAL, pero ignora el bloqueo por decisión de 5 puntos. Ese bloqueo
+  // existe solo para impedir señales NUEVAS; la entrada ya decidida debe seguir
+  // preparando proposal, AUTO58 y rescates normalmente.
+  if (isMentalCooldownActive()) return true;
+  if (isSignalFatigueCooldownActive()) return true;
+  if ((disciplinePendingContracts || []).length > 0) return true;
+  const view = viewName || getActiveViewName();
+  return !!liveAnalysisPaused || view === "live";
+}
+
 function areSignalsPaused(viewName = null) {
   // Pausa manual global + pausa automática cuando se abre la pestaña En vivo.
   // II83: mientras haya una operación real/demo pendiente de resultado, el motor sigue recibiendo
@@ -11623,6 +11772,7 @@ function areSignalsPaused(viewName = null) {
   if (isMentalCooldownActive()) return true;
   if (isSignalFatigueCooldownActive()) return true;
   if ((disciplinePendingContracts || []).length > 0) return true;
+  if (isSignalDecisionResultLockActive()) return true;
   const view = viewName || getActiveViewName();
   return !!liveAnalysisPaused || view === "live";
 }
@@ -11630,6 +11780,7 @@ function getSignalsPauseReason(viewName = null) {
   if (isMentalCooldownActive()) return "mental_cooldown";
   if (isSignalFatigueCooldownActive()) return "signal_fatigue";
   if ((disciplinePendingContracts || []).length > 0) return "trade_pending_result";
+  if (isSignalDecisionResultLockActive()) return "signal_decision_result";
   const view = viewName || getActiveViewName();
   if (view === "live") return "live_tab";
   if (liveAnalysisPaused) return "manual";
@@ -11642,13 +11793,20 @@ function applyLiveAnalysisPauseUI() {
   const paused = areSignalsPaused();
   const autoLive = reason === "live_tab";
   const tradePending = reason === "trade_pending_result";
+  const decisionPending = reason === "signal_decision_result";
   // Botón compacto: solo icono para no ocupar espacio en la fila de pestañas.
-  btn.textContent = tradePending ? "⏳" : (autoLive ? "👁️" : (paused ? "▶️" : "⏸️"));
-  btn.dataset.state = tradePending ? "trade_pending_result" : (autoLive ? "live_auto_pause" : (paused ? "paused" : "live"));
-  btn.setAttribute("aria-label", tradePending ? "Esperando resultado de la operación: nuevas señales bloqueadas" : (autoLive ? "En vivo pausa señales automáticamente" : (paused ? "Reanudar análisis en vivo" : "Pausar análisis en vivo")));
+  btn.textContent = (tradePending || decisionPending) ? "⏳" : (autoLive ? "👁️" : (paused ? "▶️" : "⏸️"));
+  btn.dataset.state = tradePending ? "trade_pending_result" : (decisionPending ? "signal_decision_result" : (autoLive ? "live_auto_pause" : (paused ? "paused" : "live")));
+  btn.setAttribute("aria-label", tradePending
+    ? "Esperando resultado de la operación: nuevas señales bloqueadas"
+    : decisionPending
+      ? "Entrada decidida con 5 puntos: nuevas señales bloqueadas hasta el resultado"
+      : (autoLive ? "En vivo pausa señales automáticamente" : (paused ? "Reanudar análisis en vivo" : "Pausar análisis en vivo")));
   btn.setAttribute("aria-pressed", paused ? "true" : "false");
   btn.title = tradePending
     ? "Esperando resultado de la operación. No se emitirán señales nuevas hasta confirmar ITM/OTM."
+    : decisionPending
+      ? "Ya alcanzaste 5 puntos netos en una señal. No se emitirán señales nuevas, entre o no el trade, hasta que exista el resultado."
     : autoLive
       ? "La pestaña En vivo pausa señales automáticamente. Volvé a Señales para reanudar análisis."
       : paused
@@ -11662,6 +11820,14 @@ function applyLiveAnalysisPauseUI() {
   btn.style.boxShadow = paused ? "0 0 14px rgba(248,113,113,.20)" : "0 0 12px rgba(34,211,238,.12)";
 }
 function toggleLiveAnalysisPaused() {
+  const automaticReason = getSignalsPauseReason();
+  if (automaticReason === "signal_decision_result" || automaticReason === "trade_pending_result") {
+    applyLiveAnalysisPauseUI();
+    toast(automaticReason === "signal_decision_result"
+      ? "⏳ Entrada decidida: nuevas señales bloqueadas hasta el resultado"
+      : "⏳ Operación pendiente: nuevas señales bloqueadas hasta ITM/OTM", 2200);
+    return;
+  }
   // V51: si estás en En vivo, esa pestaña ya pausa señales automáticamente.
   // No permitimos que este botón deje guardada una pausa manual global por error.
   if (getActiveViewName() === "live") {
@@ -19125,6 +19291,11 @@ function addSignalConfirmation(side = "CALL") {
     return;
   }
 
+  // II98: alcanzar 5 puntos netos ya cuenta como DECISIÓN DE ENTRADA.
+  // Desde este instante se bloquean nuevas señales aunque la compra finalmente
+  // no llegue a ejecutarse por barrera, precio, proposal o timing.
+  armSignalDecisionResultLock(modalCurrentItem, enabled);
+
   const enabledAtMs = getSignalSideEnabledAtMs(modalCurrentItem, enabled);
   if (shouldUseS60CloseBarrierEntryMode()) {
     armS60CloseBarrierEntry(modalCurrentItem, "points_5_enabled_retrace_mode");
@@ -20357,7 +20528,7 @@ function scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, quote) {
 function scanSignalAutoEntriesAt57() {
   if (INICIO_INAMOVIBLE_ONLY_RUNTIME && !INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) return false;
   try {
-    if (areSignalsPaused()) return false;
+    if (areSignalOperationsPaused()) return false;
     if (tradeInFlight) return false;
     const nowMinute = currentServerMinute();
     const candidates = (history || [])
@@ -25367,6 +25538,11 @@ function resolveSignalResult60(item, endEpochMs, endQuote, source = "live") {
   r.resolvedAt = Date.now();
   item.signalResult60 = r;
   setNextOutcome(item, outcome);
+  try {
+    if (String(signalDecisionResultLock?.signalId || "") === String(item.id || "")) {
+      clearSignalDecisionResultLock("signal_result", item, { signalOutcome: outcome });
+    }
+  } catch {}
   updateRowNextArrow(item);
   updateRowChartBtn(item);
   if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
@@ -25904,7 +26080,7 @@ function onTick(tick) {
   lastQuoteBySymbol[symbol] = tick.quote;
   rememberConstructiveRollingTick(symbol, epochMs, tick.quote);
   updateConstructiveFloatingSignalsOnTick(symbol, epochMs, tick.quote);
-  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && !areSignalsPaused()) {
+  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && !areSignalOperationsPaused()) {
     scanSignalLateEntryRecoveriesOnTick(symbol, epochMs, tick.quote);
   }
 
@@ -25978,7 +26154,7 @@ function onTick(tick) {
   }
 
   // II5: esta variante es solo de estudio; no escanea ni prepara autoentradas.
-  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && !areSignalsPaused()) {
+  if ((!INICIO_INAMOVIBLE_ONLY_RUNTIME || INICIO_INAMOVIBLE_OPERATIONS_RUNTIME) && !areSignalOperationsPaused()) {
     scanSignalAutoPreProposals();
     scanSignalAutoEntriesAt57();
   }
@@ -36980,6 +37156,7 @@ function applyCleanDobleReduccionUI() {
    Inicialización
 ========================= */
 loadLowPowerMode();
+loadSignalDecisionResultLock();
 loadLiveAnalysisPaused();
 loadAutoOpenChartSetting();
 loadAutoReplayX2Setting();
