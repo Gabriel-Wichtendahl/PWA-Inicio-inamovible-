@@ -35109,26 +35109,27 @@ function evaluateInicioSlowFastSlow(first, central, last, side, labels = []) {
   const avgLateralStep = (firstPace.avgDirectionalMove + lastPace.avgDirectionalMove) / 2;
   const avgStepRatio = centralPace.avgDirectionalMove / Math.max(avgLateralStep, 1e-12);
 
-  // Primera calibración deliberadamente visual y tolerante:
-  // - el centro tiene que ser al menos ~35% más veloz que cada lateral;
-  // - los laterales deben tener por lo menos 2 avances útiles cada uno;
-  // - el G no puede necesitar más avances que los laterales y, si usa la misma cantidad,
-  //   sus pasos deben ser claramente más grandes. Esto evita confundir "G grande" con "G rápido".
-  const enoughLateralTicks = firstPace.directionalStepCount >= 2 && lastPace.directionalStepCount >= 2;
+  // II105 — calibración más tolerante. II104 quedó demasiado exigente porque
+  // pedía simultáneamente 2+ avances en cada lateral, G de hasta 4 avances,
+  // G con no más avances que CADA lateral y además >=1.35x de velocidad contra ambos.
+  // Ahora conservamos la idea visual LENTO → RÁPIDO → LENTO, pero la comparación
+  // principal es relativa: G debe ser más veloz que ambos laterales y mostrar al menos
+  // una señal visual de compresión (menos pasos que el promedio lateral o pasos mayores).
+  const enoughLateralTicks = firstPace.directionalStepCount >= 1 && lastPace.directionalStepCount >= 1;
   const centralHasTicks = centralPace.directionalStepCount >= 1;
-  const centralFewTicks = centralPace.directionalStepCount <= 4;
-  const notMoreTicksThanLaterals = centralPace.directionalStepCount <= firstPace.directionalStepCount
-    && centralPace.directionalStepCount <= lastPace.directionalStepCount;
-  const visiblyCompressedTicks = centralPace.directionalStepCount < Math.max(firstPace.directionalStepCount, lastPace.directionalStepCount)
-    || avgStepRatio >= 1.35;
-  const clearlyFaster = speedRatioFirst >= 1.35 && speedRatioLast >= 1.35;
+  const avgLateralCount = (firstPace.directionalStepCount + lastPace.directionalStepCount) / 2;
+  const centralFewTicks = centralPace.directionalStepCount <= 6;
+  const notMoreTicksThanLaterals = centralPace.directionalStepCount <= Math.ceil(avgLateralCount + 1);
+  const visiblyCompressedTicks = centralPace.directionalStepCount < avgLateralCount
+    || avgStepRatio >= 1.18;
+  const clearlyFaster = speedRatioFirst >= 1.18 && speedRatioLast >= 1.18;
 
   const ok = enoughLateralTicks && centralHasTicks && centralFewTicks
     && notMoreTicksThanLaterals && visiblyCompressedTicks && clearlyFaster;
 
   return {
     ok,
-    version: "II104_SLOW_FAST_SLOW_VISUAL_V1",
+    version: "II105_SLOW_FAST_SLOW_VISUAL_V2",
     pattern: "LENTO→RÁPIDO→LENTO",
     speedRatioFirst,
     speedRatioLast,
@@ -35235,8 +35236,8 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       if (lateralToCentralRatios.some((ratio) => ratio < lateralVisualRatioMin)) continue;
       const thirdToFirstRatio = moves[2] / Math.max(moves[0], 1e-9);
 
-      // II104: la irregularidad interna deja de bloquear señales.
-      // La prueba nueva exige una cadencia visual LENTO → RÁPIDO → LENTO.
+      // II105: la irregularidad interna sigue sin bloquear señales.
+      // La prueba exige una cadencia visual LENTO → RÁPIDO → LENTO con tolerancia mayor.
       // Los laterales construyen el recorrido con más pasos; el G central desplaza
       // más rápido y con menos pasos (o pasos claramente mayores).
       const tickIrregularity = [
