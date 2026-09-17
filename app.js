@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II107";
+const APP_BUILD_VERSION = "v113.33-II108";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -5357,6 +5357,7 @@ const countdownEl = $("countdown");
 const sound = $("alertSound");
 
 const soundBtn = $("soundBtn");
+const dominantTickSoundBtn = $("dominantTickSoundBtn");
 const vibrateBtn = $("vibrateBtn");
 const wakeBtn = $("wakeBtn");
 const themeBtn = $("themeBtn");
@@ -5726,6 +5727,10 @@ let publicWsLastReconnectReason = "startup";
 let publicWsGeneration = 0;
 
 let soundEnabled = false;
+let dominantTickSoundEnabled = false;
+let dominantTickLastKey = "";
+let dominantTickLastPlayedAt = 0;
+const DOMINANT_TICK_MIN_GAP_MS = 0;
 let vibrateEnabled = true;
 
 // V109.3: audio robusto para Chrome/PWA.
@@ -5829,6 +5834,131 @@ async function unlockAlertAudio() {
   } finally {
     alertAudioUnlockPromise = null;
   }
+}
+
+
+// II108 · sonido suave por tick del grupo dominante del LRL.
+// Es un "plink" corto y consonante (fundamental + quinta), pensado para repetirse
+// muchas veces sin resultar agresivo. No usa alert.mp3 y es independiente del
+// sonido general de señal.
+function playDominantTickTone({ preview = false } = {}) {
+  try {
+    const ctx = getAlertAudioContext();
+    if (!ctx) return false;
+    if (ctx.state === "suspended") {
+      ctx.resume().then(() => playDominantTickTone({ preview })).catch(() => {});
+      return false;
+    }
+    if (ctx.state !== "running") return false;
+
+    const now = ctx.currentTime;
+    const mainGain = ctx.createGain();
+    const partialGain = ctx.createGain();
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+
+    // C5 + G5: intervalo de quinta justa, suave y poco fatigante.
+    osc1.type = "sine";
+    osc2.type = "sine";
+    osc1.frequency.setValueAtTime(523.25, now);
+    osc2.frequency.setValueAtTime(783.99, now);
+
+    const peak = preview ? 0.045 : 0.032;
+    mainGain.gain.setValueAtTime(0.0001, now);
+    mainGain.gain.exponentialRampToValueAtTime(peak, now + 0.006);
+    mainGain.gain.exponentialRampToValueAtTime(0.0001, now + (preview ? 0.16 : 0.105));
+
+    partialGain.gain.setValueAtTime(0.0001, now);
+    partialGain.gain.exponentialRampToValueAtTime(peak * 0.34, now + 0.008);
+    partialGain.gain.exponentialRampToValueAtTime(0.0001, now + (preview ? 0.14 : 0.09));
+
+    osc1.connect(mainGain);
+    osc2.connect(partialGain);
+    mainGain.connect(ctx.destination);
+    partialGain.connect(ctx.destination);
+
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + (preview ? 0.17 : 0.115));
+    osc2.stop(now + (preview ? 0.15 : 0.10));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getLRLDominantSide(item) {
+  const movementSigns = item?.turnQualityConditions?.movementSigns;
+  const sign = Array.isArray(movementSigns) ? Number(movementSigns[0]) : NaN;
+  if (sign === 1 || sign === -1) return sign;
+
+  const group = String(item?.visualReductionGroup || item?.turnQualityConditions?.movementDirection || "").toUpperCase();
+  if (group.includes("ALC") || group.includes("COMPRA") || group.includes("BULL")) return 1;
+  if (group.includes("BAJ") || group.includes("VENTA") || group.includes("BEAR")) return -1;
+
+  // La señal es contraria al recorrido que formó el Inicio Inamovible.
+  const dir = String(item?.direction || "").toUpperCase();
+  if (dir === "PUT") return 1;
+  if (dir === "CALL") return -1;
+  return 0;
+}
+
+function isLRLAudibleItem(item) {
+  return !!item && (
+    !!item.inicioInamovibleMode ||
+    !!item.visualPace ||
+    Number.isFinite(Number(item?.turnQualityConditions?.slowFastSlowScore))
+  ) && !!getLRLDominantSide(item);
+}
+
+function getLRLAnchorEpochMs(item) {
+  const explicit = Number(item?.signalAnchorEpochMs || 0);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const minute = Number(item?.minute);
+  if (Number.isFinite(minute) && minute > 0) return minute * 60000;
+  return 0;
+}
+
+function findAudibleLRLItemForSymbol(symbol, epochMs) {
+  if (modalCurrentItem && String(modalCurrentItem.symbol || "") === String(symbol || "") && isLRLAudibleItem(modalCurrentItem)) {
+    const anchor = getLRLAnchorEpochMs(modalCurrentItem);
+    const age = anchor > 0 ? Number(epochMs) - anchor : 0;
+    if (!anchor || (age >= 0 && age <= 65000)) return modalCurrentItem;
+  }
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const item = history[i];
+    if (String(item?.symbol || "") !== String(symbol || "") || !isLRLAudibleItem(item)) continue;
+    const anchor = getLRLAnchorEpochMs(item);
+    if (!anchor) continue;
+    const age = Number(epochMs) - anchor;
+    if (age >= 0 && age <= 65000) return item;
+  }
+  return null;
+}
+
+function maybePlayDominantTickSound(item, previousTick, currentTick) {
+  if (!dominantTickSoundEnabled || !isLRLAudibleItem(item)) return false;
+  const prevQ = Number(previousTick?.quote);
+  const curQ = Number(currentTick?.quote);
+  if (!Number.isFinite(prevQ) || !Number.isFinite(curQ)) return false;
+
+  const side = getLRLDominantSide(item);
+  if (!side || (curQ - prevQ) * side <= 0) return false;
+
+  const ms = Math.round(Number(currentTick?.ms || 0));
+  const key = `${String(item?.id || item?.symbol || "LRL")}|${ms}|${curQ}`;
+  if (key === dominantTickLastKey) return false;
+
+  const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+  if (now - dominantTickLastPlayedAt < DOMINANT_TICK_MIN_GAP_MS) {
+    dominantTickLastKey = key;
+    return false;
+  }
+
+  dominantTickLastKey = key;
+  dominantTickLastPlayedAt = now;
+  return playDominantTickTone();
 }
 
 function playSignalAlertSound() {
@@ -16828,6 +16958,7 @@ function getSettingsMenuSelfCheckItems() {
     ["Stake default", !pickEl("stakeDefaultBtn", "defaultStakeBtn", "btnDefaultStake") || typeof pickEl("stakeDefaultBtn", "defaultStakeBtn", "btnDefaultStake").onclick === "function"],
     ["Tema", !themeBtn || typeof themeBtn.onclick === "function"],
     ["Sonido", !soundBtn || typeof soundBtn.onclick === "function"],
+    ["Tick dominante LRL", !dominantTickSoundBtn || typeof dominantTickSoundBtn.onclick === "function"],
     ["Vibración", !vibrateBtn || typeof vibrateBtn.onclick === "function"],
     ["Wake lock", !wakeBtn || typeof wakeBtn.onclick === "function"],
   ];
@@ -16978,6 +17109,62 @@ function applyTheme(theme) {
   // vuelve a habilitar el AudioContext sin mostrar mensajes ni reproducir una alarma.
   document.addEventListener("pointerdown", () => {
     if (!soundEnabled) return;
+    try {
+      const ctx = getAlertAudioContext();
+      if (ctx?.state === "suspended") ctx.resume().catch(() => {});
+    } catch {}
+  }, { passive: true, capture: true });
+})();
+
+
+/* =========================
+   Sonido de ticks dominantes LRL
+========================= */
+(function initDominantTickSoundToggle() {
+  dominantTickSoundEnabled = loadBool("dominantTickSoundEnabled", false);
+  if (!dominantTickSoundBtn) return;
+
+  const paint = () => {
+    setBtnActive(dominantTickSoundBtn, dominantTickSoundEnabled);
+    dominantTickSoundBtn.textContent = dominantTickSoundEnabled ? "🎵 Tick dominante ON" : "🎵 Tick dominante OFF";
+    dominantTickSoundBtn.title = "Suena solo cuando un nuevo tick avanza en el mismo sentido del grupo que formó el LRL";
+  };
+  paint();
+
+  dominantTickSoundBtn.onclick = async () => {
+    if (!dominantTickSoundEnabled) {
+      dominantTickSoundBtn.disabled = true;
+      try {
+        const ctx = getAlertAudioContext();
+        if (!ctx) throw new Error("Web Audio no disponible");
+        if (ctx.state === "suspended") await ctx.resume();
+        if (ctx.state !== "running") throw new Error("audio bloqueado por el navegador");
+        dominantTickSoundEnabled = true;
+        saveBool("dominantTickSoundEnabled", true);
+        dominantTickLastKey = "";
+        dominantTickLastPlayedAt = 0;
+        paint();
+        playDominantTickTone({ preview: true });
+        toast("🎵 Tick dominante ON · sonido suave", 1600);
+      } catch (err) {
+        dominantTickSoundEnabled = false;
+        saveBool("dominantTickSoundEnabled", false);
+        paint();
+        alert(`⚠️ No pude habilitar el sonido de ticks. ${err?.message || ""}`);
+      } finally {
+        dominantTickSoundBtn.disabled = false;
+      }
+      return;
+    }
+
+    dominantTickSoundEnabled = false;
+    saveBool("dominantTickSoundEnabled", false);
+    dominantTickLastKey = "";
+    paint();
+  };
+
+  document.addEventListener("pointerdown", () => {
+    if (!dominantTickSoundEnabled) return;
     try {
       const ctx = getAlertAudioContext();
       if (ctx?.state === "suspended") ctx.resume().catch(() => {});
@@ -21722,6 +21909,9 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   const seen = ticks.slice(0, lastIdx + 1);
   const lastSeenTick = seen[seen.length - 1] || ticks[0] || { ms: 0, quote: 0 };
   const previousSeenTick = seen[seen.length - 2] || lastSeenTick;
+  if (modalReplayState?.playing || modalReplayState?.liveFollow) {
+    maybePlayDominantTickSound(item, previousSeenTick, lastSeenTick);
+  }
   const tickFlashKey = `${String(item?.id || "")}|${Number(lastSeenTick.ms || 0)}|${Number(lastSeenTick.quote || 0)}`;
   const tickFlashNow = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
   if (modalCurrentTickDotState.key !== tickFlashKey) {
@@ -26201,6 +26391,18 @@ function onTick(tick) {
   currentMinuteStartMs = minuteStartMs;
 
   const prevLast = lastQuoteBySymbol[symbol];
+  if (dominantTickSoundEnabled && Number.isFinite(Number(prevLast)) && Number.isFinite(Number(tick.quote))) {
+    const audibleItem = findAudibleLRLItemForSymbol(symbol, epochMs);
+    if (audibleItem) {
+      const anchor = getLRLAnchorEpochMs(audibleItem);
+      const relMs = anchor > 0 ? Math.max(0, epochMs - anchor) : msInMinute;
+      maybePlayDominantTickSound(
+        audibleItem,
+        { ms: Math.max(0, relMs - 1), quote: Number(prevLast) },
+        { ms: relMs, quote: Number(tick.quote) }
+      );
+    }
+  }
   lastQuoteBySymbol[symbol] = tick.quote;
   rememberConstructiveRollingTick(symbol, epochMs, tick.quote);
   updateConstructiveFloatingSignalsOnTick(symbol, epochMs, tick.quote);
@@ -35503,7 +35705,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} · LRL ${best.visualPace.lrlScore}/100 ${best.visualPace.lrlClass} · ${movementSideText} · giro esperado ${turnSideText}. Señal ${direction}. Marcá 5 puntos netos hacia COMPRA o VENTA para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II107 P/M→G→P/M + SCORE LENTO→RÁPIDO→LENTO + AUTOELIMINAR AL ANCLA: mantiene P→G→P, P→G→M, M→G→P y M→G→M. La irregularidad interna de ticks queda solo como dato de estudio y ya no bloquea. La cadencia de los tres tramos se mide como score 0–100 para estudio y NO bloquea señales: compara cuánto más rápido es G, cuántos avances usa, el tamaño medio de esos avances y su duración relativa frente a los laterales; se conservan cortes/separadores reales entre los tres movimientos. Busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). La estructura vuelve a la clasificación histórica P/M→G→P/M: el central debe ser el único G, los laterales pueden ser P o M, ambos deben ser menores que el central y cada lateral debe medir al menos 22% del G. Sí se conservan los movimientos visuales reales, los cortes/separadores reales, el recorrido mínimo del central y el cierre completo del tercer tramo. Una simple desaceleración dentro del G no crea otro movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se valida la familia P/M→G→P/M. La señal sigue siendo contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa manual por puntaje: cada punto de COMPRA suma +1 y cada punto de VENTA suma -1; hacen falta 5 puntos NETOS hacia cualquiera de los dos lados para habilitar esa dirección y AUTO 58. Si después de detectarse la formación y hasta s60 el precio vuelve a tocar o atravesar el precio del ancla, la señal se invalida: el modal se cierra automáticamente y la señal se elimina de Señales; no afecta a Trades ya existentes. Desde s60 en adelante el guard de ancla termina y no participa del rescate s60–s70. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se prepara anticipadamente; desde el primer punto manual la preparación puede seguir el lado hacia el que se inclina el puntaje. La compra exige exclusivamente alcanzar 5 puntos netos hacia COMPRA o VENTA. Si AUTO58 falla exclusivamente por tiempo/proposal y el lado ya tenía 5 puntos netos válidos, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II59, el puntaje permanece editable hasta s65. Si los 5 puntos netos se completan después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos manuales, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje. En II44, la interfaz usa como dato principal la GANANCIA NETA máxima (por ejemplo, payout total 230% = +130% neto), oculta la distancia técnica del badge principal, calcula promedio/mediana/80%/90% también en ganancia neta, corrige valores sin curva que antes podían aparecer como +0%, y amplía la curva virtual con muestras tanto más cercanas como más lejanas para poder estimar también trades cuyo cierre favorable no alcanzó la barrera usada. En II47 se elimina la prueba del borde fantasma de la vela Replay y se la reemplaza por un fondo guía fijo detrás de la vela japonesa: franjas horizontales tenues e inmóviles, más una línea de apertura levemente resaltada, para ayudar a percibir micro-movimientos sin generar mareo. En II48 se corrige GAN. MÁX: la distancia máxima s120 se mide con la misma referencia de precio usada por la curva distancia→payout (curve.entry_quote / entry_reference_quote), evitando mezclarla con entry_spot y mostrar una ganancia máxima inferior a la ganancia real del trade. En II49 el gráfico de líneas del modal marca cada tick visible con un punto pequeño, igual que la referencia visual del Replay, manteniendo el último tick destacado y sin modificar la escala ni la lógica operativa. En II50 se corrige el guard de retorno al ancla: solo puede bloquear durante la formación s0–s60; una vez alcanzado s60 sin retorno, el rescate tardío s60–s70 continúa aunque el precio toque o atraviese el ancla después. En II51 los puntos de tick del gráfico de líneas del modal se hacen apenas más visibles (radio 1.85 px y mayor opacidad), sin modificar la línea, la escala ni la lógica operativa. En II52 esos puntos también se dibujan en las capturas de estudio y en la bitácora imprimible, con puntos negros sutiles sobre la línea para que la cadencia de ticks siga visible al descargar o imprimir. En II53 esos puntos de impresión se vuelven más visibles: cada tick se dibuja con un halo blanco fino y un centro negro más marcado, para que no se pierda dentro de la línea al imprimir. En II54 se incrementa todavía más la visibilidad en impresión: cada tick usa un disco blanco más grande, un aro negro fino y un centro negro más ancho, pensado para que siga viéndose incluso al reducir dos capturas por hoja. En II55 la zona de impresión agrega selección masiva: “Seleccionar ITMs” toma todos los ITM visibles y también los OTM por PUNTO ENTRADA; “Seleccionar OTMs” toma únicamente OTM direccionales y excluye esos casos. Ambas opciones respetan cuenta y filtro de fecha visibles. En II56 la preparación de la bitácora usa timeout por captura, pausas cortas para liberar memoria y blobs/object URLs en lugar de data URLs pesadas, reduciendo cuelgues en Android cuando se imprimen muchas operaciones seguidas. En II57, específicamente para la bitácora A4 masiva, cada imagen se renderiza en una resolución optimizada para papel y se codifica en JPEG liviano; así baja mucho la memoria acumulada al imprimir lotes grandes, mientras la captura individual descargable sigue en alta resolución. En II58, cuando la selección es grande, la bitácora se divide automáticamente en sublotes de hasta 40 capturas y los va enviando a impresión uno por uno, para evitar el cuelgue recurrente alrededor de la captura 61 en Android/WebView. En II59 se reemplaza la autorización PGP 2/2 por el sistema anterior de puntaje direccional: 5 puntos netos hacia COMPRA o 5 hacia VENTA habilitan ese lado, y los puntos contrarios se descuentan del neto. En II60 se agrega un modo opcional de entrada Higher/Lower “Retroceso · barrera cierre s60”: con 5 puntos netos no compra en AUTO58; fija una barrera absoluta exactamente en el precio de cierre s60 y espera un retroceso posterior. Solo compra si esa barrera cotiza entre 225% y 235% total (+125% a +135% neto), con vencimiento fijo s120. En II60 el corte original era s108. En II61, cuando ese modo está activo se desactiva por completo la preparación vieja de s50/s56/AUTO58 y el export incluye el estado completo s60CloseBarrierEntry, con motivo exacto de no entrada, intentos, retrocesos vistos y payouts observados. En II62 se corrige el fallo por el cual reference_price=null podía interpretarse como 0: al llegar a s60 se captura o reconstruye el cierre real, la barrera absoluta queda fijada en ese cierre y se cotiza durante el retroceso hasta encontrar 225–235% total (objetivo +130% neto). La ventana termina en s105 para conservar al menos 15 segundos hasta el vencimiento fijo s120. En II63 se elimina el techo de payout únicamente para este modo: la barrera sigue fija exactamente en el cierre s60 y la entrada se habilita cuando la proposal alcanza como mínimo 230% total (+130% neto); 230% o cualquier valor superior es válido, siempre antes de s105 y con vencimiento fijo s120. En II64 se agrega, solo para estudio y sin bloquear señales, un análisis de reducción interna por ticks dentro de cada uno de los tres movimientos P/M→G→P/M: compara los avances consecutivos del mismo sentido y registra pares cuya magnitud se reduce al menos 10%. En II65 la marca visual de reducción interna aparece únicamente si los tres movimientos tienen al menos una reducción; las reducciones parciales siguen guardadas en el JSON pero no se muestran en la lista.`;
+  const logicText = `Motor experimental V113.33-II108 P/M→G→P/M + SCORE LENTO→RÁPIDO→LENTO + AUTOELIMINAR AL ANCLA: mantiene P→G→P, P→G→M, M→G→P y M→G→M. La irregularidad interna de ticks queda solo como dato de estudio y ya no bloquea. La cadencia de los tres tramos se mide como score 0–100 para estudio y NO bloquea señales: compara cuánto más rápido es G, cuántos avances usa, el tamaño medio de esos avances y su duración relativa frente a los laterales; se conservan cortes/separadores reales entre los tres movimientos. Busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). La estructura vuelve a la clasificación histórica P/M→G→P/M: el central debe ser el único G, los laterales pueden ser P o M, ambos deben ser menores que el central y cada lateral debe medir al menos 22% del G. Sí se conservan los movimientos visuales reales, los cortes/separadores reales, el recorrido mínimo del central y el cierre completo del tercer tramo. Una simple desaceleración dentro del G no crea otro movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se valida la familia P/M→G→P/M. La señal sigue siendo contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa manual por puntaje: cada punto de COMPRA suma +1 y cada punto de VENTA suma -1; hacen falta 5 puntos NETOS hacia cualquiera de los dos lados para habilitar esa dirección y AUTO 58. Si después de detectarse la formación y hasta s60 el precio vuelve a tocar o atravesar el precio del ancla, la señal se invalida: el modal se cierra automáticamente y la señal se elimina de Señales; no afecta a Trades ya existentes. Desde s60 en adelante el guard de ancla termina y no participa del rescate s60–s70. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se prepara anticipadamente; desde el primer punto manual la preparación puede seguir el lado hacia el que se inclina el puntaje. La compra exige exclusivamente alcanzar 5 puntos netos hacia COMPRA o VENTA. Si AUTO58 falla exclusivamente por tiempo/proposal y el lado ya tenía 5 puntos netos válidos, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II59, el puntaje permanece editable hasta s65. Si los 5 puntos netos se completan después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos manuales, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje. En II44, la interfaz usa como dato principal la GANANCIA NETA máxima (por ejemplo, payout total 230% = +130% neto), oculta la distancia técnica del badge principal, calcula promedio/mediana/80%/90% también en ganancia neta, corrige valores sin curva que antes podían aparecer como +0%, y amplía la curva virtual con muestras tanto más cercanas como más lejanas para poder estimar también trades cuyo cierre favorable no alcanzó la barrera usada. En II47 se elimina la prueba del borde fantasma de la vela Replay y se la reemplaza por un fondo guía fijo detrás de la vela japonesa: franjas horizontales tenues e inmóviles, más una línea de apertura levemente resaltada, para ayudar a percibir micro-movimientos sin generar mareo. En II48 se corrige GAN. MÁX: la distancia máxima s120 se mide con la misma referencia de precio usada por la curva distancia→payout (curve.entry_quote / entry_reference_quote), evitando mezclarla con entry_spot y mostrar una ganancia máxima inferior a la ganancia real del trade. En II49 el gráfico de líneas del modal marca cada tick visible con un punto pequeño, igual que la referencia visual del Replay, manteniendo el último tick destacado y sin modificar la escala ni la lógica operativa. En II50 se corrige el guard de retorno al ancla: solo puede bloquear durante la formación s0–s60; una vez alcanzado s60 sin retorno, el rescate tardío s60–s70 continúa aunque el precio toque o atraviese el ancla después. En II51 los puntos de tick del gráfico de líneas del modal se hacen apenas más visibles (radio 1.85 px y mayor opacidad), sin modificar la línea, la escala ni la lógica operativa. En II52 esos puntos también se dibujan en las capturas de estudio y en la bitácora imprimible, con puntos negros sutiles sobre la línea para que la cadencia de ticks siga visible al descargar o imprimir. En II53 esos puntos de impresión se vuelven más visibles: cada tick se dibuja con un halo blanco fino y un centro negro más marcado, para que no se pierda dentro de la línea al imprimir. En II54 se incrementa todavía más la visibilidad en impresión: cada tick usa un disco blanco más grande, un aro negro fino y un centro negro más ancho, pensado para que siga viéndose incluso al reducir dos capturas por hoja. En II55 la zona de impresión agrega selección masiva: “Seleccionar ITMs” toma todos los ITM visibles y también los OTM por PUNTO ENTRADA; “Seleccionar OTMs” toma únicamente OTM direccionales y excluye esos casos. Ambas opciones respetan cuenta y filtro de fecha visibles. En II56 la preparación de la bitácora usa timeout por captura, pausas cortas para liberar memoria y blobs/object URLs en lugar de data URLs pesadas, reduciendo cuelgues en Android cuando se imprimen muchas operaciones seguidas. En II57, específicamente para la bitácora A4 masiva, cada imagen se renderiza en una resolución optimizada para papel y se codifica en JPEG liviano; así baja mucho la memoria acumulada al imprimir lotes grandes, mientras la captura individual descargable sigue en alta resolución. En II58, cuando la selección es grande, la bitácora se divide automáticamente en sublotes de hasta 40 capturas y los va enviando a impresión uno por uno, para evitar el cuelgue recurrente alrededor de la captura 61 en Android/WebView. En II59 se reemplaza la autorización PGP 2/2 por el sistema anterior de puntaje direccional: 5 puntos netos hacia COMPRA o 5 hacia VENTA habilitan ese lado, y los puntos contrarios se descuentan del neto. En II60 se agrega un modo opcional de entrada Higher/Lower “Retroceso · barrera cierre s60”: con 5 puntos netos no compra en AUTO58; fija una barrera absoluta exactamente en el precio de cierre s60 y espera un retroceso posterior. Solo compra si esa barrera cotiza entre 225% y 235% total (+125% a +135% neto), con vencimiento fijo s120. En II60 el corte original era s108. En II61, cuando ese modo está activo se desactiva por completo la preparación vieja de s50/s56/AUTO58 y el export incluye el estado completo s60CloseBarrierEntry, con motivo exacto de no entrada, intentos, retrocesos vistos y payouts observados. En II62 se corrige el fallo por el cual reference_price=null podía interpretarse como 0: al llegar a s60 se captura o reconstruye el cierre real, la barrera absoluta queda fijada en ese cierre y se cotiza durante el retroceso hasta encontrar 225–235% total (objetivo +130% neto). La ventana termina en s105 para conservar al menos 15 segundos hasta el vencimiento fijo s120. En II63 se elimina el techo de payout únicamente para este modo: la barrera sigue fija exactamente en el cierre s60 y la entrada se habilita cuando la proposal alcanza como mínimo 230% total (+130% neto); 230% o cualquier valor superior es válido, siempre antes de s105 y con vencimiento fijo s120. En II64 se agrega, solo para estudio y sin bloquear señales, un análisis de reducción interna por ticks dentro de cada uno de los tres movimientos P/M→G→P/M: compara los avances consecutivos del mismo sentido y registra pares cuya magnitud se reduce al menos 10%. En II65 la marca visual de reducción interna aparece únicamente si los tres movimientos tienen al menos una reducción; las reducciones parciales siguen guardadas en el JSON pero no se muestran en la lista.`;
 
   return {
     direction,
