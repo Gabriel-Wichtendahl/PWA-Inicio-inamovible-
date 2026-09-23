@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II108";
+const APP_BUILD_VERSION = "v113.33-II109";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -319,6 +319,7 @@ const EXECUTION_MODE_HIGHLOW_AUTO = "HIGHLOW_FIXED_BARRIER_BY_SYMBOL";
 const HIGHLOW_ENTRY_MODE_KEY = "highLowEntryMode_v1";
 const HIGHLOW_ENTRY_MODE_NORMAL = "NORMAL_AUTO58_RESCUE";
 const HIGHLOW_ENTRY_MODE_S60_RETRACE = "S60_CLOSE_BARRIER_RETRACE";
+const HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300 = "S60_RETRACE_TRIGGER_150_TARGET_300";
 const S60_CLOSE_ENTRY_START_MS = 60000;
 const S60_CLOSE_ENTRY_MIN_REMAIN_TO_EXPIRY_MS = 15000;
 const S60_CLOSE_ENTRY_END_MS = 120000 - S60_CLOSE_ENTRY_MIN_REMAIN_TO_EXPIRY_MS;
@@ -327,6 +328,11 @@ const S60_CLOSE_ENTRY_QUOTE_THROTTLE_MS = 700;
 // II63: en el modo Retroceso · barrera cierre s60, +130% neto es un MÍNIMO.
 // 230% total o más es válido; no existe techo máximo de payout para esta ruta.
 const S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT = 230;
+const S60_RETRACE_150_TRIGGER_PAYOUT_TOTAL_PCT = 250; // +150% neto en la barrera del cierre s60.
+const S60_RETRACE_300_TARGET_PAYOUT_TOTAL_PCT = 400; // compra objetivo: +300% neto.
+const S60_RETRACE_300_ACCEPT_MIN_PCT = 395; // tolerancia equivalente a +295% neto.
+const S60_RETRACE_300_ACCEPT_MAX_PCT = 405; // tolerancia equivalente a +305% neto.
+const S60_RETRACE_300_SEARCH_COOLDOWN_MS = 1800;
 const ENTRY_TIMING_MODE_KEY = "entryTimingMode_v1";
 const ENTRY_TIMING_AUTO58_NEXT_CANDLE_EXPIRY = "AUTO58_NEXT_CANDLE_EXPIRY";
 const ENTRY_TIMING_AUTO58_VISUAL_58_EXPIRY = "AUTO58_VISUAL_58_EXPIRY";
@@ -7097,9 +7103,17 @@ function ensureExecutionModeButton() {
 }
 
 function normalizeHighLowEntryMode(mode) {
-  return String(mode || "") === HIGHLOW_ENTRY_MODE_S60_RETRACE
-    ? HIGHLOW_ENTRY_MODE_S60_RETRACE
-    : HIGHLOW_ENTRY_MODE_NORMAL;
+  const raw = String(mode || "");
+  if (raw === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300) return HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300;
+  if (raw === HIGHLOW_ENTRY_MODE_S60_RETRACE) return HIGHLOW_ENTRY_MODE_S60_RETRACE;
+  return HIGHLOW_ENTRY_MODE_NORMAL;
+}
+function isHighLowRetraceEntryMode(mode = highLowEntryMode) {
+  const normalized = normalizeHighLowEntryMode(mode);
+  return normalized === HIGHLOW_ENTRY_MODE_S60_RETRACE || normalized === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300;
+}
+function isHighLowRetrace150To300Mode(mode = highLowEntryMode) {
+  return normalizeHighLowEntryMode(mode) === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300;
 }
 function loadHighLowEntryMode() {
   try { highLowEntryMode = normalizeHighLowEntryMode(localStorage.getItem(HIGHLOW_ENTRY_MODE_KEY)); }
@@ -7109,22 +7123,26 @@ function saveHighLowEntryMode() {
   try { localStorage.setItem(HIGHLOW_ENTRY_MODE_KEY, normalizeHighLowEntryMode(highLowEntryMode)); } catch {}
 }
 function shouldUseS60CloseBarrierEntryMode() {
-  return shouldUseAutoHighLowExecution() && normalizeHighLowEntryMode(highLowEntryMode) === HIGHLOW_ENTRY_MODE_S60_RETRACE;
+  return shouldUseAutoHighLowExecution() && isHighLowRetraceEntryMode(highLowEntryMode);
 }
 function getHighLowEntryModeLabel() {
-  return normalizeHighLowEntryMode(highLowEntryMode) === HIGHLOW_ENTRY_MODE_S60_RETRACE
-    ? "↩️ Retroceso · barrera cierre s60"
-    : "⚡ Normal AUTO58 + rescate";
+  const mode = normalizeHighLowEntryMode(highLowEntryMode);
+  if (mode === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300) return "🧪 Retroceso +150 → compra +300";
+  if (mode === HIGHLOW_ENTRY_MODE_S60_RETRACE) return "↩️ Retroceso · barrera cierre s60";
+  return "⚡ Normal AUTO58 + rescate";
 }
 function applyHighLowEntryModeUI() {
   const btn = pickEl("highLowEntryModeBtn");
   if (!btn) return;
-  const retrace = normalizeHighLowEntryMode(highLowEntryMode) === HIGHLOW_ENTRY_MODE_S60_RETRACE;
+  const mode = normalizeHighLowEntryMode(highLowEntryMode);
+  const retrace = isHighLowRetraceEntryMode(mode);
   btn.textContent = `Entrada HL: ${getHighLowEntryModeLabel()}`;
   btn.classList.toggle("active", retrace && shouldUseAutoHighLowExecution());
-  btn.title = retrace
-    ? "Higher/Lower: con 5 puntos netos NO compra en s58. Desde s60 espera retroceso y compra cuando la barrera absoluta en el cierre s60 cotiza 230% total o más (+130% neto mínimo), sin techo máximo. Corta en s105, dejando 15s de margen antes de s120."
-    : "Higher/Lower normal: AUTO58 y rescate tardío s60-s70 como antes.";
+  btn.title = mode === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300
+    ? "PRUEBA II109: con 5 puntos netos no compra en s58. Desde s60 espera hasta que la barrera del cierre s60 cotice al menos 250% total (+150% neto). Recién entonces busca otra barrera que cotice cerca de 400% total (+300% neto, tolerancia 395–405%) y compra esa proposal. Vencimiento fijo s120; corte s105."
+    : mode === HIGHLOW_ENTRY_MODE_S60_RETRACE
+      ? "Higher/Lower actual: con 5 puntos netos NO compra en s58. Desde s60 espera retroceso y compra cuando la barrera absoluta en el cierre s60 cotiza 230% total o más (+130% neto mínimo), sin techo máximo. Corta en s105."
+      : "Higher/Lower normal: AUTO58 y rescate tardío s60-s70 como antes.";
   btn.style.opacity = shouldUseAutoHighLowExecution() ? "1" : ".72";
 }
 function cancelPendingS60CloseBarrierEntriesForModeChange() {
@@ -7154,40 +7172,48 @@ function ensureHighLowEntryModeButton() {
     else host.appendChild(btn);
   }
   btn.onclick = () => {
-    const next = normalizeHighLowEntryMode(highLowEntryMode) === HIGHLOW_ENTRY_MODE_S60_RETRACE
-      ? HIGHLOW_ENTRY_MODE_NORMAL
-      : HIGHLOW_ENTRY_MODE_S60_RETRACE;
+    const current = normalizeHighLowEntryMode(highLowEntryMode);
+    const next = current === HIGHLOW_ENTRY_MODE_NORMAL
+      ? HIGHLOW_ENTRY_MODE_S60_RETRACE
+      : current === HIGHLOW_ENTRY_MODE_S60_RETRACE
+        ? HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300
+        : HIGHLOW_ENTRY_MODE_NORMAL;
+
+    // Toda conmutación cancela estados pendientes del modo anterior para que una
+    // señal ya armada no herede objetivos de payout diferentes.
+    cancelPendingS60CloseBarrierEntriesForModeChange();
     highLowEntryMode = next;
-    if (next === HIGHLOW_ENTRY_MODE_S60_RETRACE && !shouldUseAutoHighLowExecution()) {
+
+    if (isHighLowRetraceEntryMode(next) && !shouldUseAutoHighLowExecution()) {
       executionMode = EXECUTION_MODE_HIGHLOW_AUTO;
       saveExecutionMode();
       applyExecutionModeUI();
     }
     saveHighLowEntryMode();
-    if (next === HIGHLOW_ENTRY_MODE_S60_RETRACE) {
+
+    if (isHighLowRetraceEntryMode(next)) {
       stopAllExecutionPlanLoops();
       for (const item of history.slice(-40)) {
-        suppressNormalHighLowPreparationForRetrace(item, "entry_mode_enabled_retrace_mode");
+        suppressNormalHighLowPreparationForRetrace(item, next === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300
+          ? "entry_mode_enabled_retrace_150_to_300"
+          : "entry_mode_enabled_retrace_mode");
         if (getSignalEnabledTradeSide(item)) armS60CloseBarrierEntry(item, "entry_mode_enabled");
       }
       try { saveHistory(history); } catch {}
-    } else {
-      cancelPendingS60CloseBarrierEntriesForModeChange();
-      if (shouldUseAutoHighLowExecution()) {
-        for (const it of history.slice(-12)) ensureSignalAutoPrecalc(it);
-      }
+    } else if (shouldUseAutoHighLowExecution()) {
+      for (const it of history.slice(-12)) ensureSignalAutoPrecalc(it);
     }
+
     applyHighLowEntryModeUI();
     if (chartModal && !chartModal.classList.contains("hidden")) {
       updateSignalConfirmationUI();
       updateModalCandleStatusUI();
     }
-    toast(`Modo entrada HL: ${getHighLowEntryModeLabel()}`, 2200);
+    toast(`Modo entrada HL: ${getHighLowEntryModeLabel()}`, 2400);
   };
   applyHighLowEntryModeUI();
   return btn;
 }
-
 
 /* =========================
    Timing de entrada Rise/Fall
@@ -8840,7 +8866,17 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   const stake = Number(opts.stake || getEffectiveTradeStake());
   const timeoutMs = Number(opts.timeoutMs || (opts.fast ? AUTO_FAST_PROPOSAL_TIMEOUT_MS : AUTO_FULL_PROPOSAL_TIMEOUT_MS));
   const maxQuotes = Math.max(1, Math.min(20, Number(opts.maxQuotes || HIGHLOW_TARGET_MAX_SEARCH_QUOTES)));
-  const target = HIGHLOW_TARGET_PAYOUT_TOTAL_PCT;
+  const target = Number(opts.targetPayoutTotalPct ?? HIGHLOW_TARGET_PAYOUT_TOTAL_PCT);
+  const acceptMin = Number(opts.targetAcceptMinPct ?? (target - 5));
+  const acceptMax = Number(opts.targetAcceptMaxPct ?? (target + 5));
+  const targetDistance = (plan) => {
+    const pct = Number(plan?.payoutTotalPct);
+    return Number.isFinite(pct) ? Math.abs(pct - target) : Number.POSITIVE_INFINITY;
+  };
+  const isTargetAcceptable = (plan) => {
+    const pct = Number(plan?.payoutTotalPct);
+    return !!plan && Number.isFinite(pct) && pct >= acceptMin && pct <= acceptMax;
+  };
   const seen = new Set();
   const samples = [];
   let quotesUsed = 0;
@@ -8858,10 +8894,10 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   const remember = (plan, candidate = null) => {
     if (!plan) return null;
     plan.targetPayoutTotalPct = target;
-    plan.targetDistancePct = getHighLowTargetDistance(plan);
+    plan.targetDistancePct = targetDistance(plan);
     plan.targetSearch = true;
     plan.fixedBarrier = false;
-    plan.source = candidate?.barrier ? "signal_target_profit_130_bisection" : "signal_default_probe";
+    plan.source = candidate?.barrier ? "signal_target_profit_dynamic_bisection" : "signal_default_probe";
     if (!plan.barrier && candidate?.barrier) plan.barrier = candidate.barrier;
     if (!Number.isFinite(Number(plan.barrierNum)) && candidate && Number.isFinite(Number(candidate.barrierNum))) plan.barrierNum = Number(candidate.barrierNum);
     if (!Number.isFinite(Number(plan.precision)) && candidate && Number.isFinite(Number(candidate.precision))) plan.precision = Number(candidate.precision);
@@ -8870,7 +8906,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     samples.push(plan);
     // Solo una propuesta con barrera reproducible sirve como candidato de entrada.
     if (makeHighLowCandidateFromPlan(plan, side)) {
-      if (!best || getHighLowTargetDistance(plan) < getHighLowTargetDistance(best)) best = plan;
+      if (!best || targetDistance(plan) < targetDistance(best)) best = plan;
     }
     return plan;
   };
@@ -8914,7 +8950,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     defaultPlan = await getHighLowDefaultProposalQuote(symbol, side, stake, timeoutMs, item);
     if (shouldAbortForEntry()) return null;
     if (defaultPlan) remember(defaultPlan, null);
-    if (defaultPlan && isHighLowPlanAcceptable(defaultPlan) && makeHighLowCandidateFromPlan(defaultPlan, side)) {
+    if (defaultPlan && isTargetAcceptable(defaultPlan) && makeHighLowCandidateFromPlan(defaultPlan, side)) {
       rememberExecutionBarrierHint(symbol, side, defaultPlan, defaultPlan.precision || 0);
       return defaultPlan;
     }
@@ -8960,7 +8996,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
   while (quotesUsed < maxQuotes && hardU === null && !isHighLowProposalCooldownActive() && !shouldAbortForEntry()) {
     const r = await quoteU(hardProbeU);
     if (r.kind === "plan" && r.plan) {
-      if (isHighLowPlanAcceptable(r.plan)) {
+      if (isTargetAcceptable(r.plan)) {
         rememberExecutionBarrierHint(symbol, side, r.plan, r.plan.precision || 0);
         r.plan.searchAcceptable = true;
         return r.plan;
@@ -8991,7 +9027,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
       break;
     }
     if (r.kind === "plan" && r.plan) {
-      if (isHighLowPlanAcceptable(r.plan)) {
+      if (isTargetAcceptable(r.plan)) {
         rememberExecutionBarrierHint(symbol, side, r.plan, r.plan.precision || 0);
         r.plan.searchAcceptable = true;
         return r.plan;
@@ -9052,7 +9088,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
       }
       if (rn.kind === "no_return") easyU = nudged;
       else if (rn.kind === "plan" && rn.plan) {
-        if (isHighLowPlanAcceptable(rn.plan)) {
+        if (isTargetAcceptable(rn.plan)) {
           rememberExecutionBarrierHint(symbol, side, rn.plan, rn.plan.precision || 0);
           rn.plan.searchAcceptable = true;
           return rn.plan;
@@ -9077,7 +9113,7 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
       // presupuesto real de cotizaciones, pero el guard evita cualquier ciclo.
       continue;
     }
-    if (isHighLowPlanAcceptable(r.plan)) {
+    if (isTargetAcceptable(r.plan)) {
       rememberExecutionBarrierHint(symbol, side, r.plan, r.plan.precision || 0);
       r.plan.searchAcceptable = true;
       return r.plan;
@@ -9098,8 +9134,8 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
     const bestCandidate = makeHighLowCandidateFromPlan(best, side);
     const precision = getHighLowBarrierMaxDecimals(symbol);
     const step = Math.pow(10, -Math.max(0, precision));
-    const belowDistance = Number.isFinite(bestPct) ? HIGHLOW_TARGET_ACCEPT_MIN_PCT - bestPct : Number.POSITIVE_INFINITY;
-    const aboveDistance = Number.isFinite(bestPct) ? bestPct - HIGHLOW_TARGET_ACCEPT_MAX_PCT : Number.POSITIVE_INFINITY;
+    const belowDistance = Number.isFinite(bestPct) ? acceptMin - bestPct : Number.POSITIVE_INFINITY;
+    const aboveDistance = Number.isFinite(bestPct) ? bestPct - acceptMax : Number.POSITIVE_INFINITY;
     const nearBelow = belowDistance > 0 && belowDistance <= SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_DISTANCE_PCT;
     const nearAbove = aboveDistance > 0 && aboveDistance <= SIGNAL_HIGHLOW_NEAR_RANGE_RESCUE_DISTANCE_PCT;
     if (bestCandidate && Number.isFinite(step) && step > 0 && (nearBelow || nearAbove)) {
@@ -9113,10 +9149,10 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
         const signed = String(side || "CALL").toUpperCase() === "PUT" ? trialU : -trialU;
         const candidate = makeBarrierCandidateFromSignedValue(signed, precision);
         const r = await quoteCandidate(candidate);
-        if (r.kind === "plan" && r.plan && isHighLowPlanAcceptable(r.plan)) {
+        if (r.kind === "plan" && r.plan && isTargetAcceptable(r.plan)) {
           rememberExecutionBarrierHint(symbol, side, r.plan, r.plan.precision || precision);
           r.plan.searchAcceptable = true;
-          r.plan.source = "signal_target_profit_130_fine_precision";
+          r.plan.source = "signal_target_profit_dynamic_fine_precision";
           return r.plan;
         }
       }
@@ -9125,8 +9161,8 @@ async function findHighLowPlanNear130(item, side, opts = {}) {
 
   if (best) best.searchLastError = lastError;
   const acceptable = samples
-    .filter((plan) => isHighLowPlanAcceptable(plan) && makeHighLowCandidateFromPlan(plan, side))
-    .sort((a, b) => getHighLowTargetDistance(a) - getHighLowTargetDistance(b))[0] || null;
+    .filter((plan) => isTargetAcceptable(plan) && makeHighLowCandidateFromPlan(plan, side))
+    .sort((a, b) => targetDistance(a) - targetDistance(b))[0] || null;
   if (acceptable) {
     rememberExecutionBarrierHint(symbol, side, acceptable, acceptable.precision || 0);
     acceptable.searchAcceptable = true;
@@ -10769,7 +10805,12 @@ function buildS60CloseBarrierEntryExport(state) {
       ? `Barrera s60 fijada en ${ref}. Esperando un retroceso favorable para ${side || "el lado habilitado"}.`
       : "Esperando disponer del precio de cierre s60 para fijar la barrera.";
   } else if (status === "waiting_target_payout") {
-    if (String(out.last_skip_reason || "") === "payout_too_low_wait_more_retrace") {
+    if (String(out.last_skip_reason || "") === "s60_close_below_150_wait_more_retrace") {
+      code = "waiting_s60_close_150";
+      message = Number.isFinite(payout)
+        ? `Hubo retroceso, pero la barrera del cierre s60 todavía paga ${payout.toFixed(1)}% total. Espera alcanzar 250% total (+150% neto) antes de buscar la barrera +300%.`
+        : "Hubo retroceso, pero todavía espera que la barrera del cierre s60 llegue a +150% neto.";
+    } else if (String(out.last_skip_reason || "") === "payout_too_low_wait_more_retrace") {
       code = "waiting_more_retracement";
       message = Number.isFinite(payout)
         ? `Hubo retroceso, pero el payout fue demasiado bajo (${payout.toFixed(1)}% total). Espera más retroceso.`
@@ -10781,9 +10822,16 @@ function buildS60CloseBarrierEntryExport(state) {
   } else if (status === "quoting") {
     code = "quoting";
     message = "Se detectó un retroceso favorable y la PWA está consultando la proposal con barrera fija en el cierre s60.";
+  } else if (status === "searching_target_300" || status === "waiting_target_300_search" || status === "waiting_target_300") {
+    code = status;
+    message = status === "searching_target_300"
+      ? "La barrera del cierre s60 ya alcanzó +150% neto. Buscando una barrera nueva cercana a +300% neto."
+      : "El gatillo +150% ya apareció, pero todavía no se encontró una barrera comprable cercana a +300% neto.";
   } else if (status === "sending") {
     code = "sending";
-    message = "Se encontró un punto válido: la proposal alcanzó 230% total o más (+130% neto mínimo) y la PWA está enviando el buy.";
+    message = String(out.entry_mode || "") === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300
+      ? "El cierre s60 alcanzó +150% neto y se encontró una barrera cercana a +300% neto. La PWA está enviando el buy."
+      : "Se encontró un punto válido: la proposal alcanzó 230% total o más (+130% neto mínimo) y la PWA está enviando el buy.";
   } else if (status === "sent") {
     code = "bought";
     message = "La entrada por retroceso se ejecutó correctamente.";
@@ -10799,7 +10847,9 @@ function buildS60CloseBarrierEntryExport(state) {
       message = "No hubo un retroceso útil antes del corte de s105; la PWA no entró.";
     } else if (why === "payout_never_reached_minimum_before_cutoff") {
       code = "payout_always_too_low";
-      message = "Sí hubo retroceso y proposals, pero el payout nunca alcanzó 230% total (+130% neto) antes de s105; no entró.";
+      message = String(out.entry_mode || "") === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300
+        ? "Sí hubo retroceso, pero el cierre s60 no llegó a 250% total (+150% neto), o no apareció una barrera final cercana a +300% antes de s105; no entró."
+        : "Sí hubo retroceso y proposals, pero el payout nunca alcanzó 230% total (+130% neto) antes de s105; no entró.";
     } else if (why === "payout_never_dropped_into_range_before_cutoff") {
       code = "payout_always_too_high";
       message = "Estado legado de II62: había payout por encima del antiguo techo. En II63 ese payout ya sería aceptable si alcanza 230% total.";
@@ -20265,6 +20315,12 @@ function armS60CloseBarrierEntry(item, reason = "points_5_authorized") {
   if (existing && !["sent", "expired", "blocked", "cancelled"].includes(String(existing.status || ""))) {
     existing.enabled = true;
     existing.side = side;
+    existing.entry_mode = normalizeHighLowEntryMode(highLowEntryMode);
+    existing.trigger_payout_total_min_pct = isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_150_TRIGGER_PAYOUT_TOTAL_PCT : S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT;
+    existing.target_payout_total_min_pct = isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_300_ACCEPT_MIN_PCT : S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT;
+    existing.target_payout_total_max_pct = isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_300_ACCEPT_MAX_PCT : null;
+    existing.target_payout_total_pct = isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_300_TARGET_PAYOUT_TOTAL_PCT : HIGHLOW_TARGET_PAYOUT_TOTAL_PCT;
+    existing.target_profit_pct = isHighLowRetrace150To300Mode(highLowEntryMode) ? 300 : AUTO_TARGET_RETURN_PCT;
     existing.points_enabled_at_ms = getSignalSideEnabledAtMs(item, side);
     existing.last_arm_reason = String(reason || "points_5_authorized");
     if (!Number.isFinite(getS60CloseFiniteStoredNumber(existing.reference_price)) && Number.isFinite(getS60CloseFiniteStoredNumber(canonical?.price))) {
@@ -20294,9 +20350,12 @@ function armS60CloseBarrierEntry(item, reason = "points_5_authorized") {
     reference_elapsed_ms: Number.isFinite(getS60CloseFiniteStoredNumber(canonical?.price)) ? S60_CLOSE_ENTRY_START_MS : null,
     reference_source: Number.isFinite(getS60CloseFiniteStoredNumber(canonical?.price)) ? String(canonical.source || "signal_s60_reference") : "pending_s60_close",
     favorable_rule: side === "CALL" ? "price<s60_close" : "price>s60_close",
-    target_payout_total_min_pct: S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT,
-    target_payout_total_max_pct: null,
-    target_profit_pct: AUTO_TARGET_RETURN_PCT,
+    entry_mode: normalizeHighLowEntryMode(highLowEntryMode),
+    trigger_payout_total_min_pct: isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_150_TRIGGER_PAYOUT_TOTAL_PCT : S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT,
+    target_payout_total_min_pct: isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_300_ACCEPT_MIN_PCT : S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT,
+    target_payout_total_max_pct: isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_300_ACCEPT_MAX_PCT : null,
+    target_payout_total_pct: isHighLowRetrace150To300Mode(highLowEntryMode) ? S60_RETRACE_300_TARGET_PAYOUT_TOTAL_PCT : HIGHLOW_TARGET_PAYOUT_TOTAL_PCT,
+    target_profit_pct: isHighLowRetrace150To300Mode(highLowEntryMode) ? 300 : AUTO_TARGET_RETURN_PCT,
     quote_in_flight: false,
     quote_attempts: 0,
     retrace_ticks_seen: 0,
@@ -20411,7 +20470,14 @@ async function buyS60CloseBarrierHighLow(item, side, stake) {
   const plan = state.ready_plan;
   if (!plan?.proposalId || !Number.isFinite(Number(plan.askPrice)) || Number(plan.askPrice) <= 0) throw new Error("Entrada s60 sin proposal lista.");
   const pct = Number(plan.payoutTotalPct);
-  if (!(pct >= S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT)) throw new Error(`Entrada s60: payout ${pct.toFixed(1)}% por debajo del mínimo ${S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT}% total.`);
+  const target300Mode = String(state.entry_mode || "") === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300;
+  if (target300Mode) {
+    if (!(pct >= S60_RETRACE_300_ACCEPT_MIN_PCT && pct <= S60_RETRACE_300_ACCEPT_MAX_PCT)) {
+      throw new Error(`Entrada +150→+300: payout final ${pct.toFixed(1)}% fuera del objetivo ${S60_RETRACE_300_ACCEPT_MIN_PCT}–${S60_RETRACE_300_ACCEPT_MAX_PCT}% total.`);
+    }
+  } else if (!(pct >= S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT)) {
+    throw new Error(`Entrada s60: payout ${pct.toFixed(1)}% por debajo del mínimo ${S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT}% total.`);
+  }
   if (!isHighLowPlanExpiryAligned(plan, item)) throw new Error("Entrada s60: vencimiento no coincide con s120.");
   const buyPayload = { buy: String(plan.proposalId), price: Number(plan.askPrice) };
   const res = await wsRequest(buyPayload, 10000);
@@ -20423,7 +20489,9 @@ async function buyS60CloseBarrierHighLow(item, side, stake) {
     usedFinalPreproposal: false,
     repriceUsed: false,
     lateRecoveryUsed: false,
-    s60CloseBarrierUsed: true,
+    s60CloseBarrierUsed: !target300Mode,
+    s60Target300Used: target300Mode,
+    s60RetraceEntryUsed: true,
     s60CloseBarrierPrice: ref,
     s60CloseTriggerPrice: Number(state.trigger_price),
     s60CloseTriggerElapsedMs: Number(state.trigger_elapsed_ms),
@@ -20529,64 +20597,148 @@ function scanS60CloseBarrierEntriesOnTick(symbol, epochMs, quote) {
           return;
         }
         const pct = Number(plan?.payoutTotalPct);
+        const target300Mode = String(state.entry_mode || "") === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300;
+        const triggerMinPct = target300Mode ? S60_RETRACE_150_TRIGGER_PAYOUT_TOTAL_PCT : S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT;
         state.last_payout_total_pct = Number.isFinite(pct) ? pct : null;
         state.last_profit_pct = Number.isFinite(Number(plan?.profitPct)) ? Number(plan.profitPct) : null;
         state.last_api_barrier = String(plan?.apiBarrier || "");
         const prevBest = Number(state.best_payout_total_pct);
-        if (!Number.isFinite(prevBest) || Math.abs(pct - HIGHLOW_TARGET_PAYOUT_TOTAL_PCT) < Math.abs(prevBest - HIGHLOW_TARGET_PAYOUT_TOTAL_PCT)) {
+        if (!Number.isFinite(prevBest) || Math.abs(pct - triggerMinPct) < Math.abs(prevBest - triggerMinPct)) {
           state.best_payout_total_pct = pct;
           state.best_quote_price = Number(plan?.quoteSpot);
           state.best_quote_elapsed_ms = Math.round(elapsedNow);
         }
-        if (!(pct >= S60_CLOSE_ENTRY_MIN_PAYOUT_TOTAL_PCT)) {
+        if (!(pct >= triggerMinPct)) {
           state.status = "waiting_target_payout";
           state.payout_too_low_count = Number(state.payout_too_low_count || 0) + 1;
-          state.last_skip_reason = "payout_too_low_wait_more_retrace";
+          state.last_skip_reason = target300Mode ? "s60_close_below_150_wait_more_retrace" : "payout_too_low_wait_more_retrace";
           try { saveHistory(history); } catch {}
           return;
         }
-        state.ready_plan = {
-          ...plan,
-          proposalId: String(plan.proposalId || ""),
-          askPrice: Number(plan.askPrice),
-          payout: Number(plan.payout),
-          payoutTotalPct: Number(plan.payoutTotalPct),
-          profitPct: Number(plan.profitPct),
+
+        const sendReadyPlan = (readyPlan, triggerLabel) => {
+          state.ready_plan = {
+            ...readyPlan,
+            proposalId: String(readyPlan.proposalId || ""),
+            askPrice: Number(readyPlan.askPrice),
+            payout: Number(readyPlan.payout),
+            payoutTotalPct: Number(readyPlan.payoutTotalPct),
+            profitPct: Number(readyPlan.profitPct),
+          };
+          state.status = "sending";
+          state.trigger_price = Number(lastQuoteBySymbol?.[sym]);
+          state.trigger_epoch_ms = ep;
+          state.trigger_elapsed_ms = Math.round(getSignalElapsedMsRaw(item));
+          state.trigger_reference_price = ref;
+          state.trigger_condition = triggerLabel;
+          state.send_started_at = Date.now();
+          state.payout_total_pct = Number(readyPlan.payoutTotalPct);
+          state.proposal_id = String(readyPlan.proposalId || "");
+          state.proposal_api_barrier = String(readyPlan.apiBarrier || "");
+          state.expiry_time = Number(readyPlan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(item) || 0) || null;
+          try { saveHistory(history); } catch {}
+          return buyOneClick(requestSide, null, item)
+            .then((res) => {
+              const cid = res?.buy?.contract_id ? String(res.buy.contract_id) : "";
+              state.status = "sent";
+              state.contract_id = cid;
+              state.sent_at = Date.now();
+              state.sent_elapsed_ms = Math.round(getSignalElapsedMsRaw(item));
+              state.ready_plan = null;
+              try { saveHistory(history); } catch {}
+            })
+            .catch((err) => {
+              const nowElapsed = getSignalElapsedMsRaw(item);
+              state.last_buy_error = String(err?.message || err || "buy_error");
+              state.last_buy_error_at = Date.now();
+              state.ready_plan = null;
+              if (nowElapsed > S60_CLOSE_ENTRY_END_MS) expireS60CloseBarrierEntry(item, nowElapsed, "buy_failed_after_cutoff");
+              else state.status = "waiting_retrace";
+              try { saveHistory(history); } catch {}
+            });
         };
-        state.status = "sending";
-        state.trigger_price = currentPrice;
-        state.trigger_epoch_ms = ep;
-        state.trigger_elapsed_ms = Math.round(elapsedNow);
-        state.trigger_reference_price = ref;
-        state.trigger_condition = requestSide === "CALL" ? "current<s60_close_and_payout_gte_230" : "current>s60_close_and_payout_gte_230";
-        state.send_started_at = Date.now();
-        state.payout_total_pct = pct;
-        state.proposal_id = String(plan.proposalId || "");
-        state.proposal_api_barrier = String(plan.apiBarrier || "");
-        state.expiry_time = Number(plan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(item) || 0) || null;
+
+        if (!target300Mode) {
+          if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
+            try { toast(`🎯 Retroceso listo · barrera s60 ${formatS60CloseBarrierAbsolute(sym, ref)} · ${pct.toFixed(1)}% total · enviando…`, 1900); } catch {}
+          }
+          return sendReadyPlan(plan, requestSide === "CALL" ? "current<s60_close_and_payout_gte_230" : "current>s60_close_and_payout_gte_230");
+        }
+
+        // II109 PRUEBA: el cierre s60 solo actúa como gatillo. Cuando esa barrera
+        // alcanza +150% neto (250% total), buscamos una barrera distinta que
+        // cotice cerca de +300% neto (400% total) con el mismo vencimiento s120.
+        const now = Date.now();
+        if (now - Number(state.last_target_300_search_at || 0) < S60_RETRACE_300_SEARCH_COOLDOWN_MS) {
+          state.status = "waiting_target_300_search";
+          state.last_skip_reason = "target_300_search_cooldown";
+          try { saveHistory(history); } catch {}
+          return;
+        }
+        state.last_target_300_search_at = now;
+        state.trigger_150_payout_total_pct = pct;
+        state.trigger_150_profit_pct = pct - 100;
+        state.trigger_150_price = currentPrice;
+        state.trigger_150_elapsed_ms = Math.round(elapsedNow);
+        state.status = "searching_target_300";
+        state.quote_in_flight = true;
         try { saveHistory(history); } catch {}
         if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
-          try { toast(`🎯 Retroceso listo · barrera s60 ${formatS60CloseBarrierAbsolute(sym, ref)} · ${pct.toFixed(1)}% total · enviando…`, 1900); } catch {}
+          try { toast(`🧪 +150% alcanzado en cierre s60 · buscando barrera +300%…`, 1900); } catch {}
         }
-        return buyOneClick(requestSide, null, item)
-          .then((res) => {
-            const cid = res?.buy?.contract_id ? String(res.buy.contract_id) : "";
-            state.status = "sent";
-            state.contract_id = cid;
-            state.sent_at = Date.now();
-            state.sent_elapsed_ms = Math.round(getSignalElapsedMsRaw(item));
-            state.ready_plan = null;
+
+        return findHighLowPlanNear130(item, requestSide, {
+          stake,
+          timeoutMs: S60_CLOSE_ENTRY_QUOTE_TIMEOUT_MS,
+          maxQuotes: 10,
+          targetPayoutTotalPct: S60_RETRACE_300_TARGET_PAYOUT_TOTAL_PCT,
+          targetAcceptMinPct: S60_RETRACE_300_ACCEPT_MIN_PCT,
+          targetAcceptMaxPct: S60_RETRACE_300_ACCEPT_MAX_PCT,
+        }).then((targetPlan) => {
+          state.quote_in_flight = false;
+          if (["sent", "expired", "blocked", "cancelled"].includes(String(state.status || ""))) return;
+          const elapsedTarget = getSignalElapsedMsRaw(item);
+          if (elapsedTarget > S60_CLOSE_ENTRY_END_MS) {
+            expireS60CloseBarrierEntry(item, elapsedTarget, "target_300_search_finished_after_cutoff");
+            return;
+          }
+          const sideNow = getSignalEnabledTradeSide(item);
+          const priceNow = Number(lastQuoteBySymbol?.[sym]);
+          if (sideNow !== requestSide || !isS60CloseRetracementPresent(requestSide, priceNow, ref)) {
+            state.status = sideNow ? "waiting_retrace" : "waiting_points";
+            state.last_quote_discard_reason = "points_or_price_changed_during_target_300_search";
             try { saveHistory(history); } catch {}
-          })
-          .catch((err) => {
-            const nowElapsed = getSignalElapsedMsRaw(item);
-            state.last_buy_error = String(err?.message || err || "buy_error");
-            state.last_buy_error_at = Date.now();
-            state.ready_plan = null;
-            if (nowElapsed > S60_CLOSE_ENTRY_END_MS) expireS60CloseBarrierEntry(item, nowElapsed, "buy_failed_after_cutoff");
-            else state.status = "waiting_retrace";
+            return;
+          }
+          const targetPct = Number(targetPlan?.payoutTotalPct);
+          state.last_target_300_payout_total_pct = Number.isFinite(targetPct) ? targetPct : null;
+          state.last_target_300_barrier = String(targetPlan?.barrier || "");
+          state.last_target_300_api_barrier = String(targetPlan?.apiBarrier || "");
+          if (!targetPlan?.proposalId || !(targetPct >= S60_RETRACE_300_ACCEPT_MIN_PCT && targetPct <= S60_RETRACE_300_ACCEPT_MAX_PCT) || !isHighLowPlanExpiryAligned(targetPlan, item)) {
+            state.status = "waiting_target_300";
+            state.target_300_miss_count = Number(state.target_300_miss_count || 0) + 1;
+            state.last_skip_reason = "no_barrier_near_300_found";
             try { saveHistory(history); } catch {}
-          });
+            return;
+          }
+          if (modalCurrentItem && String(modalCurrentItem.id || "") === String(item.id || "")) {
+            try { toast(`🎯 Barrera +300 lista · ${(targetPct - 100).toFixed(1)}% neto · enviando…`, 1900); } catch {}
+          }
+          return sendReadyPlan(targetPlan, requestSide === "CALL"
+            ? "s60_close_gte_150_then_target_barrier_near_300_call"
+            : "s60_close_gte_150_then_target_barrier_near_300_put");
+        }).catch((err) => {
+          state.quote_in_flight = false;
+          state.target_300_error_count = Number(state.target_300_error_count || 0) + 1;
+          state.last_target_300_error = String(err?.message || err || "target_300_search_error");
+          state.last_target_300_error_at = Date.now();
+          if (getSignalElapsedMsRaw(item) > S60_CLOSE_ENTRY_END_MS) {
+            expireS60CloseBarrierEntry(item, getSignalElapsedMsRaw(item), "target_300_search_error_after_cutoff");
+          } else {
+            state.status = "waiting_target_300";
+          }
+          try { saveHistory(history); } catch {}
+        });
       })
       .catch((err) => {
         state.quote_in_flight = false;
@@ -25365,7 +25517,10 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
       const hlName = side === "CALL" ? "HIGHER" : "LOWER";
       const prepared130 = getCachedExecutionPlan(itemCtx, side, AUTO_PRECALC_STALE_MS * 3);
       const barrierTxt = prepared130?.barrier || "buscando";
-      toast(`⏳ ${hlName} · objetivo +130% ganancia · ${barrierTxt}…`, 1200);
+      const s60Target300Active = s60CloseBarrierExecution && String(itemCtx?.s60CloseBarrierEntry?.entry_mode || "") === HIGHLOW_ENTRY_MODE_S60_RETRACE_150_TO_300;
+      toast(s60Target300Active
+        ? `⏳ ${hlName} · gatillo +150% / barrera +300%…`
+        : `⏳ ${hlName} · objetivo +130% ganancia · ${barrierTxt}…`, 1200);
 
       // Al salir la señal consulta HIGHER/LOWER y busca la barrera más cercana a 130% de ganancia neta (230% de pago total).
       // Al operar pide una proposal nueva con esa barrera y compra inmediatamente.
@@ -25377,12 +25532,17 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
       const plan = highLowBuy.plan;
       res = highLowBuy.res;
       contractLabel = plan.contractType || hlName;
+      const s60RetraceExecutionUsed = !!(highLowBuy.s60CloseBarrierUsed || highLowBuy.s60Target300Used || highLowBuy.s60RetraceEntryUsed);
+      const activeTargetProfitPct = highLowBuy.s60Target300Used ? 300 : AUTO_TARGET_RETURN_PCT;
+      const activeTargetPayoutTotalPct = highLowBuy.s60Target300Used ? S60_RETRACE_300_TARGET_PAYOUT_TOTAL_PCT : HIGHLOW_TARGET_PAYOUT_TOTAL_PCT;
 
       tradeExtra = {
         ...tradeExtra,
-        exec_mode: highLowBuy.s60CloseBarrierUsed
-          ? "HIGHLOW_S60_CLOSE_BARRIER_RETRACE_TARGET_125_135"
-          : highLowBuy.lateRecoveryUsed
+        exec_mode: highLowBuy.s60Target300Used
+          ? "HIGHLOW_S60_RETRACE_TRIGGER_150_TARGET_PROFIT_300"
+          : highLowBuy.s60CloseBarrierUsed
+            ? "HIGHLOW_S60_CLOSE_BARRIER_RETRACE_MIN_PROFIT_130"
+            : highLowBuy.lateRecoveryUsed
             ? "HIGHLOW_TARGET_PROFIT_130_LATE_RECOVERY_S60_70"
             : highLowBuy.auto58RelativeFreshUsed
             ? (highLowBuy.repriceUsed
@@ -25401,10 +25561,12 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         barrier: plan.barrier,
         fixed_barrier: !!highLowBuy.s60CloseBarrierUsed,
         fixed_barrier_price: highLowBuy.s60CloseBarrierUsed ? Number(highLowBuy.s60CloseBarrierPrice) : null,
-        barrier_searched_on_signal: !highLowBuy.s60CloseBarrierUsed,
-        target_profit_pct: AUTO_TARGET_RETURN_PCT,
-        target_payout_total_pct: HIGHLOW_TARGET_PAYOUT_TOTAL_PCT,
-        target_distance_pct: Number(plan.targetDistancePct || getHighLowTargetDistance(plan)),
+        barrier_searched_on_signal: !!highLowBuy.s60Target300Used || !s60RetraceExecutionUsed,
+        target_profit_pct: activeTargetProfitPct,
+        target_payout_total_pct: activeTargetPayoutTotalPct,
+        target_distance_pct: Number.isFinite(Number(plan.targetDistancePct))
+          ? Number(plan.targetDistancePct)
+          : Math.abs(Number(plan.payoutTotalPct) - activeTargetPayoutTotalPct),
         proposal_fresh: true,
         auto58_relative_fresh: !!highLowBuy.auto58RelativeFreshUsed,
         proposal_barrier_mode: String(plan.barrierMode || ""),
@@ -25423,14 +25585,16 @@ async function buyOneClick(side /* "CALL" | "PUT" */, symbolOverride = null, ite
         proposal_id: plan.proposalId,
         expiry_mode: String(plan.expiryMode || "fixed_s60_absolute"),
         planned_expiry_time: Number(plan.fixedExpiryEpochSec || getHighLowFixedExpiryEpochSec(itemCtx) || 0) || null,
-        planned_duration_if_bought_at_58_sec: highLowBuy.s60CloseBarrierUsed ? null : 62,
+        planned_duration_if_bought_at_58_sec: s60RetraceExecutionUsed ? null : 62,
         s60_close_barrier_entry: !!highLowBuy.s60CloseBarrierUsed,
-        s60_close_barrier_price: highLowBuy.s60CloseBarrierUsed ? Number(highLowBuy.s60CloseBarrierPrice) : null,
-        s60_close_trigger_price: highLowBuy.s60CloseBarrierUsed ? Number(highLowBuy.s60CloseTriggerPrice) : null,
-        s60_close_trigger_elapsed_ms: highLowBuy.s60CloseBarrierUsed ? Number(highLowBuy.s60CloseTriggerElapsedMs) : null,
-        s60_close_quote_price: highLowBuy.s60CloseBarrierUsed ? Number(highLowBuy.s60CloseQuotedPrice) : null,
-        s60_close_cutoff_ms: highLowBuy.s60CloseBarrierUsed ? S60_CLOSE_ENTRY_END_MS : null,
-        entry_reference_quote: highLowBuy.s60CloseBarrierUsed ? Number(highLowBuy.s60CloseTriggerPrice) : undefined,
+        s60_retrace_entry: s60RetraceExecutionUsed,
+        s60_retrace_target_300: !!highLowBuy.s60Target300Used,
+        s60_close_barrier_price: s60RetraceExecutionUsed ? Number(highLowBuy.s60CloseBarrierPrice) : null,
+        s60_close_trigger_price: s60RetraceExecutionUsed ? Number(highLowBuy.s60CloseTriggerPrice) : null,
+        s60_close_trigger_elapsed_ms: s60RetraceExecutionUsed ? Number(highLowBuy.s60CloseTriggerElapsedMs) : null,
+        s60_close_quote_price: s60RetraceExecutionUsed ? Number(highLowBuy.s60CloseQuotedPrice) : null,
+        s60_close_cutoff_ms: s60RetraceExecutionUsed ? S60_CLOSE_ENTRY_END_MS : null,
+        entry_reference_quote: s60RetraceExecutionUsed ? Number(highLowBuy.s60CloseTriggerPrice) : undefined,
         late_entry_recovery: !!highLowBuy.lateRecoveryUsed,
         late_entry_recovery_window_ms: highLowBuy.lateRecoveryUsed ? [SIGNAL_LATE_RECOVERY_START_MS, SIGNAL_LATE_RECOVERY_END_MS] : null,
         late_entry_reference_price: highLowBuy.lateRecoveryUsed ? Number(highLowBuy.lateRecoveryReferencePrice) : null,
@@ -35705,7 +35869,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
   const status = `🧲 INICIO INAMOVIBLE · ${pattern} · LRL ${best.visualPace.lrlScore}/100 ${best.visualPace.lrlClass} · ${movementSideText} · giro esperado ${turnSideText}. Señal ${direction}. Marcá 5 puntos netos hacia COMPRA o VENTA para autorizar la operación.`;
-  const logicText = `Motor experimental V113.33-II108 P/M→G→P/M + SCORE LENTO→RÁPIDO→LENTO + AUTOELIMINAR AL ANCLA: mantiene P→G→P, P→G→M, M→G→P y M→G→M. La irregularidad interna de ticks queda solo como dato de estudio y ya no bloquea. La cadencia de los tres tramos se mide como score 0–100 para estudio y NO bloquea señales: compara cuánto más rápido es G, cuántos avances usa, el tamaño medio de esos avances y su duración relativa frente a los laterales; se conservan cortes/separadores reales entre los tres movimientos. Busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). La estructura vuelve a la clasificación histórica P/M→G→P/M: el central debe ser el único G, los laterales pueden ser P o M, ambos deben ser menores que el central y cada lateral debe medir al menos 22% del G. Sí se conservan los movimientos visuales reales, los cortes/separadores reales, el recorrido mínimo del central y el cierre completo del tercer tramo. Una simple desaceleración dentro del G no crea otro movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se valida la familia P/M→G→P/M. La señal sigue siendo contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa manual por puntaje: cada punto de COMPRA suma +1 y cada punto de VENTA suma -1; hacen falta 5 puntos NETOS hacia cualquiera de los dos lados para habilitar esa dirección y AUTO 58. Si después de detectarse la formación y hasta s60 el precio vuelve a tocar o atravesar el precio del ancla, la señal se invalida: el modal se cierra automáticamente y la señal se elimina de Señales; no afecta a Trades ya existentes. Desde s60 en adelante el guard de ancla termina y no participa del rescate s60–s70. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se prepara anticipadamente; desde el primer punto manual la preparación puede seguir el lado hacia el que se inclina el puntaje. La compra exige exclusivamente alcanzar 5 puntos netos hacia COMPRA o VENTA. Si AUTO58 falla exclusivamente por tiempo/proposal y el lado ya tenía 5 puntos netos válidos, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II59, el puntaje permanece editable hasta s65. Si los 5 puntos netos se completan después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos manuales, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje. En II44, la interfaz usa como dato principal la GANANCIA NETA máxima (por ejemplo, payout total 230% = +130% neto), oculta la distancia técnica del badge principal, calcula promedio/mediana/80%/90% también en ganancia neta, corrige valores sin curva que antes podían aparecer como +0%, y amplía la curva virtual con muestras tanto más cercanas como más lejanas para poder estimar también trades cuyo cierre favorable no alcanzó la barrera usada. En II47 se elimina la prueba del borde fantasma de la vela Replay y se la reemplaza por un fondo guía fijo detrás de la vela japonesa: franjas horizontales tenues e inmóviles, más una línea de apertura levemente resaltada, para ayudar a percibir micro-movimientos sin generar mareo. En II48 se corrige GAN. MÁX: la distancia máxima s120 se mide con la misma referencia de precio usada por la curva distancia→payout (curve.entry_quote / entry_reference_quote), evitando mezclarla con entry_spot y mostrar una ganancia máxima inferior a la ganancia real del trade. En II49 el gráfico de líneas del modal marca cada tick visible con un punto pequeño, igual que la referencia visual del Replay, manteniendo el último tick destacado y sin modificar la escala ni la lógica operativa. En II50 se corrige el guard de retorno al ancla: solo puede bloquear durante la formación s0–s60; una vez alcanzado s60 sin retorno, el rescate tardío s60–s70 continúa aunque el precio toque o atraviese el ancla después. En II51 los puntos de tick del gráfico de líneas del modal se hacen apenas más visibles (radio 1.85 px y mayor opacidad), sin modificar la línea, la escala ni la lógica operativa. En II52 esos puntos también se dibujan en las capturas de estudio y en la bitácora imprimible, con puntos negros sutiles sobre la línea para que la cadencia de ticks siga visible al descargar o imprimir. En II53 esos puntos de impresión se vuelven más visibles: cada tick se dibuja con un halo blanco fino y un centro negro más marcado, para que no se pierda dentro de la línea al imprimir. En II54 se incrementa todavía más la visibilidad en impresión: cada tick usa un disco blanco más grande, un aro negro fino y un centro negro más ancho, pensado para que siga viéndose incluso al reducir dos capturas por hoja. En II55 la zona de impresión agrega selección masiva: “Seleccionar ITMs” toma todos los ITM visibles y también los OTM por PUNTO ENTRADA; “Seleccionar OTMs” toma únicamente OTM direccionales y excluye esos casos. Ambas opciones respetan cuenta y filtro de fecha visibles. En II56 la preparación de la bitácora usa timeout por captura, pausas cortas para liberar memoria y blobs/object URLs en lugar de data URLs pesadas, reduciendo cuelgues en Android cuando se imprimen muchas operaciones seguidas. En II57, específicamente para la bitácora A4 masiva, cada imagen se renderiza en una resolución optimizada para papel y se codifica en JPEG liviano; así baja mucho la memoria acumulada al imprimir lotes grandes, mientras la captura individual descargable sigue en alta resolución. En II58, cuando la selección es grande, la bitácora se divide automáticamente en sublotes de hasta 40 capturas y los va enviando a impresión uno por uno, para evitar el cuelgue recurrente alrededor de la captura 61 en Android/WebView. En II59 se reemplaza la autorización PGP 2/2 por el sistema anterior de puntaje direccional: 5 puntos netos hacia COMPRA o 5 hacia VENTA habilitan ese lado, y los puntos contrarios se descuentan del neto. En II60 se agrega un modo opcional de entrada Higher/Lower “Retroceso · barrera cierre s60”: con 5 puntos netos no compra en AUTO58; fija una barrera absoluta exactamente en el precio de cierre s60 y espera un retroceso posterior. Solo compra si esa barrera cotiza entre 225% y 235% total (+125% a +135% neto), con vencimiento fijo s120. En II60 el corte original era s108. En II61, cuando ese modo está activo se desactiva por completo la preparación vieja de s50/s56/AUTO58 y el export incluye el estado completo s60CloseBarrierEntry, con motivo exacto de no entrada, intentos, retrocesos vistos y payouts observados. En II62 se corrige el fallo por el cual reference_price=null podía interpretarse como 0: al llegar a s60 se captura o reconstruye el cierre real, la barrera absoluta queda fijada en ese cierre y se cotiza durante el retroceso hasta encontrar 225–235% total (objetivo +130% neto). La ventana termina en s105 para conservar al menos 15 segundos hasta el vencimiento fijo s120. En II63 se elimina el techo de payout únicamente para este modo: la barrera sigue fija exactamente en el cierre s60 y la entrada se habilita cuando la proposal alcanza como mínimo 230% total (+130% neto); 230% o cualquier valor superior es válido, siempre antes de s105 y con vencimiento fijo s120. En II64 se agrega, solo para estudio y sin bloquear señales, un análisis de reducción interna por ticks dentro de cada uno de los tres movimientos P/M→G→P/M: compara los avances consecutivos del mismo sentido y registra pares cuya magnitud se reduce al menos 10%. En II65 la marca visual de reducción interna aparece únicamente si los tres movimientos tienen al menos una reducción; las reducciones parciales siguen guardadas en el JSON pero no se muestran en la lista.`;
+  const logicText = `Motor experimental V113.33-II109 P/M→G→P/M + SCORE LENTO→RÁPIDO→LENTO + AUTOELIMINAR AL ANCLA: mantiene P→G→P, P→G→M, M→G→P y M→G→M. La irregularidad interna de ticks queda solo como dato de estudio y ya no bloquea. La cadencia de los tres tramos se mide como score 0–100 para estudio y NO bloquea señales: compara cuánto más rápido es G, cuántos avances usa, el tamaño medio de esos avances y su duración relativa frente a los laterales; se conservan cortes/separadores reales entre los tres movimientos. Busca un GIRO después de tres impulsos primarios consecutivos del mismo grupo (${movementGroupText}). La estructura vuelve a la clasificación histórica P/M→G→P/M: el central debe ser el único G, los laterales pueden ser P o M, ambos deben ser menores que el central y cada lateral debe medir al menos 22% del G. Sí se conservan los movimientos visuales reales, los cortes/separadores reales, el recorrido mínimo del central y el cierre completo del tercer tramo. Una simple desaceleración dentro del G no crea otro movimiento. El tercer impulso no se corta en vivo: se espera el siguiente retroceso visual ${turnGroupText}, se mide completo y recién entonces se valida la familia P/M→G→P/M. La señal sigue siendo contraria al recorrido: impulsos alcistas generan PUT e impulsos bajistas generan CALL. Los impulsos comienzan dentro de los primeros 25 segundos y existe una gracia técnica hasta s30 solo para confirmar el cierre. Operativa manual por puntaje: cada punto de COMPRA suma +1 y cada punto de VENTA suma -1; hacen falta 5 puntos NETOS hacia cualquiera de los dos lados para habilitar esa dirección y AUTO 58. Si después de detectarse la formación y hasta s60 el precio vuelve a tocar o atravesar el precio del ancla, la señal se invalida: el modal se cierra automáticamente y la señal se elimina de Señales; no afecta a Trades ya existentes. Desde s60 en adelante el guard de ancla termina y no participa del rescate s60–s70. En Rise/Fall y Higher/Lower, el vencimiento queda fijado al segundo 60 objetivo; Higher/Lower ya no vence 1 minuto después de la compra en s58. La barrera Higher/Lower objetivo +130% se prepara anticipadamente; desde el primer punto manual la preparación puede seguir el lado hacia el que se inclina el puntaje. La compra exige exclusivamente alcanzar 5 puntos netos hacia COMPRA o VENTA. Si AUTO58 falla exclusivamente por tiempo/proposal y el lado ya tenía 5 puntos netos válidos, se arma un rescate s60→s70: toma el primer precio vivo al comenzar s60 como referencia y solo compra CALL si el precio está igual o por debajo, o PUT si está igual o por encima. El vencimiento permanece fijo en s120. En II21 el rescate guarda correctamente el precio real de s60 y cotiza una barrera relativa fresca (+/- distancia) al dispararse, sin fallback a barrera absoluta dentro del rescate. En II22 el AUTO58 normal usa la barrera prearmada solo como semilla, pide una proposal relativa fresca justo al disparar y detiene búsquedas paralelas. En II23 la precisión de barrera ya no puede degradarse por haber aceptado una barrera entera: R_10/R_25 conservan 3 decimales, R_50/R_75 hasta 4 y R_100 2 salvo error explícito de Deriv. Además, si s50/s56 no dejaron una proposal válida, AUTO58 usa una semilla específica del símbolo y realiza una búsqueda fina relativa de último momento antes de cancelar. En II24, desde s56 la preparación final tiene prioridad exclusiva y la búsqueda de s50 no puede reiniciarse ni competir; además, si AUTO58 falla porque la barrera relativa fresca no converge o llega tarde, el caso queda habilitado para el rescate s60→s65. En II25, AUTO REPLAY X2 reutiliza el mismo eje anclado del Replay manual: comienza en ms=0 de la señal, acelera a x2 hasta alcanzar el último punto vivo de esa misma ventana flotante y luego continúa siguiendo el vivo a 1x sin cambiar de fuente ni mezclar el minuto calendario. En II26, la precisión mínima conocida de cada índice prevalece sobre cualquier cache numérico legado incorrecto (R_10/R_25 3, R_50/R_75 4, R_100 2); solo un error explícito de decimales de Deriv puede reducirla. Además, el export de estudio incluye siempre lateEntryRecovery aunque no haya trade, con su estado y motivo final. En II27, el handoff AUTO REPLAY X2→LIVE conserva todos los ticks ya reproducidos: cuando el cursor alcanza exactamente el último tick disponible, ese punto se interpreta como fin de la serie visible y no como índice 0; por eso la formación y la vela derecha permanecen intactas al pasar a LIVE 1x y al congelarse en s60. En II28, con Auto Replay X2 ON el replay comienza apenas se abre la señal, sin esperar a s28: arranca desde ms=0 del ancla, acelera a X2 para mostrar toda la formación ya ocurrida y al alcanzar el vivo continúa a LIVE 1x sobre la misma serie. En II29, cualquier barrera que ya haya dado 225–235% total en la señal actual tiene prioridad como semilla de distancia para s56, AUTO58 y rescate; los presets del símbolo quedan solo como respaldo. Además, un watchdog dentro de s56–s57.9 inicia la preparación final si el timer programado no dejó estado, evitando finalRefreshStatus nulo. En II30, la precisión efectiva se fuerza dentro de cada ruta de cotización y ajuste: ningún plan/candidato de R_10/R_25 puede bajar de 3 decimales, R_50/R_75 de 4 y R_100 de 2, aunque el texto de barrera sea entero (+1/-1), el cache legado diga 0 o una proposal anterior haya quedado con precision 0. La cotización, bisección, s56, AUTO58 y rescate reutilizan ese piso antes del siguiente microajuste. En II31, si un trade termina OTM pero el resultado de 60s confirma la dirección de la señal (CALL→alcista o PUT→bajista), la interfaz lo marca junto al OTM como PUNTO ENTRADA y guarda el motivo en el trade para estudio. En II59, el puntaje permanece editable hasta s65. Si los 5 puntos netos se completan después de s58, AUTO58 normal se omite y se arma un rescate tardío: usa siempre el precio real de s60 como referencia, espera CALL con precio <= referencia o PUT con precio >= referencia hasta s70, reintenta ante cotizaciones temporales sin barrera válida y mantiene el vencimiento fijo en s120. En II33, las capturas de estudio se renderizan en blanco y negro para impresión y la bitácora A4 imprime dos formaciones por hoja, con resultado opcional y espacios libres para pregunta, puntos a favor y puntos en contra. En II34, cada señal puede guardar un audio local de análisis desde el modal: voz comprimida de bajo bitrate en IndexedDB, reproducción/pausa, borrado y duración; además registra el segundo visual y una timeline liviana del cursor Replay/LIVE. En II35, esa timeline se usa para sincronizar realmente Audio + Replay durante la reproducción, incluyendo el tramo X2→LIVE y la búsqueda bidireccional con el deslizador. En II36, las señales nuevas que aparecen mientras otra conserva el foco quedan en una cola temporal; cuando la señal visible supera s65 y ya no admite nuevos puntos manuales, la PWA abre automáticamente la siguiente señal pendiente solo si Auto-abrir y Auto Replay X2 están activos y todavía hay tiempo para reproducir en X2 hasta el punto donde se formó esa señal antes de que cierre su propia ventana s65. En II37, al usar “Borrar Señales”, la PWA elimina automáticamente también los audios de análisis asociados a esas señales, para no dejar archivos huérfanos ocupando espacio. En II38, las capturas de estudio impresas sin resultado incluyen una flecha discreta y de bajo contraste, ubicada en un rincón poco visible, que indica la dirección real de los siguientes 60 segundos (sube, baja o neutro) sin revelar de forma obvia el desenlace durante el análisis inicial. En II39, la impresión masiva muestra progreso real n/total y porcentaje, salta de forma controlada una captura que falle y, cuando “Mostrar resultado” está desactivado, genera la formación 0–60 directamente desde los ticks guardados sin consultar nuevamente el historial de Deriv, reduciendo drásticamente la espera al imprimir muchas operaciones. En II40, después de una compra real la PWA prepara únicamente una simulación defensiva NOTOUCH: para PUT busca resistencia fuerte cercana y coloca la barrera virtual ligeramente por encima; para CALL busca soporte fuerte cercano y la coloca ligeramente por debajo. Cotiza el payout real de Deriv sin enviar buy; primero intenta el mismo vencimiento del contrato principal y, si NOTOUCH no admite una ventana tan corta, prueba una ventana virtual de 2 minutos marcada como fallback. Monitorea si la barrera habría sido tocada y compara un reparto de riesgo total constante entre contrato principal y No Touch virtual. En II41, Trades calcula retrospectivamente para cada operación Higher/Lower la barrera relativa más lejana que todavía habría ganado al cierre canónico s120, usando entrada real, dirección, precisión efectiva por símbolo y desigualdad estricta; compara esa barrera máxima con la usada y muestra promedio, mediana y umbrales que habrían sido soportados por 80% y 90% de los giros favorables, separados por símbolo. Este cálculo es solo de estudio y no modifica la operativa. En II42, el estudio mostraba el porcentaje de la barrera usada. En II43 se corrige ese concepto: el objetivo es estimar el payout de la propia barrera máxima ganadora s120. Después de una compra Higher/Lower se toman, solo como simulación y sin buy, algunas cotizaciones de barreras más lejanas con el mismo vencimiento s120; al cerrar el trade, la PWA usa esa curva real distancia→payout para interpolar el porcentaje de la barrera MAX. Si la MAX coincide con una cotización se marca como medida; si cae entre dos cotizaciones se muestra como aproximada; si queda fuera de la curva solo se muestra un límite inferior. Los trades viejos sin curva no inventan porcentaje. En II44, la interfaz usa como dato principal la GANANCIA NETA máxima (por ejemplo, payout total 230% = +130% neto), oculta la distancia técnica del badge principal, calcula promedio/mediana/80%/90% también en ganancia neta, corrige valores sin curva que antes podían aparecer como +0%, y amplía la curva virtual con muestras tanto más cercanas como más lejanas para poder estimar también trades cuyo cierre favorable no alcanzó la barrera usada. En II47 se elimina la prueba del borde fantasma de la vela Replay y se la reemplaza por un fondo guía fijo detrás de la vela japonesa: franjas horizontales tenues e inmóviles, más una línea de apertura levemente resaltada, para ayudar a percibir micro-movimientos sin generar mareo. En II48 se corrige GAN. MÁX: la distancia máxima s120 se mide con la misma referencia de precio usada por la curva distancia→payout (curve.entry_quote / entry_reference_quote), evitando mezclarla con entry_spot y mostrar una ganancia máxima inferior a la ganancia real del trade. En II49 el gráfico de líneas del modal marca cada tick visible con un punto pequeño, igual que la referencia visual del Replay, manteniendo el último tick destacado y sin modificar la escala ni la lógica operativa. En II50 se corrige el guard de retorno al ancla: solo puede bloquear durante la formación s0–s60; una vez alcanzado s60 sin retorno, el rescate tardío s60–s70 continúa aunque el precio toque o atraviese el ancla después. En II51 los puntos de tick del gráfico de líneas del modal se hacen apenas más visibles (radio 1.85 px y mayor opacidad), sin modificar la línea, la escala ni la lógica operativa. En II52 esos puntos también se dibujan en las capturas de estudio y en la bitácora imprimible, con puntos negros sutiles sobre la línea para que la cadencia de ticks siga visible al descargar o imprimir. En II53 esos puntos de impresión se vuelven más visibles: cada tick se dibuja con un halo blanco fino y un centro negro más marcado, para que no se pierda dentro de la línea al imprimir. En II54 se incrementa todavía más la visibilidad en impresión: cada tick usa un disco blanco más grande, un aro negro fino y un centro negro más ancho, pensado para que siga viéndose incluso al reducir dos capturas por hoja. En II55 la zona de impresión agrega selección masiva: “Seleccionar ITMs” toma todos los ITM visibles y también los OTM por PUNTO ENTRADA; “Seleccionar OTMs” toma únicamente OTM direccionales y excluye esos casos. Ambas opciones respetan cuenta y filtro de fecha visibles. En II56 la preparación de la bitácora usa timeout por captura, pausas cortas para liberar memoria y blobs/object URLs en lugar de data URLs pesadas, reduciendo cuelgues en Android cuando se imprimen muchas operaciones seguidas. En II57, específicamente para la bitácora A4 masiva, cada imagen se renderiza en una resolución optimizada para papel y se codifica en JPEG liviano; así baja mucho la memoria acumulada al imprimir lotes grandes, mientras la captura individual descargable sigue en alta resolución. En II58, cuando la selección es grande, la bitácora se divide automáticamente en sublotes de hasta 40 capturas y los va enviando a impresión uno por uno, para evitar el cuelgue recurrente alrededor de la captura 61 en Android/WebView. En II59 se reemplaza la autorización PGP 2/2 por el sistema anterior de puntaje direccional: 5 puntos netos hacia COMPRA o 5 hacia VENTA habilitan ese lado, y los puntos contrarios se descuentan del neto. En II60 se agrega un modo opcional de entrada Higher/Lower “Retroceso · barrera cierre s60”: con 5 puntos netos no compra en AUTO58; fija una barrera absoluta exactamente en el precio de cierre s60 y espera un retroceso posterior. Solo compra si esa barrera cotiza entre 225% y 235% total (+125% a +135% neto), con vencimiento fijo s120. En II60 el corte original era s108. En II61, cuando ese modo está activo se desactiva por completo la preparación vieja de s50/s56/AUTO58 y el export incluye el estado completo s60CloseBarrierEntry, con motivo exacto de no entrada, intentos, retrocesos vistos y payouts observados. En II62 se corrige el fallo por el cual reference_price=null podía interpretarse como 0: al llegar a s60 se captura o reconstruye el cierre real, la barrera absoluta queda fijada en ese cierre y se cotiza durante el retroceso hasta encontrar 225–235% total (objetivo +130% neto). La ventana termina en s105 para conservar al menos 15 segundos hasta el vencimiento fijo s120. En II63 se elimina el techo de payout únicamente para este modo: la barrera sigue fija exactamente en el cierre s60 y la entrada se habilita cuando la proposal alcanza como mínimo 230% total (+130% neto); 230% o cualquier valor superior es válido, siempre antes de s105 y con vencimiento fijo s120. En II64 se agrega, solo para estudio y sin bloquear señales, un análisis de reducción interna por ticks dentro de cada uno de los tres movimientos P/M→G→P/M: compara los avances consecutivos del mismo sentido y registra pares cuya magnitud se reduce al menos 10%. En II65 la marca visual de reducción interna aparece únicamente si los tres movimientos tienen al menos una reducción; las reducciones parciales siguen guardadas en el JSON pero no se muestran en la lista.`;
 
   return {
     direction,
