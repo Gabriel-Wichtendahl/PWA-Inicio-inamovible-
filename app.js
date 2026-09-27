@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II112";
+const APP_BUILD_VERSION = "v113.33-II113";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -5426,6 +5426,7 @@ const modalSub = $("modalSub");
 const minuteCanvas = $("minuteCanvas");
 const modalCandle1mBtn = $("modalCandle1mBtn");
 const modalLastMediumLevelBtn = $("modalLastMediumLevelBtn");
+const modalRelevantLevelsBtn = $("modalRelevantLevelsBtn");
 const modalReplayBtn = $("modalReplayBtn");
 const modalOpenDerivBtn = $("modalOpenDerivBtn");
 const autoReplayX2Btn = $("autoReplayX2Btn");
@@ -6058,6 +6059,12 @@ function ensureModalCurrentTickDotAnimation() {
 const MODAL_LAST_MEDIUM_LEVEL_KEY = "deriv_inicio_inamovible_modal_last_medium_level_v1";
 let modalLastMediumLevelEnabled = (() => {
   try { return localStorage.getItem(MODAL_LAST_MEDIUM_LEVEL_KEY) === "1"; } catch { return false; }
+})();
+// II113: los niveles relevantes de II112 siguen automáticos durante la señal en vivo,
+// pero una vez terminada pueden ocultarse/mostrarse para comparar el gráfico limpio.
+const MODAL_RELEVANT_LEVELS_KEY = "deriv_inicio_inamovible_modal_relevant_levels_v1";
+let modalRelevantLevelsEnabled = (() => {
+  try { return localStorage.getItem(MODAL_RELEVANT_LEVELS_KEY) !== "0"; } catch { return true; }
 })();
 let modalReplayState = {
   open: false,
@@ -18306,6 +18313,32 @@ function getModalLastMediumStructuralLevel(item = modalCurrentItem, ticks = []) 
   };
 }
 
+function isModalSignalFinishedForRelevantLevels(item = modalCurrentItem) {
+  if (!item) return false;
+  try {
+    const raw = typeof getSignalElapsedMsRaw === "function" ? Number(getSignalElapsedMsRaw(item)) : NaN;
+    if (Number.isFinite(raw) && raw >= 60000) return true;
+  } catch {}
+  try {
+    if (!isItemLiveMinute(item)) return true;
+  } catch {}
+  return modalOpenContext?.source === "trades";
+}
+function shouldDrawRelevantLevels(item = modalCurrentItem) {
+  // En vivo se conservan automáticos. El interruptor solo gobierna señales terminadas.
+  return !isModalSignalFinishedForRelevantLevels(item) || modalRelevantLevelsEnabled;
+}
+function updateModalRelevantLevelsBtnUI() {
+  if (!modalRelevantLevelsBtn) return;
+  const finished = isModalSignalFinishedForRelevantLevels(modalCurrentItem);
+  modalRelevantLevelsBtn.classList.toggle("hidden", !finished);
+  modalRelevantLevelsBtn.setAttribute("aria-pressed", modalRelevantLevelsEnabled ? "true" : "false");
+  modalRelevantLevelsBtn.textContent = modalRelevantLevelsEnabled ? "🟨 Niveles ON" : "⬜ Niveles OFF";
+  modalRelevantLevelsBtn.title = modalRelevantLevelsEnabled
+    ? "Ocultar soportes, resistencias y polaridades confirmadas de esta señal terminada"
+    : "Volver a mostrar los niveles relevantes confirmados de esta señal terminada";
+}
+
 function updateModalLastMediumLevelBtnUI() {
   if (!modalLastMediumLevelBtn) return;
   const available = !!getModalLastMediumStructuralLevel(modalCurrentItem, modalCurrentItem?.ticks || []);
@@ -18408,7 +18441,9 @@ function drawDerivLikeChart(canvas, ticks) {
   const msNowForSupports = modalCurrentItem && modalLive && isItemLiveMinute(modalCurrentItem)
     ? Math.max(0, Math.min(60000, serverNowMs() - currentMinuteStartMs))
     : null;
-  const liveStructuralSupportMarkers = getRecentStructuralSupportMarkers(pts, modalCurrentItem, msNowForSupports);
+  const liveStructuralSupportMarkers = shouldDrawRelevantLevels(modalCurrentItem)
+    ? getRecentStructuralSupportMarkers(pts, modalCurrentItem, msNowForSupports)
+    : [];
   if (liveStructuralSupportMarkers.length) {
     for (const m of liveStructuralSupportMarkers) {
       if (Number.isFinite(Number(m.level))) {
@@ -18858,6 +18893,9 @@ function ensureModalFooterControlsLayout() {
       }
       if (modalLastMediumLevelBtn && modalLastMediumLevelBtn.parentElement !== modalFooterChartTools) {
         modalFooterChartTools.appendChild(modalLastMediumLevelBtn);
+      }
+      if (modalRelevantLevelsBtn && modalRelevantLevelsBtn.parentElement !== modalFooterChartTools) {
+        modalFooterChartTools.appendChild(modalRelevantLevelsBtn);
       }
     }
     if (toolbar) {
@@ -21320,6 +21358,7 @@ function updateModalChartViewBtnUI() {
       : "Abrir Replay tick por tick (activa velas 1m automáticamente)";
   }
   updateModalLastMediumLevelBtnUI();
+  updateModalRelevantLevelsBtnUI();
 }
 function setModalChartView(view) {
   modalChartView = view === "candles1m" ? "candles1m" : "line";
@@ -21341,6 +21380,21 @@ if (modalLastMediumLevelBtn) {
     updateModalLastMediumLevelBtnUI();
     requestModalDraw(true);
     toast(modalLastMediumLevelEnabled ? "📏 Nivel M activado" : "📏 Nivel M oculto", 1100);
+  };
+}
+if (modalRelevantLevelsBtn) {
+  modalRelevantLevelsBtn.onclick = (e) => {
+    e.stopPropagation();
+    if (!isModalSignalFinishedForRelevantLevels(modalCurrentItem)) {
+      toast("📏 Los niveles se pueden ocultar cuando termina la señal", 1300);
+      return;
+    }
+    modalRelevantLevelsEnabled = !modalRelevantLevelsEnabled;
+    try { localStorage.setItem(MODAL_RELEVANT_LEVELS_KEY, modalRelevantLevelsEnabled ? "1" : "0"); } catch {}
+    updateModalRelevantLevelsBtnUI();
+    requestModalDraw(true);
+    if (modalReplayState.open) drawModalReplayFrame();
+    toast(modalRelevantLevelsEnabled ? "🟨 Niveles visibles" : "⬜ Niveles ocultos", 1000);
   };
 }
 if (modalReplayBtn) {
@@ -22162,7 +22216,9 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   const line1 = meta ? Number(getDynamicLineValue(meta, item.minute, 60000)) : NaN;
   const replayMediumLevel = modalLastMediumLevelEnabled ? getModalLastMediumStructuralLevel(item, ticks) : null;
   const activeReplayMediumLevel = replayMediumLevel && ms >= Number(replayMediumLevel.startMs || 0) ? replayMediumLevel : null;
-  const replayLevelMarkers = getRecentStructuralSupportMarkers(ticks, item, ms);
+  const replayLevelMarkers = shouldDrawRelevantLevels(item)
+    ? getRecentStructuralSupportMarkers(ticks, item, ms)
+    : [];
   const values = ticks.map((p) => p.quote).filter(Number.isFinite);
   if (Number.isFinite(line0)) values.push(line0);
   if (Number.isFinite(line1)) values.push(line1);
