@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II114";
+const APP_BUILD_VERSION = "v113.33-II115";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -18327,7 +18327,7 @@ function isModalSignalFinishedForRelevantLevels(item = modalCurrentItem) {
 }
 function shouldDrawRelevantLevels(item = modalCurrentItem) {
   // II114: solo niveles elegidos manualmente y solo si el modo está ON.
-  return !!item && isModalSignalFinishedForRelevantLevels(item) && modalRelevantLevelsEnabled;
+  return !!item && modalRelevantLevelsEnabled;
 }
 function getManualTickLevels(item = modalCurrentItem) {
   const arr = Array.isArray(item?.manualTickLevels) ? item.manualTickLevels : [];
@@ -18388,13 +18388,13 @@ function updateModalRelevantLevelsBtnUI() {
   if (!modalRelevantLevelsBtn) return;
   const finished = isModalSignalFinishedForRelevantLevels(modalCurrentItem);
   const lineView = modalChartView === "line";
-  modalRelevantLevelsBtn.classList.toggle("hidden", !finished || !lineView);
+  modalRelevantLevelsBtn.classList.toggle("hidden", !lineView);
   modalRelevantLevelsBtn.setAttribute("aria-pressed", modalRelevantLevelsEnabled ? "true" : "false");
   modalRelevantLevelsBtn.textContent = modalRelevantLevelsEnabled ? "🟨 Niveles manuales ON" : "⬜ Niveles manuales OFF";
   modalRelevantLevelsBtn.title = modalRelevantLevelsEnabled
     ? "Tocá un tick para crear un nivel; tocá el mismo tick otra vez para eliminarlo"
     : "Activar selección manual de niveles tocando los ticks";
-  if (minuteCanvas) minuteCanvas.style.cursor = (finished && lineView && modalRelevantLevelsEnabled) ? "crosshair" : "default";
+  if (minuteCanvas) minuteCanvas.style.cursor = (lineView && modalRelevantLevelsEnabled) ? "crosshair" : "default";
 }
 
 function updateModalLastMediumLevelBtnUI() {
@@ -21443,10 +21443,6 @@ if (modalLastMediumLevelBtn) {
 if (modalRelevantLevelsBtn) {
   modalRelevantLevelsBtn.onclick = (e) => {
     e.stopPropagation();
-    if (!isModalSignalFinishedForRelevantLevels(modalCurrentItem)) {
-      toast("📏 Los niveles manuales se habilitan cuando termina la señal", 1300);
-      return;
-    }
     modalRelevantLevelsEnabled = !modalRelevantLevelsEnabled;
     try { localStorage.setItem(MODAL_MANUAL_LEVELS_KEY, modalRelevantLevelsEnabled ? "1" : "0"); } catch {}
     updateModalRelevantLevelsBtnUI();
@@ -21457,7 +21453,7 @@ if (modalRelevantLevelsBtn) {
 }
 function toggleManualTickLevelFromCanvasEvent(e) {
   if (!modalCurrentItem || !minuteCanvas) return;
-  if (!modalRelevantLevelsEnabled || modalChartView !== "line" || !isModalSignalFinishedForRelevantLevels(modalCurrentItem)) return;
+  if (!modalRelevantLevelsEnabled || modalChartView !== "line") return;
   const rect = minuteCanvas.getBoundingClientRect();
   if (!(rect.width > 0) || !(rect.height > 0)) return;
   const cx = Number(e.clientX) - rect.left;
