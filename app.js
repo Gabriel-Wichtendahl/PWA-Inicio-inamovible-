@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II117";
+const APP_BUILD_VERSION = "v113.33-II118";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -6067,7 +6067,7 @@ let modalRelevantLevelsEnabled = (() => {
   try { return localStorage.getItem(MODAL_MANUAL_LEVELS_KEY) === "1"; } catch { return false; }
 })();
 let modalManualLevelHitPoints = [];
-// II117: gesto manual único sobre el gráfico.
+// II118: gesto manual único sobre el gráfico.
 // Toque corto = nivel horizontal. Mantener 550 ms = corte vertical.
 const MODAL_MANUAL_LONG_PRESS_MS = 550;
 const MODAL_MANUAL_MOVE_CANCEL_PX = 12;
@@ -18496,7 +18496,7 @@ function drawManualVerticalCuts(ctx, item, xOf, yOf, w, h) {
   ctx.strokeStyle = "rgba(125,211,252,0.92)";
   ctx.fillStyle = "rgba(186,230,253,0.96)";
   ctx.lineWidth = 1.7;
-  ctx.setLineDash([5, 5]);
+  ctx.setLineDash([]);
   ctx.shadowColor = "rgba(56,189,248,0.28)";
   ctx.shadowBlur = 6;
   for (const c of cuts) {
@@ -18512,7 +18512,7 @@ function drawManualVerticalCuts(ctx, item, xOf, yOf, w, h) {
       ctx.beginPath();
       ctx.arc(x, y, 3.0, 0, Math.PI * 2);
       ctx.fill();
-      ctx.setLineDash([5, 5]);
+      ctx.setLineDash([]);
     }
   }
   ctx.restore();
@@ -18791,7 +18791,7 @@ function drawDerivLikeChart(canvas, ticks) {
     ctx.restore();
   }
 
-  // II117: toque corto = nivel horizontal; mantener = corte vertical.
+  // II118: toque corto = nivel horizontal; mantener = corte vertical.
   drawManualTickLevels(ctx, modalCurrentItem, xOf, yOf, w, h);
   drawManualVerticalCuts(ctx, modalCurrentItem, xOf, yOf, w, h);
 
