@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II113";
+const APP_BUILD_VERSION = "v113.33-II114";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -6060,12 +6060,13 @@ const MODAL_LAST_MEDIUM_LEVEL_KEY = "deriv_inicio_inamovible_modal_last_medium_l
 let modalLastMediumLevelEnabled = (() => {
   try { return localStorage.getItem(MODAL_LAST_MEDIUM_LEVEL_KEY) === "1"; } catch { return false; }
 })();
-// II113: los niveles relevantes de II112 siguen automáticos durante la señal en vivo,
-// pero una vez terminada pueden ocultarse/mostrarse para comparar el gráfico limpio.
-const MODAL_RELEVANT_LEVELS_KEY = "deriv_inicio_inamovible_modal_relevant_levels_v1";
+// II114: niveles 100% manuales. No hay detección/dibujo automático en el modal.
+// En una señal terminada, ON habilita tocar un tick para crear/quitar un nivel horizontal.
+const MODAL_MANUAL_LEVELS_KEY = "deriv_inicio_inamovible_modal_manual_levels_v1";
 let modalRelevantLevelsEnabled = (() => {
-  try { return localStorage.getItem(MODAL_RELEVANT_LEVELS_KEY) !== "0"; } catch { return true; }
+  try { return localStorage.getItem(MODAL_MANUAL_LEVELS_KEY) === "1"; } catch { return false; }
 })();
+let modalManualLevelHitPoints = [];
 let modalReplayState = {
   open: false,
   playing: false,
@@ -18325,18 +18326,75 @@ function isModalSignalFinishedForRelevantLevels(item = modalCurrentItem) {
   return modalOpenContext?.source === "trades";
 }
 function shouldDrawRelevantLevels(item = modalCurrentItem) {
-  // En vivo se conservan automáticos. El interruptor solo gobierna señales terminadas.
-  return !isModalSignalFinishedForRelevantLevels(item) || modalRelevantLevelsEnabled;
+  // II114: solo niveles elegidos manualmente y solo si el modo está ON.
+  return !!item && isModalSignalFinishedForRelevantLevels(item) && modalRelevantLevelsEnabled;
+}
+function getManualTickLevels(item = modalCurrentItem) {
+  const arr = Array.isArray(item?.manualTickLevels) ? item.manualTickLevels : [];
+  const seen = new Set();
+  return arr.map((m) => ({ ms: Number(m?.ms), quote: Number(m?.quote) }))
+    .filter((m) => Number.isFinite(m.ms) && Number.isFinite(m.quote) && m.ms >= 0 && m.ms <= 60000)
+    .filter((m) => {
+      const key = `${Math.round(m.ms)}|${m.quote}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a,b) => a.ms - b.ms);
+}
+function persistManualTickLevels(item = modalCurrentItem) {
+  if (!item) return;
+  const levels = getManualTickLevels(item);
+  item.manualTickLevels = levels;
+  const sid = String(modalOpenContext?.signalId || item.id || "");
+  if (sid) {
+    const live = (history || []).find((x) => String(x?.id || "") === sid);
+    if (live) live.manualTickLevels = levels.map((x) => ({ ...x }));
+  }
+  const jid = String(modalOpenContext?.journalId || item.journal_id || "");
+  const tradeEntry = (tradesJournal || []).find((x) =>
+    (jid && String(x?.journal_id || "") === jid) || (sid && String(x?.id || "") === sid)
+  );
+  if (tradeEntry) tradeEntry.manualTickLevels = levels.map((x) => ({ ...x }));
+  try { saveHistory(history); } catch {}
+  try { if (tradeEntry) saveTradesJournal(tradesJournal); } catch {}
+}
+function drawManualTickLevels(ctx, item, xOf, yOf, w, h) {
+  if (!shouldDrawRelevantLevels(item)) return;
+  const levels = getManualTickLevels(item);
+  if (!levels.length) return;
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = "rgba(250,204,21,0.95)";
+  ctx.fillStyle = "rgba(254,240,138,0.98)";
+  ctx.shadowColor = "rgba(250,204,21,0.30)";
+  ctx.shadowBlur = 7;
+  ctx.lineWidth = 2.1;
+  for (const m of levels) {
+    const x1 = xOf(m.ms);
+    const y = yOf(m.quote);
+    if (![x1,y].every(Number.isFinite)) continue;
+    ctx.beginPath();
+    ctx.moveTo(Math.max(8, x1), y);
+    ctx.lineTo(w - 8, y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(Math.max(8, x1), y, 3.0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 function updateModalRelevantLevelsBtnUI() {
   if (!modalRelevantLevelsBtn) return;
   const finished = isModalSignalFinishedForRelevantLevels(modalCurrentItem);
-  modalRelevantLevelsBtn.classList.toggle("hidden", !finished);
+  const lineView = modalChartView === "line";
+  modalRelevantLevelsBtn.classList.toggle("hidden", !finished || !lineView);
   modalRelevantLevelsBtn.setAttribute("aria-pressed", modalRelevantLevelsEnabled ? "true" : "false");
-  modalRelevantLevelsBtn.textContent = modalRelevantLevelsEnabled ? "🟨 Niveles ON" : "⬜ Niveles OFF";
+  modalRelevantLevelsBtn.textContent = modalRelevantLevelsEnabled ? "🟨 Niveles manuales ON" : "⬜ Niveles manuales OFF";
   modalRelevantLevelsBtn.title = modalRelevantLevelsEnabled
-    ? "Ocultar soportes, resistencias y polaridades confirmadas de esta señal terminada"
-    : "Volver a mostrar los niveles relevantes confirmados de esta señal terminada";
+    ? "Tocá un tick para crear un nivel; tocá el mismo tick otra vez para eliminarlo"
+    : "Activar selección manual de niveles tocando los ticks";
+  if (minuteCanvas) minuteCanvas.style.cursor = (finished && lineView && modalRelevantLevelsEnabled) ? "crosshair" : "default";
 }
 
 function updateModalLastMediumLevelBtnUI() {
@@ -18438,17 +18496,13 @@ function drawDerivLikeChart(canvas, ticks) {
     max = Math.max(max, Number(modalLastMediumLevel.level));
   }
 
-  const msNowForSupports = modalCurrentItem && modalLive && isItemLiveMinute(modalCurrentItem)
-    ? Math.max(0, Math.min(60000, serverNowMs() - currentMinuteStartMs))
-    : null;
-  const liveStructuralSupportMarkers = shouldDrawRelevantLevels(modalCurrentItem)
-    ? getRecentStructuralSupportMarkers(pts, modalCurrentItem, msNowForSupports)
-    : [];
-  if (liveStructuralSupportMarkers.length) {
-    for (const m of liveStructuralSupportMarkers) {
-      if (Number.isFinite(Number(m.level))) {
-        min = Math.min(min, Number(m.level));
-        max = Math.max(max, Number(m.level));
+  // II114: no hay niveles automáticos. Solo incluimos los niveles manuales ya elegidos.
+  const manualTickLevels = shouldDrawRelevantLevels(modalCurrentItem) ? getManualTickLevels(modalCurrentItem) : [];
+  if (manualTickLevels.length) {
+    for (const m of manualTickLevels) {
+      if (Number.isFinite(Number(m.quote))) {
+        min = Math.min(min, Number(m.quote));
+        max = Math.max(max, Number(m.quote));
       }
     }
   }
@@ -18604,9 +18658,8 @@ function drawDerivLikeChart(canvas, ticks) {
     ctx.restore();
   }
 
-  // Niveles relevantes recientes del gráfico vivo (sin carteles).
-  // Cian = nivel estructural reciente. Amarillo = polaridad / nivel usado dos veces.
-  drawLiveStructuralSupportMarkers(ctx, liveStructuralSupportMarkers, xOf, yOf, w, h);
+  // II114: niveles elegidos manualmente tocando ticks de una señal terminada.
+  drawManualTickLevels(ctx, modalCurrentItem, xOf, yOf, w, h);
 
   // Línea dinámica de tendencia (soporte/resistencia inclinada)
   if (modalDynamicLine) {
@@ -18692,6 +18745,11 @@ function drawDerivLikeChart(canvas, ticks) {
 
   // Overlay de lectura visual del motor Reducción visual 25s (G/M/P + ventana 0-30s)
   drawVisualReductionReadingOverlay(ctx, modalCurrentItem, xOf, yOf, w, h);
+
+  // II114: mapa táctil de los ticks reales. Se usa para elegir/quitar niveles manuales.
+  modalManualLevelHitPoints = pts.map((p) => ({
+    ms: Number(p.ms), quote: Number(p.quote), x: xOf(Number(p.ms)), y: yOf(Number(p.quote))
+  })).filter((p) => [p.ms,p.quote,p.x,p.y].every(Number.isFinite));
 
   // precio actual / último punto: guía horizontal suave + punto más visible
   const lastPoint = pts[pts.length - 1];
@@ -21386,17 +21444,60 @@ if (modalRelevantLevelsBtn) {
   modalRelevantLevelsBtn.onclick = (e) => {
     e.stopPropagation();
     if (!isModalSignalFinishedForRelevantLevels(modalCurrentItem)) {
-      toast("📏 Los niveles se pueden ocultar cuando termina la señal", 1300);
+      toast("📏 Los niveles manuales se habilitan cuando termina la señal", 1300);
       return;
     }
     modalRelevantLevelsEnabled = !modalRelevantLevelsEnabled;
-    try { localStorage.setItem(MODAL_RELEVANT_LEVELS_KEY, modalRelevantLevelsEnabled ? "1" : "0"); } catch {}
+    try { localStorage.setItem(MODAL_MANUAL_LEVELS_KEY, modalRelevantLevelsEnabled ? "1" : "0"); } catch {}
     updateModalRelevantLevelsBtnUI();
     requestModalDraw(true);
     if (modalReplayState.open) drawModalReplayFrame();
-    toast(modalRelevantLevelsEnabled ? "🟨 Niveles visibles" : "⬜ Niveles ocultos", 1000);
+    toast(modalRelevantLevelsEnabled ? "🟨 Tocá un tick para marcar/quitar nivel" : "⬜ Niveles manuales OFF", 1200);
   };
 }
+function toggleManualTickLevelFromCanvasEvent(e) {
+  if (!modalCurrentItem || !minuteCanvas) return;
+  if (!modalRelevantLevelsEnabled || modalChartView !== "line" || !isModalSignalFinishedForRelevantLevels(modalCurrentItem)) return;
+  const rect = minuteCanvas.getBoundingClientRect();
+  if (!(rect.width > 0) || !(rect.height > 0)) return;
+  const cx = Number(e.clientX) - rect.left;
+  const cy = Number(e.clientY) - rect.top;
+  if (![cx,cy].every(Number.isFinite)) return;
+  const candidates = Array.isArray(modalManualLevelHitPoints) ? modalManualLevelHitPoints : [];
+  if (!candidates.length) return;
+  let nearest = null;
+  for (const p of candidates) {
+    const dx = Number(p.x) - cx;
+    const dy = Number(p.y) - cy;
+    const d = Math.hypot(dx, dy);
+    if (!nearest || d < nearest.d) nearest = { ...p, d };
+  }
+  // Radio táctil generoso, pero obliga a tocar realmente cerca de un tick.
+  if (!nearest || nearest.d > 24) {
+    toast("👆 Tocá más cerca de un punto de tick", 900);
+    return;
+  }
+  const levels = getManualTickLevels(modalCurrentItem);
+  const idx = levels.findIndex((m) => Math.abs(Number(m.ms) - Number(nearest.ms)) <= 1);
+  if (idx >= 0) {
+    levels.splice(idx, 1);
+    modalCurrentItem.manualTickLevels = levels;
+    persistManualTickLevels(modalCurrentItem);
+    toast("➖ Nivel eliminado", 800);
+  } else {
+    levels.push({ ms: Number(nearest.ms), quote: Number(nearest.quote) });
+    levels.sort((a,b) => a.ms - b.ms);
+    modalCurrentItem.manualTickLevels = levels;
+    persistManualTickLevels(modalCurrentItem);
+    toast("➕ Nivel marcado desde ese tick", 850);
+  }
+  requestModalDraw(true);
+  if (modalReplayState.open) drawModalReplayFrame();
+}
+if (minuteCanvas) {
+  minuteCanvas.addEventListener("click", toggleManualTickLevelFromCanvasEvent);
+}
+
 if (modalReplayBtn) {
   modalReplayBtn.onclick = (e) => {
     e.stopPropagation();
@@ -22216,16 +22317,14 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   const line1 = meta ? Number(getDynamicLineValue(meta, item.minute, 60000)) : NaN;
   const replayMediumLevel = modalLastMediumLevelEnabled ? getModalLastMediumStructuralLevel(item, ticks) : null;
   const activeReplayMediumLevel = replayMediumLevel && ms >= Number(replayMediumLevel.startMs || 0) ? replayMediumLevel : null;
-  const replayLevelMarkers = shouldDrawRelevantLevels(item)
-    ? getRecentStructuralSupportMarkers(ticks, item, ms)
-    : [];
+  const replayManualLevels = shouldDrawRelevantLevels(item) ? getManualTickLevels(item) : [];
   const values = ticks.map((p) => p.quote).filter(Number.isFinite);
   if (Number.isFinite(line0)) values.push(line0);
   if (Number.isFinite(line1)) values.push(line1);
   if (activeReplayMediumLevel && Number.isFinite(Number(activeReplayMediumLevel.level))) values.push(Number(activeReplayMediumLevel.level));
-  if (replayLevelMarkers.length) {
-    for (const m of replayLevelMarkers) {
-      if (Number.isFinite(Number(m.level))) values.push(Number(m.level));
+  if (replayManualLevels.length) {
+    for (const m of replayManualLevels) {
+      if (Number.isFinite(Number(m.quote))) values.push(Number(m.quote));
     }
   }
   let min = Math.min(...values), max = Math.max(...values);
@@ -22299,7 +22398,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
     }
   }
 
-  drawLiveStructuralSupportMarkers(ctx, replayLevelMarkers, xOf, yOf, plotX + plotW, plotY + plotH);
+  drawManualTickLevels(ctx, item, xOf, yOf, plotX + plotW, plotY + plotH);
 
   ctx.save();
   ctx.strokeStyle = "rgba(255,255,255,.82)";
@@ -23762,6 +23861,7 @@ function buildModalItemFromTradeEntry(entry) {
     manualGiro: normalizeManualGiroState(entry.manualGiro || live?.manualGiro),
     giroPolaridad: entry.giroPolaridad || entry.snrLevel || live?.giroPolaridad || live?.snrLevel || live?.polarityLevel || null,
     lastMediumStructuralLevel: entry.lastMediumStructuralLevel || live?.lastMediumStructuralLevel || null,
+    manualTickLevels: Array.isArray(entry.manualTickLevels) ? entry.manualTickLevels : (Array.isArray(live?.manualTickLevels) ? live.manualTickLevels : []),
   };
 }
 function getModalNavigationList() {
