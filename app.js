@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II111";
+const APP_BUILD_VERSION = "v113.33-II112";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -17435,13 +17435,22 @@ function dedupeTickPointsByMs(points) {
 }
 function getRecentStructuralSupportMarkers(points, item = null, msNowArg = null) {
   if (!LIVE_STRUCTURAL_SUPPORTS_ENABLED) return [];
-  const pts = dedupeTickPointsByMs(points);
-  if (pts.length < 8) return [];
+  const ptsAll = dedupeTickPointsByMs(points);
+  if (ptsAll.length < 8) return [];
 
-  const msNow = Number.isFinite(Number(msNowArg))
+  const explicitMs = Number.isFinite(Number(msNowArg));
+  const msNow = explicitMs
     ? Math.max(0, Math.min(60000, Number(msNowArg)))
-    : Number(pts[pts.length - 1]?.ms || 0);
+    : Number(ptsAll[ptsAll.length - 1]?.ms || 0);
   if (msNow < LIVE_STRUCT_SUPPORT_MIN_CONFIRM_MS) return [];
+
+  // II112: en Replay nunca miramos ticks futuros. En vivo/histórico usamos solo
+  // lo que ya existía hasta el instante visible.
+  const visibleEnd = explicitMs
+    ? msNow
+    : Math.min(60000, Number(ptsAll[ptsAll.length - 1]?.ms || msNow));
+  const pts = ptsAll.filter((p) => Number(p.ms) <= visibleEnd);
+  if (pts.length < 8) return [];
 
   let dir = getDominantGroupDirection(item);
   if (!dir || !Number.isFinite(Number(dir.sign)) || !dir.sign) {
@@ -17455,10 +17464,8 @@ function getRecentStructuralSupportMarkers(points, item = null, msNowArg = null)
   const minQ = Math.min(...quotes);
   const maxQ = Math.max(...quotes);
   const fullRange = Math.max(1e-12, maxQ - minQ);
-  const recentStart = Math.max(0, msNow - LIVE_STRUCT_SUPPORT_RECENT_LOOKBACK_MS, 10000);
-  const visibleEnd = Math.min(60000, Math.max(msNow, Number(pts[pts.length - 1]?.ms || msNow)));
-  const recent = pts.filter((p) => p.ms >= recentStart && p.ms <= visibleEnd);
-  if (recent.length < 5) return [];
+  const recentStart = 0; // II112: un nivel confirmado queda fijo; no caduca por antigüedad dentro de la vela.
+  const recent = pts;
 
   const recentQuotes = recent.map((p) => p.quote);
   const recentRange = Math.max(1e-12, Math.max(...recentQuotes) - Math.min(...recentQuotes));
@@ -17480,47 +17487,51 @@ function getRecentStructuralSupportMarkers(points, item = null, msNowArg = null)
     const nextMin = Math.min(...next.map((x) => x.quote));
     const prevMax = Math.max(...prev.map((x) => x.quote));
     const nextMax = Math.max(...next.map((x) => x.quote));
-    const later = pts.filter((x) => x.ms > p.ms && x.ms <= visibleEnd);
 
     if (seekSupport) {
       const isLow = p.quote <= prevMin + tol && p.quote <= nextMin + tol;
       const hasRebound = Math.max(prevMax - p.quote, nextMax - p.quote) >= minRebound * 0.55
         || nextMax - p.quote >= minRebound * 0.42;
       if (!isLow || !hasRebound) continue;
-      const laterLow = later.length ? Math.min(...later.map((x) => x.quote)) : p.quote;
-      const badlyBroken = laterLow < p.quote - tol * 2.8;
-      localExtrema.push({ ms: p.ms, level: p.quote, score: (hasRebound ? 2 : 0) - (badlyBroken ? 1.2 : 0), badlyBroken });
+      localExtrema.push({ ms: p.ms, level: p.quote, score: 2 });
     } else {
       const isHigh = p.quote >= prevMax - tol && p.quote >= nextMax - tol;
       const hasDrop = p.quote - Math.min(prevMin, nextMin) >= minRebound * 0.55
         || p.quote - nextMin >= minRebound * 0.42;
       if (!isHigh || !hasDrop) continue;
-      const laterHigh = later.length ? Math.max(...later.map((x) => x.quote)) : p.quote;
-      const badlyBroken = laterHigh > p.quote + tol * 2.8;
-      localExtrema.push({ ms: p.ms, level: p.quote, score: (hasDrop ? 2 : 0) - (badlyBroken ? 1.2 : 0), badlyBroken });
+      localExtrema.push({ ms: p.ms, level: p.quote, score: 2 });
     }
   }
   if (!localExtrema.length) return [];
 
+  // II112: el precio del nivel queda anclado al PRIMER punto que lo creó.
+  // Los toques posteriores solo confirman/reutilizan; nunca promedian ni desplazan la línea.
   const clusters = [];
   for (const m of localExtrema) {
-    let c = clusters.find((cl) => Math.abs(cl.level - m.level) <= tol * 1.8);
+    let c = clusters.find((cl) => Math.abs(cl.anchorLevel - m.level) <= tol * 1.8);
     if (!c) {
-      c = { level: m.level, touches: [], firstMs: m.ms, lastMs: m.ms, score: 0, badlyBrokenCount: 0 };
+      c = {
+        anchorLevel: m.level,
+        anchorMs: m.ms,
+        touches: [],
+        firstMs: m.ms,
+        lastMs: m.ms,
+        score: 0,
+      };
       clusters.push(c);
     }
     c.touches.push(m);
-    c.level = c.touches.reduce((acc, x) => acc + x.level, 0) / c.touches.length;
     c.firstMs = Math.min(c.firstMs, m.ms);
     c.lastMs = Math.max(c.lastMs, m.ms);
     c.score += m.score;
-    if (m.badlyBroken) c.badlyBrokenCount += 1;
   }
 
+  // Extremos del lado opuesto para polaridad:
+  // alcista = máximo/resistencia previa que luego se rompe y se respeta como soporte;
+  // bajista = mínimo/soporte previo que luego se rompe y se respeta como resistencia.
   const oppositeExtrema = [];
   for (let i = 1; i < pts.length - 1; i++) {
     const p = pts[i];
-    if (p.ms < recentStart - 8000 || p.ms > visibleEnd) continue;
     const prev = pts.slice(Math.max(0, i - 3), i);
     const next = pts.slice(i + 1, Math.min(pts.length, i + 4));
     if (!prev.length || !next.length) continue;
@@ -17537,40 +17548,46 @@ function getRecentStructuralSupportMarkers(points, item = null, msNowArg = null)
 
   const markers = [];
   for (const c of clusters) {
-    const touchSpread = c.lastMs - c.firstMs;
-    const usedTwice = c.touches.length >= 2 && touchSpread >= 5000;
-    const priorOpposite = oppositeExtrema.find((ex) => ex.ms < c.lastMs - 2000 && Math.abs(ex.quote - c.level) <= tol * 2.2);
-    const polarity = !!priorOpposite || usedTwice;
+    const touches = c.touches.slice().sort((a, b) => a.ms - b.ms);
+    const secondTouch = touches.find((t) => Number(t.ms) - Number(c.anchorMs) >= 5000) || null;
+    const usedTwice = !!secondTouch;
 
-    const lastTouchMs = c.lastMs;
-    if (lastTouchMs < Math.max(10000, msNow - LIVE_STRUCT_SUPPORT_RECENT_LOOKBACK_MS)) continue;
+    // Polaridad: el punto ORIGINAL del nivel es el máximo/mínimo previo, no el retesteo.
+    const polarityCandidates = oppositeExtrema
+      .filter((ex) => ex.ms < c.lastMs - 2000 && Math.abs(ex.quote - c.anchorLevel) <= tol * 2.2)
+      .sort((a, b) => a.ms - b.ms);
+    const priorOpposite = polarityCandidates[0] || null;
 
-    const after = pts.filter((p) => p.ms >= lastTouchMs && p.ms <= visibleEnd);
+    if (!usedTwice && !priorOpposite) continue; // II112: nunca dibujar en el primer uso.
+
+    const isPolarity = !!priorOpposite;
+    const fixedLevel = isPolarity ? Number(priorOpposite.quote) : Number(c.anchorLevel);
+    const originMs = isPolarity ? Number(priorOpposite.ms) : Number(c.anchorMs);
+    const confirmationMs = isPolarity ? Number(c.lastMs) : Number(secondTouch.ms);
+    if (![fixedLevel, originMs, confirmationMs].every(Number.isFinite)) continue;
+    if (confirmationMs > visibleEnd) continue;
+
+    // Confirmación visual: después del uso tiene que haber rechazo/defensa visible.
+    const after = pts.filter((p) => p.ms >= confirmationMs && p.ms <= visibleEnd);
     const afterBest = after.length
       ? (seekSupport ? Math.max(...after.map((p) => p.quote)) : Math.min(...after.map((p) => p.quote)))
-      : c.level;
+      : fixedLevel;
     const defended = seekSupport
-      ? afterBest - c.level >= minRebound * 0.35
-      : c.level - afterBest >= minRebound * 0.35;
-    if (!defended && !polarity) continue;
-
-    const xStartMs = polarity
-      ? Math.max(recentStart, Math.min(c.firstMs, priorOpposite?.ms ?? c.firstMs) - 2500)
-      : Math.max(recentStart, lastTouchMs - 3500);
-    const xEndMs = polarity
-      ? Math.min(60000, Math.max(c.lastMs + 14000, visibleEnd, msNow + 3000))
-      : Math.min(60000, Math.max(lastTouchMs + 11000, msNow + 2500));
+      ? afterBest - fixedLevel >= minRebound * 0.30
+      : fixedLevel - afterBest >= minRebound * 0.30;
+    if (!defended && visibleEnd - confirmationMs > 1800) continue;
 
     markers.push({
-      level: c.level,
+      level: fixedLevel,
       role: seekSupport ? 'support' : 'resistance',
-      type: polarity ? 'polarity' : 'structural',
-      touches: c.touches.length,
-      firstMs: c.firstMs,
-      lastMs: c.lastMs,
-      xStartMs,
-      xEndMs,
-      score: c.score + (polarity ? 2.5 : 0) + (defended ? 1.4 : 0) - c.badlyBrokenCount,
+      type: isPolarity ? 'polarity' : 'reused',
+      touches: Math.max(2, touches.length),
+      firstMs: originMs,
+      lastMs: confirmationMs,
+      confirmationMs,
+      xStartMs: originMs,
+      xEndMs: 60000, // II112: una vez confirmado queda fijo hasta el final del gráfico.
+      score: c.score + (isPolarity ? 3.0 : 2.2) + (defended ? 1.4 : 0),
     });
   }
 
@@ -17579,7 +17596,7 @@ function getRecentStructuralSupportMarkers(points, item = null, msNowArg = null)
     if (pol) return pol;
     const score = (b.score || 0) - (a.score || 0);
     if (Math.abs(score) > 0.25) return score;
-    return (b.lastMs || 0) - (a.lastMs || 0);
+    return (b.confirmationMs || 0) - (a.confirmationMs || 0);
   });
 
   const out = [];
@@ -17600,14 +17617,15 @@ function drawLiveStructuralSupportMarkers(ctx, markers, xOf, yOf, w, h) {
     const x2 = Math.max(8, Math.min(w - 8, xOf(Number(m.xEndMs ?? m.lastMs ?? 60000))));
     if (Math.abs(x2 - x1) < 10) continue;
     const isPol = m.type === "polarity";
-    const col = isPol ? "rgba(250,204,21,0.92)" : "rgba(34,211,238,0.92)";
-    const glow = isPol ? "rgba(250,204,21,0.34)" : "rgba(34,211,238,0.32)";
+    const isConfirmed = m.type === "reused" || isPol;
+    const col = isConfirmed ? "rgba(250,204,21,0.94)" : "rgba(34,211,238,0.90)";
+    const glow = isConfirmed ? "rgba(250,204,21,0.34)" : "rgba(34,211,238,0.28)";
 
     ctx.save();
     ctx.shadowColor = glow;
-    ctx.shadowBlur = isPol ? 8 : 7;
+    ctx.shadowBlur = isConfirmed ? 8 : 7;
     ctx.strokeStyle = col;
-    ctx.lineWidth = isPol ? 2.0 : 1.8;
+    ctx.lineWidth = isPol ? 2.1 : 1.9;
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(Math.min(x1, x2), y);
@@ -17616,7 +17634,7 @@ function drawLiveStructuralSupportMarkers(ctx, markers, xOf, yOf, w, h) {
 
     // Si el nivel fue usado varias veces, marca sutilmente los toques sin cartel.
     if (Number(m.touches || 0) >= 2 || isPol) {
-      ctx.fillStyle = isPol ? "rgba(254,240,138,0.96)" : "rgba(165,243,252,0.92)";
+      ctx.fillStyle = "rgba(254,240,138,0.96)";
       for (const ms of [m.firstMs, m.lastMs]) {
         const x = xOf(Number(ms));
         if (!Number.isFinite(x) || x < 8 || x > w - 8) continue;
