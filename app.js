@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II115";
+const APP_BUILD_VERSION = "v113.33-II117";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -6067,6 +6067,12 @@ let modalRelevantLevelsEnabled = (() => {
   try { return localStorage.getItem(MODAL_MANUAL_LEVELS_KEY) === "1"; } catch { return false; }
 })();
 let modalManualLevelHitPoints = [];
+// II117: gesto manual único sobre el gráfico.
+// Toque corto = nivel horizontal. Mantener 550 ms = corte vertical.
+const MODAL_MANUAL_LONG_PRESS_MS = 550;
+const MODAL_MANUAL_MOVE_CANCEL_PX = 12;
+let modalManualPointerState = null;
+let modalManualLongPressTimer = null;
 let modalReplayState = {
   open: false,
   playing: false,
@@ -18329,10 +18335,20 @@ function shouldDrawRelevantLevels(item = modalCurrentItem) {
   // II114: solo niveles elegidos manualmente y solo si el modo está ON.
   return !!item && modalRelevantLevelsEnabled;
 }
+function normalizeManualTickLevelKind(kind) {
+  const k = String(kind || "").toLowerCase();
+  if (k === "support" || k === "soporte" || k === "min" || k === "minimum") return "support";
+  if (k === "resistance" || k === "resistencia" || k === "max" || k === "maximum") return "resistance";
+  return "neutral";
+}
 function getManualTickLevels(item = modalCurrentItem) {
   const arr = Array.isArray(item?.manualTickLevels) ? item.manualTickLevels : [];
   const seen = new Set();
-  return arr.map((m) => ({ ms: Number(m?.ms), quote: Number(m?.quote) }))
+  return arr.map((m) => ({
+      ms: Number(m?.ms),
+      quote: Number(m?.quote),
+      kind: normalizeManualTickLevelKind(m?.kind)
+    }))
     .filter((m) => Number.isFinite(m.ms) && Number.isFinite(m.quote) && m.ms >= 0 && m.ms <= 60000)
     .filter((m) => {
       const key = `${Math.round(m.ms)}|${m.quote}`;
@@ -18342,20 +18358,92 @@ function getManualTickLevels(item = modalCurrentItem) {
     })
     .sort((a,b) => a.ms - b.ms);
 }
+function getManualVerticalCuts(item = modalCurrentItem) {
+  const arr = Array.isArray(item?.manualVerticalCuts) ? item.manualVerticalCuts : [];
+  const seen = new Set();
+  return arr.map((m) => ({
+      ms: Number(m?.ms),
+      quote: Number(m?.quote)
+    }))
+    .filter((m) => Number.isFinite(m.ms) && Number.isFinite(m.quote) && m.ms >= 0 && m.ms <= 60000)
+    .filter((m) => {
+      const key = `${Math.round(m.ms)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a,b) => a.ms - b.ms);
+}
+function classifyManualTickLevel(item, targetMs, targetQuote) {
+  const drawn = Array.isArray(modalManualLevelHitPoints) ? modalManualLevelHitPoints : [];
+  const pts = (drawn.length ? drawn : getItemVisibleTicksForModal(item, Array.isArray(item?.ticks) ? item.ticks : []))
+    .map((p) => ({ ms: Number(p?.ms), quote: Number(p?.quote) }))
+    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote))
+    .sort((a,b) => a.ms - b.ms);
+  if (pts.length < 5) return "neutral";
+
+  let idx = -1;
+  let best = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const d = Math.abs(Number(pts[i].ms) - Number(targetMs));
+    if (d < best) { best = d; idx = i; }
+  }
+  if (idx < 0) return "neutral";
+
+  const left = pts.slice(Math.max(0, idx - 4), idx);
+  const right = pts.slice(idx + 1, Math.min(pts.length, idx + 5));
+  if (left.length < 2 || right.length < 2) return "neutral";
+
+  const q = Number.isFinite(Number(targetQuote)) ? Number(targetQuote) : Number(pts[idx].quote);
+  const local = [...left, pts[idx], ...right].map((p) => Number(p.quote));
+  const localRange = Math.max(...local) - Math.min(...local);
+  const steps = [];
+  for (let i = 1; i < local.length; i++) steps.push(Math.abs(local[i] - local[i - 1]));
+  const medStep = medianNumber(steps) || 0;
+  const tol = Math.max(medStep * 0.45, localRange * 0.045, Math.abs(q) * 0.0000008, 1e-9);
+  const minExcursion = Math.max(medStep * 1.35, localRange * 0.16, tol * 2.2);
+
+  const leftMin = Math.min(...left.map((p) => p.quote));
+  const rightMin = Math.min(...right.map((p) => p.quote));
+  const leftMax = Math.max(...left.map((p) => p.quote));
+  const rightMax = Math.max(...right.map((p) => p.quote));
+
+  const isMin = q <= leftMin + tol && q <= rightMin + tol;
+  const isMax = q >= leftMax - tol && q >= rightMax - tol;
+  const reboundLeft = leftMax - q;
+  const reboundRight = rightMax - q;
+  const rejectLeft = q - leftMin;
+  const rejectRight = q - rightMin;
+
+  const supportStrong = isMin && reboundLeft >= minExcursion * 0.55 && reboundRight >= minExcursion * 0.55;
+  const resistanceStrong = isMax && rejectLeft >= minExcursion * 0.55 && rejectRight >= minExcursion * 0.55;
+
+  if (supportStrong && !resistanceStrong) return "support";
+  if (resistanceStrong && !supportStrong) return "resistance";
+  return "neutral";
+}
 function persistManualTickLevels(item = modalCurrentItem) {
   if (!item) return;
   const levels = getManualTickLevels(item);
+  const cuts = getManualVerticalCuts(item);
   item.manualTickLevels = levels;
+  item.manualVerticalCuts = cuts;
   const sid = String(modalOpenContext?.signalId || item.id || "");
   if (sid) {
     const live = (history || []).find((x) => String(x?.id || "") === sid);
-    if (live) live.manualTickLevels = levels.map((x) => ({ ...x }));
+    if (live) {
+      live.manualTickLevels = levels.map((x) => ({ ...x }));
+      live.manualVerticalCuts = cuts.map((x) => ({ ...x }));
+    }
   }
   const jid = String(modalOpenContext?.journalId || item.journal_id || "");
   const tradeEntry = (tradesJournal || []).find((x) =>
     (jid && String(x?.journal_id || "") === jid) || (sid && String(x?.id || "") === sid)
   );
-  if (tradeEntry) tradeEntry.manualTickLevels = levels.map((x) => ({ ...x }));
+  if (tradeEntry) {
+    tradeEntry.manualTickLevels = levels.map((x) => ({ ...x }));
+    tradeEntry.manualVerticalCuts = cuts.map((x) => ({ ...x }));
+  }
   try { saveHistory(history); } catch {}
   try { if (tradeEntry) saveTradesJournal(tradesJournal); } catch {}
 }
@@ -18365,15 +18453,31 @@ function drawManualTickLevels(ctx, item, xOf, yOf, w, h) {
   if (!levels.length) return;
   ctx.save();
   ctx.setLineDash([]);
-  ctx.strokeStyle = "rgba(250,204,21,0.95)";
-  ctx.fillStyle = "rgba(254,240,138,0.98)";
-  ctx.shadowColor = "rgba(250,204,21,0.30)";
-  ctx.shadowBlur = 7;
   ctx.lineWidth = 2.1;
   for (const m of levels) {
     const x1 = xOf(m.ms);
     const y = yOf(m.quote);
     if (![x1,y].every(Number.isFinite)) continue;
+    const kind = normalizeManualTickLevelKind(m.kind);
+    const stroke = kind === "support"
+      ? "rgba(34,197,94,0.96)"
+      : kind === "resistance"
+        ? "rgba(248,113,113,0.96)"
+        : "rgba(250,204,21,0.95)";
+    const fill = kind === "support"
+      ? "rgba(134,239,172,0.98)"
+      : kind === "resistance"
+        ? "rgba(254,202,202,0.98)"
+        : "rgba(254,240,138,0.98)";
+    const glow = kind === "support"
+      ? "rgba(34,197,94,0.32)"
+      : kind === "resistance"
+        ? "rgba(248,113,113,0.32)"
+        : "rgba(250,204,21,0.30)";
+    ctx.strokeStyle = stroke;
+    ctx.fillStyle = fill;
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 7;
     ctx.beginPath();
     ctx.moveTo(Math.max(8, x1), y);
     ctx.lineTo(w - 8, y);
@@ -18381,6 +18485,35 @@ function drawManualTickLevels(ctx, item, xOf, yOf, w, h) {
     ctx.beginPath();
     ctx.arc(Math.max(8, x1), y, 3.0, 0, Math.PI * 2);
     ctx.fill();
+  }
+  ctx.restore();
+}
+function drawManualVerticalCuts(ctx, item, xOf, yOf, w, h) {
+  if (!shouldDrawRelevantLevels(item)) return;
+  const cuts = getManualVerticalCuts(item);
+  if (!cuts.length) return;
+  ctx.save();
+  ctx.strokeStyle = "rgba(125,211,252,0.92)";
+  ctx.fillStyle = "rgba(186,230,253,0.96)";
+  ctx.lineWidth = 1.7;
+  ctx.setLineDash([5, 5]);
+  ctx.shadowColor = "rgba(56,189,248,0.28)";
+  ctx.shadowBlur = 6;
+  for (const c of cuts) {
+    const x = xOf(Number(c.ms));
+    const y = yOf(Number(c.quote));
+    if (!Number.isFinite(x)) continue;
+    ctx.beginPath();
+    ctx.moveTo(x, 8);
+    ctx.lineTo(x, Math.max(12, h - 22));
+    ctx.stroke();
+    if (Number.isFinite(y)) {
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(x, y, 3.0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.setLineDash([5, 5]);
+    }
   }
   ctx.restore();
 }
@@ -18392,8 +18525,8 @@ function updateModalRelevantLevelsBtnUI() {
   modalRelevantLevelsBtn.setAttribute("aria-pressed", modalRelevantLevelsEnabled ? "true" : "false");
   modalRelevantLevelsBtn.textContent = modalRelevantLevelsEnabled ? "🟨 Niveles manuales ON" : "⬜ Niveles manuales OFF";
   modalRelevantLevelsBtn.title = modalRelevantLevelsEnabled
-    ? "Tocá un tick para crear un nivel; tocá el mismo tick otra vez para eliminarlo"
-    : "Activar selección manual de niveles tocando los ticks";
+    ? "Toque corto: nivel horizontal · mantener 0,55 s: corte vertical · repetir el gesto para eliminar"
+    : "Activar marcas manuales: toque = nivel, mantener = corte vertical";
   if (minuteCanvas) minuteCanvas.style.cursor = (lineView && modalRelevantLevelsEnabled) ? "crosshair" : "default";
 }
 
@@ -18658,8 +18791,9 @@ function drawDerivLikeChart(canvas, ticks) {
     ctx.restore();
   }
 
-  // II114: niveles elegidos manualmente tocando ticks de una señal terminada.
+  // II117: toque corto = nivel horizontal; mantener = corte vertical.
   drawManualTickLevels(ctx, modalCurrentItem, xOf, yOf, w, h);
+  drawManualVerticalCuts(ctx, modalCurrentItem, xOf, yOf, w, h);
 
   // Línea dinámica de tendencia (soporte/resistencia inclinada)
   if (modalDynamicLine) {
@@ -21448,19 +21582,18 @@ if (modalRelevantLevelsBtn) {
     updateModalRelevantLevelsBtnUI();
     requestModalDraw(true);
     if (modalReplayState.open) drawModalReplayFrame();
-    toast(modalRelevantLevelsEnabled ? "🟨 Tocá un tick para marcar/quitar nivel" : "⬜ Niveles manuales OFF", 1200);
+    toast(modalRelevantLevelsEnabled ? "🎨 Toque = nivel · mantener = corte vertical" : "⬜ Niveles manuales OFF", 1400);
   };
 }
-function toggleManualTickLevelFromCanvasEvent(e) {
-  if (!modalCurrentItem || !minuteCanvas) return;
-  if (!modalRelevantLevelsEnabled || modalChartView !== "line") return;
+function findNearestManualTickFromCanvasPoint(clientX, clientY) {
+  if (!minuteCanvas) return null;
   const rect = minuteCanvas.getBoundingClientRect();
-  if (!(rect.width > 0) || !(rect.height > 0)) return;
-  const cx = Number(e.clientX) - rect.left;
-  const cy = Number(e.clientY) - rect.top;
-  if (![cx,cy].every(Number.isFinite)) return;
+  if (!(rect.width > 0) || !(rect.height > 0)) return null;
+  const cx = Number(clientX) - rect.left;
+  const cy = Number(clientY) - rect.top;
+  if (![cx, cy].every(Number.isFinite)) return null;
   const candidates = Array.isArray(modalManualLevelHitPoints) ? modalManualLevelHitPoints : [];
-  if (!candidates.length) return;
+  if (!candidates.length) return null;
   let nearest = null;
   for (const p of candidates) {
     const dx = Number(p.x) - cx;
@@ -21468,11 +21601,10 @@ function toggleManualTickLevelFromCanvasEvent(e) {
     const d = Math.hypot(dx, dy);
     if (!nearest || d < nearest.d) nearest = { ...p, d };
   }
-  // Radio táctil generoso, pero obliga a tocar realmente cerca de un tick.
-  if (!nearest || nearest.d > 24) {
-    toast("👆 Tocá más cerca de un punto de tick", 900);
-    return;
-  }
+  return nearest && nearest.d <= 24 ? nearest : null;
+}
+function toggleManualHorizontalLevelAtTick(nearest) {
+  if (!modalCurrentItem || !nearest) return;
   const levels = getManualTickLevels(modalCurrentItem);
   const idx = levels.findIndex((m) => Math.abs(Number(m.ms) - Number(nearest.ms)) <= 1);
   if (idx >= 0) {
@@ -21481,17 +21613,102 @@ function toggleManualTickLevelFromCanvasEvent(e) {
     persistManualTickLevels(modalCurrentItem);
     toast("➖ Nivel eliminado", 800);
   } else {
-    levels.push({ ms: Number(nearest.ms), quote: Number(nearest.quote) });
+    const kind = classifyManualTickLevel(modalCurrentItem, Number(nearest.ms), Number(nearest.quote));
+    levels.push({ ms: Number(nearest.ms), quote: Number(nearest.quote), kind });
     levels.sort((a,b) => a.ms - b.ms);
     modalCurrentItem.manualTickLevels = levels;
     persistManualTickLevels(modalCurrentItem);
-    toast("➕ Nivel marcado desde ese tick", 850);
+    const kindTxt = kind === "support" ? "🟢 Soporte" : kind === "resistance" ? "🔴 Resistencia" : "🟡 Nivel neutro";
+    toast(`➕ ${kindTxt}`, 900);
   }
   requestModalDraw(true);
   if (modalReplayState.open) drawModalReplayFrame();
 }
+function toggleManualVerticalCutAtTick(nearest) {
+  if (!modalCurrentItem || !nearest) return;
+  const cuts = getManualVerticalCuts(modalCurrentItem);
+  const idx = cuts.findIndex((m) => Math.abs(Number(m.ms) - Number(nearest.ms)) <= 1);
+  if (idx >= 0) {
+    cuts.splice(idx, 1);
+    modalCurrentItem.manualVerticalCuts = cuts;
+    persistManualTickLevels(modalCurrentItem);
+    toast("➖ Corte vertical eliminado", 900);
+  } else {
+    cuts.push({ ms: Number(nearest.ms), quote: Number(nearest.quote) });
+    cuts.sort((a,b) => a.ms - b.ms);
+    modalCurrentItem.manualVerticalCuts = cuts;
+    persistManualTickLevels(modalCurrentItem);
+    try { if (navigator.vibrate) navigator.vibrate(25); } catch {}
+    toast("│ Corte vertical marcado", 900);
+  }
+  requestModalDraw(true);
+  if (modalReplayState.open) drawModalReplayFrame();
+}
+function cancelManualLongPressTimer() {
+  if (modalManualLongPressTimer) clearTimeout(modalManualLongPressTimer);
+  modalManualLongPressTimer = null;
+}
+function onManualCanvasPointerDown(e) {
+  if (!modalCurrentItem || !minuteCanvas) return;
+  if (!modalRelevantLevelsEnabled || modalChartView !== "line") return;
+  if (e.button != null && e.button !== 0) return;
+  const nearest = findNearestManualTickFromCanvasPoint(e.clientX, e.clientY);
+  if (!nearest) return;
+  cancelManualLongPressTimer();
+  modalManualPointerState = {
+    pointerId: e.pointerId,
+    startX: Number(e.clientX),
+    startY: Number(e.clientY),
+    nearest,
+    longTriggered: false,
+    startedAt: Date.now(),
+  };
+  modalManualLongPressTimer = setTimeout(() => {
+    const st = modalManualPointerState;
+    if (!st || st.pointerId !== e.pointerId || st.longTriggered) return;
+    st.longTriggered = true;
+    toggleManualVerticalCutAtTick(st.nearest);
+  }, MODAL_MANUAL_LONG_PRESS_MS);
+}
+function onManualCanvasPointerMove(e) {
+  const st = modalManualPointerState;
+  if (!st || st.pointerId !== e.pointerId || st.longTriggered) return;
+  const moved = Math.hypot(Number(e.clientX) - st.startX, Number(e.clientY) - st.startY);
+  if (moved > MODAL_MANUAL_MOVE_CANCEL_PX) cancelManualLongPressTimer();
+}
+function onManualCanvasPointerUp(e) {
+  const st = modalManualPointerState;
+  if (!st || st.pointerId !== e.pointerId) return;
+  cancelManualLongPressTimer();
+  modalManualPointerState = null;
+  if (st.longTriggered) {
+    try { e.preventDefault(); } catch {}
+    return;
+  }
+  const moved = Math.hypot(Number(e.clientX) - st.startX, Number(e.clientY) - st.startY);
+  if (moved > MODAL_MANUAL_MOVE_CANCEL_PX) return;
+  toggleManualHorizontalLevelAtTick(st.nearest);
+  try { e.preventDefault(); } catch {}
+}
+function onManualCanvasPointerCancel(e) {
+  const st = modalManualPointerState;
+  if (st && (e.pointerId == null || st.pointerId === e.pointerId)) {
+    cancelManualLongPressTimer();
+    modalManualPointerState = null;
+  }
+}
 if (minuteCanvas) {
-  minuteCanvas.addEventListener("click", toggleManualTickLevelFromCanvasEvent);
+  minuteCanvas.addEventListener("pointerdown", onManualCanvasPointerDown);
+  minuteCanvas.addEventListener("pointermove", onManualCanvasPointerMove);
+  minuteCanvas.addEventListener("pointerup", onManualCanvasPointerUp);
+  minuteCanvas.addEventListener("pointercancel", onManualCanvasPointerCancel);
+  minuteCanvas.addEventListener("pointerleave", (e) => {
+    const st = modalManualPointerState;
+    if (st && st.pointerId === e.pointerId && !st.longTriggered) cancelManualLongPressTimer();
+  });
+  minuteCanvas.addEventListener("contextmenu", (e) => {
+    if (modalRelevantLevelsEnabled && modalChartView === "line") e.preventDefault();
+  });
 }
 
 if (modalReplayBtn) {
@@ -22395,6 +22612,7 @@ function drawModalReplayCanvas(canvas, item, replayMs = 0, infoEl = null) {
   }
 
   drawManualTickLevels(ctx, item, xOf, yOf, plotX + plotW, plotY + plotH);
+  drawManualVerticalCuts(ctx, item, xOf, yOf, plotX + plotW, plotY + plotH);
 
   ctx.save();
   ctx.strokeStyle = "rgba(255,255,255,.82)";
@@ -23858,6 +24076,7 @@ function buildModalItemFromTradeEntry(entry) {
     giroPolaridad: entry.giroPolaridad || entry.snrLevel || live?.giroPolaridad || live?.snrLevel || live?.polarityLevel || null,
     lastMediumStructuralLevel: entry.lastMediumStructuralLevel || live?.lastMediumStructuralLevel || null,
     manualTickLevels: Array.isArray(entry.manualTickLevels) ? entry.manualTickLevels : (Array.isArray(live?.manualTickLevels) ? live.manualTickLevels : []),
+    manualVerticalCuts: Array.isArray(entry.manualVerticalCuts) ? entry.manualVerticalCuts : (Array.isArray(live?.manualVerticalCuts) ? live.manualVerticalCuts : []),
   };
 }
 function getModalNavigationList() {
