@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II120";
+const APP_BUILD_VERSION = "v113.33-II121";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -6099,6 +6099,9 @@ const autoPreProposalInFlight = new Set();
 const liveAutoPreProposalCache = new Map();
 const LIVE_REPLAY_DRAW_MIN_INTERVAL_MS = 120;
 const CONSTRUCTIVE_FLOATING_WINDOW_MS = 30000;
+// II121: el C→L→C debe quedar armado antes de s25, pero la ruptura contraria
+// puede aparecer después. Esta ventana es exclusiva de este detector.
+const INICIO_CLC_BREAK_WINDOW_MS = 60000;
 const CONSTRUCTIVE_ROLLING_KEEP_MS = 95000;
 const CONSTRUCTIVE_SCAN_MIN_WINDOW_MS = 15000;
 const CONSTRUCTIVE_SCAN_STEP_MS = 1400;
@@ -36358,7 +36361,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       terminalConfirmedSec: signalAtSec,
       analysisWindowMs: evalMs,
       irregularityWindow: "estructura s0–s25 + cierre terminal hasta s30",
-      maxAnalysisSec: 30,
+      maxAnalysisSec: 60,
       signalFromSec: signalAtSec,
       motorIndependiente: true,
       constructiveReductionMode: true,
@@ -36501,22 +36504,22 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
 }
 
 
-// II120 — detector CORTO → LARGO → CORTO con ruptura estructural, versión más tolerante.
+// II121 — detector CORTO → LARGO → CORTO direccional + ruptura estructural.
 // Reglas de esta rama:
-// 1) tres impulsos primarios del mismo grupo;
+// 1) tres impulsos primarios del mismo grupo Y desplazándose en una única dirección;
 // 2) el central es claramente mayor que ambos laterales;
 // 3) entre 1º→2º y 2º→3º debe existir retroceso o pausa REAL de al menos 2 pasos/ticks;
 // 4) toda la estructura C-L-C (incluidos los separadores) termina antes de s25;
 // 5) la señal nace recién cuando el grupo contrario rompe el origen estructural del último corto:
 //    alcista dominante → rompe el último mínimo (inicio del 3º corto);
 //    bajista dominante → rompe el último máximo (inicio del 3º corto).
-// La ruptura puede confirmarse hasta s30. No usa P/M, irregularidad ni LRL como filtros.
+// La ruptura puede confirmarse después de s25 y hasta el final de la vela. No usa P/M, irregularidad ni LRL como filtros.
 function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
   const ticks = (candidate?.ticks || []).slice().sort((a,b)=>Number(a.ms)-Number(b.ms));
   if (ticks.length < 8) return null;
   const lastMs = Number(ticks[ticks.length - 1]?.ms || 0);
   const requestedEvalMs = Math.max(0, Number(opts?.evalMs ?? lastMs ?? 0));
-  if (requestedEvalMs < 12000 || requestedEvalMs > CONSTRUCTIVE_FLOATING_WINDOW_MS) return null;
+  if (requestedEvalMs < 10000 || requestedEvalMs > INICIO_CLC_BREAK_WINDOW_MS) return null;
   const evalMs = requestedEvalMs;
 
   const clean = ensureTicksWithBoundary(ticks, evalMs)
@@ -36548,9 +36551,12 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
     const alignedHigh = Math.max(...aligned.map((p)=>p.y));
     const alignedLow = Math.min(...aligned.map((p)=>p.y));
     const alignedRange = Math.max(alignedHigh-alignedLow, localRange, Math.abs(Number(aligned[0]?.y || 0))*0.000001, 1e-9);
-    const impulseMin = Math.max(alignedRange*0.015, tol*0.65, Math.abs(open)*0.000000020, 1e-9);
+    const impulseMin = Math.max(alignedRange*0.008, tol*0.40, Math.abs(open)*0.000000012, 1e-9);
+    // Solo buscamos los tres impulsos y sus separadores dentro de los primeros 25 s.
+    // Los ticks posteriores quedan disponibles únicamente para detectar la ruptura contraria.
+    const setupEvalMs = Math.min(evalMs, 25000);
 
-    const runs = getVisualRuns25s(clean, side, evalMs, tol, alignedRange)
+    const runs = getVisualRuns25s(clean, side, setupEvalMs, tol, alignedRange)
       .map((r,idx)=>({ ...r, idx, move:Number(r?.move || 0) }));
     if (runs.length < 5) continue;
 
@@ -36565,7 +36571,7 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       const betweenOne = runs.filter((r)=>Number(r.idx)>Number(first.idx) && Number(r.idx)<Number(central.idx));
       const betweenTwo = runs.filter((r)=>Number(r.idx)>Number(central.idx) && Number(r.idx)<Number(last.idx));
 
-      // II120: interpretamos "2 ticks de pausa/retroceso" como 2 actualizaciones reales
+      // II121: interpretamos "2 ticks de pausa/retroceso" como 2 actualizaciones reales
       // después del impulso previo y antes/de inicio del siguiente. No exigimos que TODOS
       // los micro-runs sean contrarios: puede haber un pequeño serrucho dentro de la pausa.
       const separatorInfo = (a,b,between=[]) => {
@@ -36589,29 +36595,32 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
 
       // C-L-C relativo: el central tiene que notarse claramente más largo.
       const longRatio = moves[1] / Math.max(moves[0], moves[2], 1e-9);
-      if (!(moves[1] > moves[0] && moves[1] > moves[2] && longRatio >= 1.08)) continue;
+      if (!(moves[1] > moves[0] && moves[1] > moves[2] && longRatio >= 1.02)) continue;
 
       // Evita laterales microscópicos que visualmente no serían movimientos.
-      const lateralFloor = 0.06;
+      const lateralFloor = 0.025;
       const lateralRatios = [moves[0]/Math.max(moves[1],1e-9), moves[2]/Math.max(moves[1],1e-9)];
       if (lateralRatios.some((r)=>r < lateralFloor)) continue;
 
       const anchorOffsetMs = Number(first.startMs || 0);
       const setupFormedAtMs = Number(last.endMs || 0);
       const setupElapsedFromAnchorMs = setupFormedAtMs - anchorOffsetMs;
-      if (anchorOffsetMs < 0 || setupElapsedFromAnchorMs <= 0 || setupElapsedFromAnchorMs > 25000) continue;
+      if (anchorOffsetMs < 0 || setupElapsedFromAnchorMs <= 0 || setupFormedAtMs > 25000) continue;
 
-      // II120: la progresión de extremos queda como dato de estudio, no como filtro duro.
-      // El patrón puede trabajar dentro de una zona y aun así ser C→L→C válido.
+      // II121: C→L→C tiene que avanzar realmente hacia UNA sola dirección.
+      // Alcista (coordenada alineada): cada impulso termina más arriba que el anterior.
+      // Bajista queda simétrico por la alineación con side=-1.
       const progressOne = Number(central.endY) - Number(first.endY);
       const progressTwo = Number(last.endY) - Number(central.endY);
+      const progressMin = Math.max(tol*0.10, alignedRange*0.0005, 1e-9);
+      if (!(progressOne > progressMin && progressTwo > progressMin)) continue;
 
       // El nivel estructural a romper es el origen del último corto.
       // En coordenada alineada siempre debe romperse HACIA ABAJO por el grupo contrario.
       const structureLevelY = Number(last.startY);
       const structureLevelQuote = Number(last.startQuote);
       if (!Number.isFinite(structureLevelY) || !Number.isFinite(structureLevelQuote)) continue;
-      const breakTol = Math.max(tol*0.12, moves[2]*0.005, alignedRange*0.001, 1e-9);
+      const breakTol = Math.max(tol*0.02, moves[2]*0.001, alignedRange*0.0002, 1e-9);
 
       const afterSetupPts = aligned.filter((p)=>Number(p.ms)>setupFormedAtMs && Number(p.ms)<=evalMs);
       if (afterSetupPts.length < 1) continue;
@@ -36620,9 +36629,9 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
 
       const confirmedAtMs = Number(breakPoint.ms);
       const confirmationElapsedFromAnchorMs = confirmedAtMs - anchorOffsetMs;
-      if (confirmationElapsedFromAnchorMs <= setupElapsedFromAnchorMs || confirmationElapsedFromAnchorMs > 30000) continue;
+      if (confirmationElapsedFromAnchorMs <= setupElapsedFromAnchorMs || confirmedAtMs > INICIO_CLC_BREAK_WINDOW_MS) continue;
 
-      // II120: no descartamos automáticamente un micro cuarto empuje antes de la ruptura.
+      // II121: no descartamos automáticamente un micro cuarto empuje antes de la ruptura.
       // Lo importante para esta prueba es que finalmente el grupo contrario rompa la estructura.
       const breakRun = runs.find((r)=>Number(r.startMs)<=confirmedAtMs && Number(r.endMs)>=confirmedAtMs) || null;
 
@@ -36634,18 +36643,18 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       let path = 0;
       for (let j=1;j<blockPts.length;j++) path += Math.abs(Number(blockPts[j].y)-Number(blockPts[j-1].y));
       const efficiency = netAdvance / Math.max(path,1e-9);
-      if (netAdvance < Math.max(alignedRange*0.06, tol*1.2, 1e-9)) continue;
-      if (efficiency < 0.12) continue;
+      // II121: no agregamos filtros extra de recorrido/eficiencia. La direccionalidad real
+      // ya queda garantizada por la progresión de los tres extremos.
 
       const correctionRuns = [...betweenOne, ...betweenTwo].filter((r)=>Number(r.sign||0)<0);
       const pauseRuns = [...betweenOne, ...betweenTwo].filter((r)=>Number(r.sign||0)===0);
       const breakDepth = structureLevelY - Number(breakPoint.y);
       const score = 72
-        + Math.min(12,Math.max(0,longRatio-1.08)*18)
+        + Math.min(12,Math.max(0,longRatio-1.02)*18)
         + Math.min(8,efficiency*10)
         + Math.min(6,(sepOneTicks+sepTwoTicks-4)*1.2)
         + Math.min(8,breakDepth/Math.max(moves[2],1e-9)*24)
-        - Math.max(0,confirmationElapsedFromAnchorMs-27000)/1200;
+        - Math.max(0,confirmedAtMs-50000)/5000;
 
       allCandidates.push({
         side, first, central, last, moves, runs, correctionRuns, pauseRuns,
@@ -36685,7 +36694,7 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
   });
 
   const reasons = [
-    `C→L→C ${movementSideText}: central ${best.longRatio.toFixed(2)}× mayor que el lateral más grande`,
+    `C→L→C ${movementSideText}: los 3 impulsos avanzan en la misma dirección; central ${best.longRatio.toFixed(2)}× el lateral más grande`,
     `1ª separación: ${best.sepOneTicks} pasos/ticks de retroceso/pausa`,
     `2ª separación: ${best.sepTwoTicks} pasos/ticks de retroceso/pausa`,
     `estructura completa en s${setupAtSec} (antes de s25)`,
@@ -36693,7 +36702,7 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
     `señal ${direction} emitida únicamente después de la ruptura estructural`,
   ];
   const status = `🧲 INICIO C→L→C · ruptura de ${structureText} · ${movementSideText} → giro ${direction}. Marcá 5 puntos netos hacia COMPRA o VENTA.`;
-  const logicText = `Motor experimental V113.33-II120 CORTO→LARGO→CORTO + RUPTURA ESTRUCTURAL TOLERANTE: busca tres impulsos del mismo grupo, con el central mayor que ambos laterales, con margen relativo tolerante. Entre 1º→2º y 2º→3º exige una pausa o retroceso de al menos dos ticks reales; tolera micro-serrucho dentro de la separación. Toda la estructura, incluidos los separadores, debe quedar formada antes de s25. La señal NO se confirma al finalizar el tercer corto: espera que el grupo contrario rompa el origen estructural de ese último corto; en recorrido alcista debe romper el último mínimo, y en recorrido bajista el último máximo. La ruptura puede confirmarse hasta s30. La señal sigue siendo contraria al recorrido dominante.`;
+  const logicText = `Motor experimental V113.33-II121 CORTO→LARGO→CORTO DIRECCIONAL + RUPTURA ESTRUCTURAL: busca tres impulsos del mismo grupo y exige que los tres sigan desplazándose hacia una única dirección; en alcista cada impulso termina más arriba que el anterior y en bajista cada uno más abajo. El central debe ser mayor que ambos laterales, con margen mínimo tolerante para no perder señales. Entre 1º→2º y 2º→3º exige pausa o retroceso de al menos dos ticks reales. Toda la estructura y sus separadores debe quedar armada antes de s25. La señal NO nace al terminar el tercer corto: espera que el grupo contrario rompa el origen estructural de ese último corto; alcista rompe el último mínimo y bajista rompe el último máximo. Esa ruptura puede llegar después de s25 y hasta el final de la vela. No agrega filtros extra de eficiencia, ancla extrema, P/M, irregularidad ni LRL.`;
 
   return {
     direction,
@@ -36722,8 +36731,8 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       setupCompletedSec: setupAtSec,
       terminalConfirmedSec: signalAtSec,
       analysisWindowMs: evalMs,
-      irregularityWindow: 'estructura C→L→C completa antes de s25 + ruptura estructural hasta s30',
-      maxAnalysisSec: 30,
+      irregularityWindow: 'estructura C→L→C direccional antes de s25 + ruptura estructural posterior hasta fin de vela',
+      maxAnalysisSec: 60,
       signalFromSec: signalAtSec,
       motorIndependiente: true,
       constructiveReductionMode: true,
@@ -36750,6 +36759,8 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
         relativePattern: pattern,
         shortLongShort: true,
         longToLargestShortRatio: best.longRatio,
+        directionalProgressionRequired: true,
+        directionalProgress: [Number(best.central.endY)-Number(best.first.endY), Number(best.last.endY)-Number(best.central.endY)],
         separatorMinTicks: 2,
         separatorTickCounts: [best.sepOneTicks,best.sepTwoTicks],
         setupBefore25s: true,
@@ -36805,7 +36816,7 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       firstConstructiveReduction: null,
       secondConstructiveReduction: null,
       thirdConstructiveReduction: null,
-      constructiveQualificationRoute: 'inicio_inamovible_ii120_clc_sep2_break_tolerant',
+      constructiveQualificationRoute: 'inicio_inamovible_ii121_clc_directional_sep2_break',
       constructiveQualificationLabel: `C→L→C + ruptura ${structureText} → ${direction}`,
       doubleMgmSignal: false,
       anchoredMgmConfirmed: false,
@@ -36852,9 +36863,9 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       secondReductionRetraceRatio: null,
       secondReductionOppositeSteps: 0,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: 'v113_33_ii120_clc_sep2_break_tolerant',
+      movementFilter: 'v113_33_ii121_clc_directional_sep2_break',
       priority: 'EXPERIMENTAL',
-      stage: 'inicio_inamovible_ii120_clc_break_s0_30',
+      stage: 'inicio_inamovible_ii121_clc_directional_break_s0_60',
       logic: logicText,
       status,
     },
@@ -36903,13 +36914,14 @@ function rebaseConstructiveMatchTiming(match, offsetMs) {
   return out;
 }
 
-function normalizeConstructiveAbsWindow(absTicks, anchorEpochMs, nowEpochMs) {
+function normalizeConstructiveAbsWindow(absTicks, anchorEpochMs, nowEpochMs, maxWindowMs = CONSTRUCTIVE_FLOATING_WINDOW_MS) {
   const start = Number(anchorEpochMs);
-  const end = Math.min(Number(nowEpochMs), start + CONSTRUCTIVE_FLOATING_WINDOW_MS);
+  const windowMs = Math.max(1000, Number(maxWindowMs) || CONSTRUCTIVE_FLOATING_WINDOW_MS);
+  const end = Math.min(Number(nowEpochMs), start + windowMs);
   return (Array.isArray(absTicks) ? absTicks : [])
     .filter((p) => Number(p.epochMs) >= start && Number(p.epochMs) <= end)
     .map((p) => ({ ms: Number(p.epochMs) - start, quote: Number(p.quote) }))
-    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= CONSTRUCTIVE_FLOATING_WINDOW_MS)
+    .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.quote) && p.ms >= 0 && p.ms <= windowMs)
     .sort((a, b) => a.ms - b.ms);
 }
 // II3: evita reanclar dentro de un impulso que ya venía avanzando.
@@ -36966,7 +36978,7 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
     const lastSig = constructiveLastSignalBySymbol[sym] || null;
     if (lastSig && now - Number(lastSig.epochMs || 0) < CONSTRUCTIVE_SIGNAL_COOLDOWN_MS) return false;
 
-    const minStart = now - CONSTRUCTIVE_FLOATING_WINDOW_MS;
+    const minStart = now - INICIO_CLC_BREAK_WINDOW_MS;
     const starts = [];
     let lastStart = -Infinity;
     for (const p of absTicks) {
@@ -36981,9 +36993,9 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
 
     let bestPack = null;
     for (const start of starts) {
-      const ticks = normalizeConstructiveAbsWindow(absTicks, start, now);
+      const ticks = normalizeConstructiveAbsWindow(absTicks, start, now, INICIO_CLC_BREAK_WINDOW_MS);
       if (ticks.length < 6) continue;
-      const match = analyzeInicioShortLongShortBreakCandidate({ symbol: sym, ticks }, { evalMs: Math.min(now - start, CONSTRUCTIVE_FLOATING_WINDOW_MS) });
+      const match = analyzeInicioShortLongShortBreakCandidate({ symbol: sym, ticks }, { evalMs: Math.min(now - start, INICIO_CLC_BREAK_WINDOW_MS) });
       if (!match) continue;
 
       // Reanclaje iterativo: nunca mezclamos metadata del ancla vieja con ticks
@@ -36996,12 +37008,12 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
         const offsetMs = Math.max(0, Number(refined?.meta?.constructiveAnchorOffsetMs || 0));
         if (!(offsetMs > 0.5)) break;
         const nextAnchorEpochMs = anchorEpochMs + offsetMs;
-        if (now - nextAnchorEpochMs > CONSTRUCTIVE_FLOATING_WINDOW_MS) { refined = null; break; }
-        const nextTicks = normalizeConstructiveAbsWindow(absTicks, nextAnchorEpochMs, now);
+        if (now - nextAnchorEpochMs > INICIO_CLC_BREAK_WINDOW_MS) { refined = null; break; }
+        const nextTicks = normalizeConstructiveAbsWindow(absTicks, nextAnchorEpochMs, now, INICIO_CLC_BREAK_WINDOW_MS);
         if (nextTicks.length < 6) { refined = null; break; }
         const nextMatch = analyzeInicioShortLongShortBreakCandidate(
           { symbol: sym, ticks: nextTicks },
-          { evalMs: Math.min(now - nextAnchorEpochMs, CONSTRUCTIVE_FLOATING_WINDOW_MS) }
+          { evalMs: Math.min(now - nextAnchorEpochMs, INICIO_CLC_BREAK_WINDOW_MS) }
         );
         anchorEpochMs = nextAnchorEpochMs;
         anchoredTicks = nextTicks;
@@ -37012,14 +37024,15 @@ function scanConstructiveReductionContinuousOnTick(symbol, epochMs) {
       const residualOffsetMs = Math.max(0, Number(refined?.meta?.constructiveAnchorOffsetMs || 0));
       if (residualOffsetMs > 0.5) {
         const nextAnchorEpochMs = anchorEpochMs + residualOffsetMs;
-        const nextTicks = normalizeConstructiveAbsWindow(absTicks, nextAnchorEpochMs, now);
-        if (nextTicks.length >= 6 && now - nextAnchorEpochMs <= CONSTRUCTIVE_FLOATING_WINDOW_MS) {
+        const nextTicks = normalizeConstructiveAbsWindow(absTicks, nextAnchorEpochMs, now, INICIO_CLC_BREAK_WINDOW_MS);
+        if (nextTicks.length >= 6 && now - nextAnchorEpochMs <= INICIO_CLC_BREAK_WINDOW_MS) {
           anchorEpochMs = nextAnchorEpochMs;
           anchoredTicks = nextTicks;
           refined = rebaseConstructiveMatchTiming(refined, residualOffsetMs);
         }
       }
-      if (!isInicioInamovibleTrueAnchor(absTicks, anchorEpochMs, refined)) continue;
+      // II121: no exigimos que el primer corto nazca exactamente en un extremo local previo;
+      // esa era una restricción heredada que eliminaba CLC válidos.
       const q = Number(refined.quality || 0) - Math.max(0, (now - anchorEpochMs) - Number(refined.meta?.constructiveFormedAtMs || 0)) / 2500;
       if (!bestPack || q > Number(bestPack.rank || 0)) {
         bestPack = { match: refined, anchorEpochMs, ticks: anchoredTicks, rank: q };
