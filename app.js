@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II119";
+const APP_BUILD_VERSION = "v113.33-II120";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -36501,7 +36501,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
 }
 
 
-// II119 — detector experimental CORTO → LARGO → CORTO con ruptura estructural contraria.
+// II120 — detector CORTO → LARGO → CORTO con ruptura estructural, versión más tolerante.
 // Reglas de esta rama:
 // 1) tres impulsos primarios del mismo grupo;
 // 2) el central es claramente mayor que ambos laterales;
@@ -36548,7 +36548,7 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
     const alignedHigh = Math.max(...aligned.map((p)=>p.y));
     const alignedLow = Math.min(...aligned.map((p)=>p.y));
     const alignedRange = Math.max(alignedHigh-alignedLow, localRange, Math.abs(Number(aligned[0]?.y || 0))*0.000001, 1e-9);
-    const impulseMin = Math.max(alignedRange*0.030, tol*0.95, Math.abs(open)*0.000000035, 1e-9);
+    const impulseMin = Math.max(alignedRange*0.015, tol*0.65, Math.abs(open)*0.000000020, 1e-9);
 
     const runs = getVisualRuns25s(clean, side, evalMs, tol, alignedRange)
       .map((r,idx)=>({ ...r, idx, move:Number(r?.move || 0) }));
@@ -36564,26 +36564,35 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
 
       const betweenOne = runs.filter((r)=>Number(r.idx)>Number(first.idx) && Number(r.idx)<Number(central.idx));
       const betweenTwo = runs.filter((r)=>Number(r.idx)>Number(central.idx) && Number(r.idx)<Number(last.idx));
-      if (!betweenOne.length || !betweenTwo.length) continue;
 
-      // Cada separación debe ser retroceso o pausa, nunca un nuevo impulso dominante.
-      const sepOneValid = betweenOne.every((r)=>Number(r.sign||0)<=0);
-      const sepTwoValid = betweenTwo.every((r)=>Number(r.sign||0)<=0);
-      if (!sepOneValid || !sepTwoValid) continue;
-
-      const sepOneTicks = separatorStepCount(betweenOne);
-      const sepTwoTicks = separatorStepCount(betweenTwo);
-      if (sepOneTicks < 2 || sepTwoTicks < 2) continue;
+      // II120: interpretamos "2 ticks de pausa/retroceso" como 2 actualizaciones reales
+      // después del impulso previo y antes/de inicio del siguiente. No exigimos que TODOS
+      // los micro-runs sean contrarios: puede haber un pequeño serrucho dentro de la pausa.
+      const separatorInfo = (a,b,between=[]) => {
+        const ptsBetween = aligned.filter((p)=>Number(p.ms)>Number(a.endMs) && Number(p.ms)<=Number(b.startMs));
+        const tickCount = ptsBetween.length;
+        const hasPauseOrRetraceRun = between.some((r)=>Number(r.sign||0)<=0);
+        const startY = Number(a.endY);
+        const nextStartY = Number(b.startY);
+        const retracedOrFlat = Number.isFinite(startY) && Number.isFinite(nextStartY) && nextStartY <= startY + tol*0.45;
+        const tinyPositiveOnly = between.length && between.every((r)=>Number(r.sign||0)>0 && Number(r.move||0)<impulseMin*0.55);
+        return { tickCount, valid: tickCount >= 2 && (hasPauseOrRetraceRun || retracedOrFlat || tinyPositiveOnly) };
+      };
+      const sepOneInfo = separatorInfo(first, central, betweenOne);
+      const sepTwoInfo = separatorInfo(central, last, betweenTwo);
+      if (!sepOneInfo.valid || !sepTwoInfo.valid) continue;
+      const sepOneTicks = sepOneInfo.tickCount;
+      const sepTwoTicks = sepTwoInfo.tickCount;
 
       const moves = [Number(first.move||0), Number(central.move||0), Number(last.move||0)];
       if (!moves.every((v)=>Number.isFinite(v) && v>0)) continue;
 
       // C-L-C relativo: el central tiene que notarse claramente más largo.
       const longRatio = moves[1] / Math.max(moves[0], moves[2], 1e-9);
-      if (!(moves[1] > moves[0] && moves[1] > moves[2] && longRatio >= 1.22)) continue;
+      if (!(moves[1] > moves[0] && moves[1] > moves[2] && longRatio >= 1.08)) continue;
 
       // Evita laterales microscópicos que visualmente no serían movimientos.
-      const lateralFloor = 0.16;
+      const lateralFloor = 0.06;
       const lateralRatios = [moves[0]/Math.max(moves[1],1e-9), moves[2]/Math.max(moves[1],1e-9)];
       if (lateralRatios.some((r)=>r < lateralFloor)) continue;
 
@@ -36592,18 +36601,17 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       const setupElapsedFromAnchorMs = setupFormedAtMs - anchorOffsetMs;
       if (anchorOffsetMs < 0 || setupElapsedFromAnchorMs <= 0 || setupElapsedFromAnchorMs > 25000) continue;
 
-      // Los extremos de los tres impulsos deben seguir progresando en el mismo sentido.
+      // II120: la progresión de extremos queda como dato de estudio, no como filtro duro.
+      // El patrón puede trabajar dentro de una zona y aun así ser C→L→C válido.
       const progressOne = Number(central.endY) - Number(first.endY);
       const progressTwo = Number(last.endY) - Number(central.endY);
-      const progressReq = Math.max(alignedRange*0.008, tol*0.65, 1e-9);
-      if (progressOne < progressReq || progressTwo < progressReq) continue;
 
       // El nivel estructural a romper es el origen del último corto.
       // En coordenada alineada siempre debe romperse HACIA ABAJO por el grupo contrario.
       const structureLevelY = Number(last.startY);
       const structureLevelQuote = Number(last.startQuote);
       if (!Number.isFinite(structureLevelY) || !Number.isFinite(structureLevelQuote)) continue;
-      const breakTol = Math.max(tol*0.55, moves[2]*0.025, alignedRange*0.004, 1e-9);
+      const breakTol = Math.max(tol*0.12, moves[2]*0.005, alignedRange*0.001, 1e-9);
 
       const afterSetupPts = aligned.filter((p)=>Number(p.ms)>setupFormedAtMs && Number(p.ms)<=evalMs);
       if (afterSetupPts.length < 1) continue;
@@ -36614,28 +36622,26 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       const confirmationElapsedFromAnchorMs = confirmedAtMs - anchorOffsetMs;
       if (confirmationElapsedFromAnchorMs <= setupElapsedFromAnchorMs || confirmationElapsedFromAnchorMs > 30000) continue;
 
-      // Antes de la ruptura no permitimos que aparezca un cuarto impulso dominante completo.
+      // II120: no descartamos automáticamente un micro cuarto empuje antes de la ruptura.
+      // Lo importante para esta prueba es que finalmente el grupo contrario rompa la estructura.
       const breakRun = runs.find((r)=>Number(r.startMs)<=confirmedAtMs && Number(r.endMs)>=confirmedAtMs) || null;
-      const runsBeforeBreakAfterLast = runs.filter((r)=>Number(r.idx)>Number(last.idx) && Number(r.endMs)<=confirmedAtMs);
-      const fourthStrong = runsBeforeBreakAfterLast.some((r)=>Number(r.sign||0)>0 && Number(r.move||0)>=Math.max(impulseMin, moves[2]*0.72));
-      if (fourthStrong) continue;
 
       const blockPts = aligned.filter((p)=>Number(p.ms)>=anchorOffsetMs && Number(p.ms)<=setupFormedAtMs);
-      if (blockPts.length < 6) continue;
+      if (blockPts.length < 5) continue;
       const y0 = Number(blockPts[0]?.y);
       const terminalEndY = Number(last.endY);
       const netAdvance = terminalEndY - y0;
       let path = 0;
       for (let j=1;j<blockPts.length;j++) path += Math.abs(Number(blockPts[j].y)-Number(blockPts[j-1].y));
       const efficiency = netAdvance / Math.max(path,1e-9);
-      if (netAdvance < Math.max(alignedRange*0.16, tol*2.5, 1e-9)) continue;
-      if (efficiency < 0.30) continue;
+      if (netAdvance < Math.max(alignedRange*0.06, tol*1.2, 1e-9)) continue;
+      if (efficiency < 0.12) continue;
 
       const correctionRuns = [...betweenOne, ...betweenTwo].filter((r)=>Number(r.sign||0)<0);
       const pauseRuns = [...betweenOne, ...betweenTwo].filter((r)=>Number(r.sign||0)===0);
       const breakDepth = structureLevelY - Number(breakPoint.y);
       const score = 72
-        + Math.min(12,(longRatio-1.22)*18)
+        + Math.min(12,Math.max(0,longRatio-1.08)*18)
         + Math.min(8,efficiency*10)
         + Math.min(6,(sepOneTicks+sepTwoTicks-4)*1.2)
         + Math.min(8,breakDepth/Math.max(moves[2],1e-9)*24)
@@ -36687,7 +36693,7 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
     `señal ${direction} emitida únicamente después de la ruptura estructural`,
   ];
   const status = `🧲 INICIO C→L→C · ruptura de ${structureText} · ${movementSideText} → giro ${direction}. Marcá 5 puntos netos hacia COMPRA o VENTA.`;
-  const logicText = `Motor experimental V113.33-II119 CORTO→LARGO→CORTO + RUPTURA ESTRUCTURAL: busca tres impulsos del mismo grupo, con el central claramente mayor que ambos laterales. Entre 1º→2º y 2º→3º exige una pausa o retroceso real de al menos dos pasos/ticks. Toda la estructura, incluidos los separadores, debe quedar formada antes de s25. La señal NO se confirma al finalizar el tercer corto: espera que el grupo contrario rompa el origen estructural de ese último corto; en recorrido alcista debe romper el último mínimo, y en recorrido bajista el último máximo. La ruptura puede confirmarse hasta s30. La señal sigue siendo contraria al recorrido dominante.`;
+  const logicText = `Motor experimental V113.33-II120 CORTO→LARGO→CORTO + RUPTURA ESTRUCTURAL TOLERANTE: busca tres impulsos del mismo grupo, con el central mayor que ambos laterales, con margen relativo tolerante. Entre 1º→2º y 2º→3º exige una pausa o retroceso de al menos dos ticks reales; tolera micro-serrucho dentro de la separación. Toda la estructura, incluidos los separadores, debe quedar formada antes de s25. La señal NO se confirma al finalizar el tercer corto: espera que el grupo contrario rompa el origen estructural de ese último corto; en recorrido alcista debe romper el último mínimo, y en recorrido bajista el último máximo. La ruptura puede confirmarse hasta s30. La señal sigue siendo contraria al recorrido dominante.`;
 
   return {
     direction,
@@ -36799,7 +36805,7 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       firstConstructiveReduction: null,
       secondConstructiveReduction: null,
       thirdConstructiveReduction: null,
-      constructiveQualificationRoute: 'inicio_inamovible_ii119_clc_two_tick_separators_structure_break',
+      constructiveQualificationRoute: 'inicio_inamovible_ii120_clc_sep2_break_tolerant',
       constructiveQualificationLabel: `C→L→C + ruptura ${structureText} → ${direction}`,
       doubleMgmSignal: false,
       anchoredMgmConfirmed: false,
@@ -36846,9 +36852,9 @@ function analyzeInicioShortLongShortBreakCandidate(candidate, opts = {}) {
       secondReductionRetraceRatio: null,
       secondReductionOppositeSteps: 0,
       visualDisplacementEfficiency: best.efficiency,
-      movementFilter: 'v113_33_ii119_clc_sep2_break_structure',
+      movementFilter: 'v113_33_ii120_clc_sep2_break_tolerant',
       priority: 'EXPERIMENTAL',
-      stage: 'inicio_inamovible_ii119_clc_break_s0_30',
+      stage: 'inicio_inamovible_ii120_clc_break_s0_30',
       logic: logicText,
       status,
     },
