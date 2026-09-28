@@ -1,7 +1,7 @@
 {
   "id": "./",
-  "name": "Deriv · II123 · Más señales 15% + corte tolerante",
-  "short_name": "II123",
+  "name": "Deriv · II124 · Separador mínimo 2 ticks",
+  "short_name": "II124",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

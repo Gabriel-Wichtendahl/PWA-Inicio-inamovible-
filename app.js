@@ -138,7 +138,7 @@
 // No se versionan las claves de localStorage: al actualizar esta variante
 // en su repositorio, el token y las preferencias permanecen guardados.
 
-const APP_BUILD_VERSION = "v113.33-II123";
+const APP_BUILD_VERSION = "v113.33-II124";
 
 // ✅ V92: Rise/Fall con Aceptar si es igual: CALL→CALLE y PUT→PUTE en proposals Deriv.
 
@@ -36154,59 +36154,24 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       const corrections = between.filter((r) => Number(r.sign || 0) < 0 && Number(r.move || 0) >= correctionMin);
       const pauses = between.filter((r) => Number(r.sign || 0) === 0 || (Number(r.sign || 0) < 0 && Number(r.move || 0) < correctionMin));
       const internalSplit = Number(b.idx) === Number(a.idx) + 1 && (!!a.internalSplit || !!b.internalSplit);
-
-      // II123: conserva el mínimo de 2 ticks de separación de II122, pero los
-      // dos ticks ya no tienen que ser perfectamente consecutivos. Buscamos una
-      // ventana corta de hasta 3 pasos entre impulsos: deben existir al menos 2
-      // pasos de pausa/retroceso y se tolera 1 pequeño avance intermedio siempre
-      // que no tenga entidad suficiente para reactivar el impulso dominante.
-      const separatorTickStepsLegacy = between
-        .filter((r) => Number(r.sign || 0) <= 0)
-        .reduce((sum, r) => {
-          const pts = Array.isArray(r?.points) ? r.points.length : 0;
-          return sum + Math.max(0, pts - 1);
-        }, 0);
-
-      const visualPauseStep = Math.max(alignedRange * 0.020, tol * 0.70, 1e-9);
-      const smallForwardMax = Math.max(visualPauseStep * 1.65, impulseMin * 0.34, 1e-9);
-      const rawSepPts = clean
-        .filter((p) => Number(p.ms) >= Number(a.endMs) - 1 && Number(p.ms) <= Number(b.startMs) + 1)
-        .map((p) => ({ ms: Number(p.ms), y: Number(p.quote) * side }))
-        .filter((p) => Number.isFinite(p.ms) && Number.isFinite(p.y))
-        .sort((x, y) => x.ms - y.ms);
-      const rawSepSteps = [];
-      for (let k = 1; k < rawSepPts.length; k++) {
-        const dy = Number(rawSepPts[k].y) - Number(rawSepPts[k - 1].y);
-        // Retroceso siempre corta. Un avance menor al umbral visual se interpreta
-        // como pausa. Un avance algo mayor puede existir como único tick intermedio,
-        // pero no cuenta como uno de los 2 ticks de separación.
-        const cutsImpulse = dy < visualPauseStep;
-        const smallForward = dy >= visualPauseStep && dy <= smallForwardMax;
-        rawSepSteps.push({ dy, cutsImpulse, smallForward });
-      }
-
-      let tolerantWindow = false;
-      let tolerantCutCount = 0;
-      for (let start = 0; start < rawSepSteps.length && !tolerantWindow; start++) {
-        for (let len = 2; len <= 3 && start + len <= rawSepSteps.length; len++) {
-          const w = rawSepSteps.slice(start, start + len);
-          const cuts = w.filter((st) => st.cutsImpulse).length;
-          const forbiddenForward = w.some((st) => !st.cutsImpulse && !st.smallForward);
-          const smallForwards = w.filter((st) => st.smallForward).length;
-          if (cuts >= 2 && !forbiddenForward && smallForwards <= 1) {
-            tolerantWindow = true;
-            tolerantCutCount = cuts;
-            break;
-          }
+      // II124: conserva EXACTAMENTE el separador que ya reconocía II118.
+      // Único filtro nuevo: si ese separador dura solamente 1 paso de tick, no alcanza.
+      // Con 2 o más pasos de tick entre el fin de un impulso y el inicio del siguiente,
+      // la formación sigue siendo válida sin reinterpretar pausas, retrocesos ni microtramos.
+      const separatorExistsII118 = between.length > 0;
+      const gapStartMs = Number(a.endMs || 0);
+      const gapEndMs = Number(b.startMs || 0);
+      let separatorTickSteps = 0;
+      if (separatorExistsII118 && Number.isFinite(gapStartMs) && Number.isFinite(gapEndMs) && gapEndMs >= gapStartMs) {
+        for (let k = 1; k < clean.length; k++) {
+          const stepStart = Number(clean[k - 1]?.ms);
+          const stepEnd = Number(clean[k]?.ms);
+          if (!Number.isFinite(stepStart) || !Number.isFinite(stepEnd)) continue;
+          if (stepStart >= gapStartMs && stepEnd <= gapEndMs) separatorTickSteps++;
         }
       }
-
-      const separatorTickSteps = Math.max(separatorTickStepsLegacy, tolerantCutCount);
-      const realSeparator = separatorTickStepsLegacy >= 2 || tolerantWindow;
-      return {
-        between, corrections, pauses, internalSplit, separatorTickSteps,
-        separatorTickStepsLegacy, tolerantWindow, realSeparator, separated: realSeparator
-      };
+      const realSeparator = separatorExistsII118 && separatorTickSteps >= 2;
+      return { between, corrections, pauses, internalSplit, separatorExistsII118, separatorTickSteps, realSeparator, separated: realSeparator };
     };
 
     for (let i = 0; i + 2 < primaryRuns.length; i++) {
@@ -36247,7 +36212,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
       // Recuperamos también el piso visual histórico de II65/II72 para evitar laterales
       // microscópicos frente al G. Así la prueba cambia SOLO la familia permitida,
       // conservando una estructura P/M→G→P/M visualmente real.
-      const lateralVisualRatioMin = 0.15; // II123: laterales visibles desde 15% del G central.
+      const lateralVisualRatioMin = 0.22;
       const lateralToCentralRatios = [moves[0] / Math.max(moves[1], 1e-9), moves[2] / Math.max(moves[1], 1e-9)];
       if (lateralToCentralRatios.some((ratio) => ratio < lateralVisualRatioMin)) continue;
       const thirdToFirstRatio = moves[2] / Math.max(moves[0], 1e-9);
@@ -36372,7 +36337,7 @@ function analyzeConstructiveReductionContinuousCandidate(candidate, opts = {}) {
     `velocidad G: ${best.visualPace.speedRatioFirst.toFixed(2)}× vs 1º · ${best.visualPace.speedRatioLast.toFixed(2)}× vs 3º`,
     `avances útiles: ${best.visualPace.movements[0].directionalStepCount} → ${best.visualPace.movements[1].directionalStepCount} → ${best.visualPace.movements[2].directionalStepCount}`,
     `${best.labels[0]}=${best.moves[0].toPrecision(5)} · G=${best.moves[1].toPrecision(5)} · ${best.labels[2]}=${best.moves[2].toPrecision(5)}`,
-    `laterales ≥ ${(best.lateralVisualRatioMin * 100).toFixed(0)}% del G y cortes ≥2 ticks tolerantes`,
+    `laterales ≥ ${(best.lateralVisualRatioMin * 100).toFixed(0)}% del G y cortes reales`,
     `desplazamiento real ${best.realDisplacement.toPrecision(5)}`,
     `señal de giro ${direction} confirmada en s${signalAtSec}`,
   ];
